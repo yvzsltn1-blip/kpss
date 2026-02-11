@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(ls:*)",
-      "Bash(npx vite build:*)"
+      "Bash(npx vite build:*)",
+      "Bash(wc:*)",
+      "Bash(find:*)"
     ]
   }
 }

@@ -24,6 +24,10 @@ type ViewState = 'dashboard' | 'quiz-setup' | 'quiz' | 'admin';
 type QuizConfirmAction = 'exit' | 'finish';
 type TopicProgressStats = {
   seenQuestionIds: string[];
+  correctQuestionIds: string[];
+  wrongQuestionIds: string[];
+  blankQuestionIds: string[];
+  wrongRecoveryStreakByQuestionId: Record<string, number>;
   correctCount: number;
   wrongCount: number;
   blankCount: number;
@@ -68,6 +72,7 @@ const DEFAULT_COLOR = {
 
 const getCatColor = (id: string) => CATEGORY_COLORS[id] || DEFAULT_COLOR;
 const ADMIN_QUESTIONS_PER_PAGE = 5;
+const WRONG_RECOVERY_STREAK_TARGET = 5;
 
 const STORAGE_KEYS = {
   theme: 'kpsspro_theme',
@@ -143,13 +148,50 @@ const getStoredTopicProgressStats = (): Record<string, TopicProgressStats> => {
     Object.entries(parsed).forEach(([topicId, value]) => {
       const typedValue = value as Partial<TopicProgressStats>;
       if (!typedValue || typeof topicId !== 'string') return;
+      const seenQuestionIds = Array.isArray(typedValue.seenQuestionIds)
+        ? Array.from(new Set(typedValue.seenQuestionIds.filter((id): id is string => typeof id === 'string')))
+        : [];
+      const correctQuestionIds = Array.isArray(typedValue.correctQuestionIds)
+        ? Array.from(new Set(typedValue.correctQuestionIds.filter((id): id is string => typeof id === 'string')))
+        : [];
+      const wrongQuestionIds = Array.isArray(typedValue.wrongQuestionIds)
+        ? Array.from(new Set(typedValue.wrongQuestionIds.filter((id): id is string => typeof id === 'string')))
+        : [];
+      const blankQuestionIds = Array.isArray(typedValue.blankQuestionIds)
+        ? Array.from(new Set(typedValue.blankQuestionIds.filter((id): id is string => typeof id === 'string')))
+        : [];
+      const rawWrongRecoveryStreak = typedValue.wrongRecoveryStreakByQuestionId;
+      const wrongRecoveryStreakByQuestionId: Record<string, number> = {};
+      if (rawWrongRecoveryStreak && typeof rawWrongRecoveryStreak === 'object' && !Array.isArray(rawWrongRecoveryStreak)) {
+        Object.entries(rawWrongRecoveryStreak as Record<string, unknown>).forEach(([questionId, value]) => {
+          if (typeof questionId !== 'string') return;
+          const numericValue = Math.floor(Number(value));
+          if (Number.isFinite(numericValue) && numericValue > 0) {
+            wrongRecoveryStreakByQuestionId[questionId] = numericValue;
+          }
+        });
+      }
+      Object.keys(wrongRecoveryStreakByQuestionId).forEach((questionId) => {
+        if (!wrongQuestionIds.includes(questionId)) {
+          delete wrongRecoveryStreakByQuestionId[questionId];
+        }
+      });
+
       statsRecord[topicId] = {
-        seenQuestionIds: Array.isArray(typedValue.seenQuestionIds)
-          ? typedValue.seenQuestionIds.filter((id): id is string => typeof id === 'string')
-          : [],
-        correctCount: Number.isFinite(typedValue.correctCount) ? Number(typedValue.correctCount) : 0,
-        wrongCount: Number.isFinite(typedValue.wrongCount) ? Number(typedValue.wrongCount) : 0,
-        blankCount: Number.isFinite(typedValue.blankCount) ? Number(typedValue.blankCount) : 0,
+        seenQuestionIds,
+        correctQuestionIds,
+        wrongQuestionIds,
+        blankQuestionIds,
+        wrongRecoveryStreakByQuestionId,
+        correctCount: correctQuestionIds.length > 0
+          ? correctQuestionIds.length
+          : (Number.isFinite(typedValue.correctCount) ? Number(typedValue.correctCount) : 0),
+        wrongCount: wrongQuestionIds.length > 0
+          ? wrongQuestionIds.length
+          : (Number.isFinite(typedValue.wrongCount) ? Number(typedValue.wrongCount) : 0),
+        blankCount: blankQuestionIds.length > 0
+          ? blankQuestionIds.length
+          : (Number.isFinite(typedValue.blankCount) ? Number(typedValue.blankCount) : 0),
         completedQuizCount: Number.isFinite(typedValue.completedQuizCount) ? Number(typedValue.completedQuizCount) : 0,
         lastPlayedAt: Number.isFinite(typedValue.lastPlayedAt) ? Number(typedValue.lastPlayedAt) : 0,
       };
@@ -297,6 +339,9 @@ export default function App() {
   const [reportingQuestion, setReportingQuestion] = useState<Question | null>(null);
   const [reportNote, setReportNote] = useState('');
   const [quizConfirmAction, setQuizConfirmAction] = useState<QuizConfirmAction | null>(null);
+  const [isResetStatsModalOpen, setIsResetStatsModalOpen] = useState(false);
+  const [resetStatsTargetTopic, setResetStatsTargetTopic] = useState<{ id: string; name: string } | null>(null);
+  const [quizStatusFilter, setQuizStatusFilter] = useState<{ wrong: boolean; blank: boolean }>({ wrong: false, blank: false });
 
   // Admin Modals
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
@@ -598,10 +643,32 @@ export default function App() {
     });
   };
 
-  const openQuizSetup = (category: Category, sub: SubCategory) => {
+  const openQuizSetup = (category: Category, sub: SubCategory, preset: 'all' | 'wrong' | 'blank' | 'both' = 'all') => {
+    const topicQuestions = allQuestions[sub.id] || [];
+    const topicStats = topicProgressStats[sub.id];
+    const wrongSet = new Set(topicStats?.wrongQuestionIds || []);
+    const blankSet = new Set(topicStats?.blankQuestionIds || []);
+    const nextStatusFilter =
+      preset === 'wrong'
+        ? { wrong: true, blank: false }
+        : preset === 'blank'
+          ? { wrong: false, blank: true }
+          : preset === 'both'
+            ? { wrong: true, blank: true }
+            : { wrong: false, blank: false };
+    const statusActive = nextStatusFilter.wrong || nextStatusFilter.blank;
+    const filteredCount = statusActive
+      ? topicQuestions.filter((question, index) => {
+          const questionTrackingId = getQuestionTrackingId(question, sub.id, index);
+          const includeWrong = nextStatusFilter.wrong && wrongSet.has(questionTrackingId);
+          const includeBlank = nextStatusFilter.blank && blankSet.has(questionTrackingId);
+          return includeWrong || includeBlank;
+        }).length
+      : topicQuestions.length;
+
     setActiveTopic({ cat: category, sub: sub });
-    const availableCount = allQuestions[sub.id]?.length || 0;
-    const initialQuestionCount = availableCount > 0 ? Math.min(10, availableCount) : 0;
+    const initialQuestionCount = filteredCount > 0 ? Math.min(10, filteredCount) : 0;
+    setQuizStatusFilter(nextStatusFilter);
     setQuizTagQuestionCounts({});
     setQuizConfig({
       questionCount: initialQuestionCount,
@@ -613,7 +680,18 @@ export default function App() {
   const handleStartQuiz = () => {
     if (!activeTopic) return;
 
-    const topicQuestionsPool = [...(allQuestions[activeTopic.sub.id] || [])];
+    const topicId = activeTopic.sub.id;
+    const topicStats = getTopicProgress(topicId);
+    const wrongSet = new Set(topicStats.wrongQuestionIds);
+    const blankSet = new Set(topicStats.blankQuestionIds);
+    const isStatusFilterActive = quizStatusFilter.wrong || quizStatusFilter.blank;
+    const topicQuestionsPool = (allQuestions[topicId] || []).filter((question, index) => {
+      if (!isStatusFilterActive) return true;
+      const questionTrackingId = getQuestionTrackingId(question, topicId, index);
+      const includeWrong = quizStatusFilter.wrong && wrongSet.has(questionTrackingId);
+      const includeBlank = quizStatusFilter.blank && blankSet.has(questionTrackingId);
+      return includeWrong || includeBlank;
+    });
     const selectedTagEntries = Object.keys(quizTagQuestionCounts)
       .map((sourceKey) => ({
         sourceKey,
@@ -758,24 +836,14 @@ export default function App() {
       const topicId = activeTopic.sub.id;
       const currentAnswers = quizState.userAnswers;
       const currentQuestions = quizState.questions;
-      let correctCount = 0;
-      let wrongCount = 0;
-      let blankCount = 0;
-
-      currentQuestions.forEach((question, index) => {
-        const answer = currentAnswers[index];
-        if (answer === null || answer === undefined) {
-          blankCount += 1;
-        } else if (answer === question.correctOptionIndex) {
-          correctCount += 1;
-        } else {
-          wrongCount += 1;
-        }
-      });
 
       setTopicProgressStats((prev) => {
         const prevStats = prev[topicId] || {
           seenQuestionIds: [],
+          correctQuestionIds: [],
+          wrongQuestionIds: [],
+          blankQuestionIds: [],
+          wrongRecoveryStreakByQuestionId: {},
           correctCount: 0,
           wrongCount: 0,
           blankCount: 0,
@@ -783,17 +851,52 @@ export default function App() {
           lastPlayedAt: 0,
         };
         const seenIds = new Set(prevStats.seenQuestionIds);
+        const correctIds = new Set(prevStats.correctQuestionIds);
+        const wrongIds = new Set(prevStats.wrongQuestionIds);
+        const blankIds = new Set(prevStats.blankQuestionIds);
+        const wrongRecoveryStreakByQuestionId = { ...prevStats.wrongRecoveryStreakByQuestionId };
         currentQuestions.forEach((question, index) => {
-          seenIds.add(getQuestionTrackingId(question, topicId, index));
+          const questionTrackingId = getQuestionTrackingId(question, topicId, index);
+          seenIds.add(questionTrackingId);
+          const answer = currentAnswers[index];
+          if (answer === null || answer === undefined) {
+            blankIds.add(questionTrackingId);
+            if (wrongIds.has(questionTrackingId)) {
+              wrongRecoveryStreakByQuestionId[questionTrackingId] = 0;
+            }
+          } else if (answer === question.correctOptionIndex) {
+            correctIds.add(questionTrackingId);
+            if (wrongIds.has(questionTrackingId)) {
+              const nextStreak = (wrongRecoveryStreakByQuestionId[questionTrackingId] || 0) + 1;
+              if (nextStreak >= WRONG_RECOVERY_STREAK_TARGET) {
+                wrongIds.delete(questionTrackingId);
+                delete wrongRecoveryStreakByQuestionId[questionTrackingId];
+              } else {
+                wrongRecoveryStreakByQuestionId[questionTrackingId] = nextStreak;
+              }
+            }
+          } else if (answer !== question.correctOptionIndex) {
+            wrongIds.add(questionTrackingId);
+            wrongRecoveryStreakByQuestionId[questionTrackingId] = 0;
+          }
+        });
+        Object.keys(wrongRecoveryStreakByQuestionId).forEach((questionId) => {
+          if (!wrongIds.has(questionId)) {
+            delete wrongRecoveryStreakByQuestionId[questionId];
+          }
         });
 
         return {
           ...prev,
           [topicId]: {
             seenQuestionIds: Array.from(seenIds),
-            correctCount: prevStats.correctCount + correctCount,
-            wrongCount: prevStats.wrongCount + wrongCount,
-            blankCount: prevStats.blankCount + blankCount,
+            correctQuestionIds: Array.from(correctIds),
+            wrongQuestionIds: Array.from(wrongIds),
+            blankQuestionIds: Array.from(blankIds),
+            wrongRecoveryStreakByQuestionId,
+            correctCount: correctIds.size,
+            wrongCount: wrongIds.size,
+            blankCount: blankIds.size,
             completedQuizCount: prevStats.completedQuizCount + 1,
             lastPlayedAt: Date.now(),
           },
@@ -1311,6 +1414,10 @@ export default function App() {
   const getTopicProgress = (topicId: string): TopicProgressStats => {
     return topicProgressStats[topicId] || {
       seenQuestionIds: [],
+      correctQuestionIds: [],
+      wrongQuestionIds: [],
+      blankQuestionIds: [],
+      wrongRecoveryStreakByQuestionId: {},
       correctCount: 0,
       wrongCount: 0,
       blankCount: 0,
@@ -1337,6 +1444,51 @@ export default function App() {
     },
     { seenCount: 0, correctCount: 0, wrongCount: 0, blankCount: 0, completedQuizCount: 0 }
   );
+  const hasAnyProgressStats = overallProgressStats.seenCount > 0 || overallProgressStats.completedQuizCount > 0;
+  const hasProgressForTopic = (topicId: string): boolean => {
+    const stats = getTopicProgress(topicId);
+    return stats.seenQuestionIds.length > 0 || stats.completedQuizCount > 0;
+  };
+  const resetStatsPreview = resetStatsTargetTopic
+    ? (() => {
+        const topicStats = getTopicProgress(resetStatsTargetTopic.id);
+        return {
+          seenCount: topicStats.seenQuestionIds.length,
+          correctCount: topicStats.correctCount,
+          wrongCount: topicStats.wrongCount,
+          blankCount: topicStats.blankCount,
+          completedQuizCount: topicStats.completedQuizCount,
+        };
+      })()
+    : overallProgressStats;
+  const handleResetTopicProgressStats = () => {
+    if (!hasAnyProgressStats) return;
+    setResetStatsTargetTopic(null);
+    setIsResetStatsModalOpen(true);
+  };
+  const handleResetSingleTopicProgressStats = (topicId: string, topicName: string) => {
+    if (!hasProgressForTopic(topicId)) return;
+    setResetStatsTargetTopic({ id: topicId, name: topicName });
+    setIsResetStatsModalOpen(true);
+  };
+  const handleCancelResetTopicProgressStats = () => {
+    setIsResetStatsModalOpen(false);
+    setResetStatsTargetTopic(null);
+  };
+  const handleConfirmResetTopicProgressStats = () => {
+    if (resetStatsTargetTopic) {
+      setTopicProgressStats((prev) => {
+        if (!prev[resetStatsTargetTopic.id]) return prev;
+        const next = { ...prev };
+        delete next[resetStatsTargetTopic.id];
+        return next;
+      });
+    } else {
+      setTopicProgressStats({});
+    }
+    setIsResetStatsModalOpen(false);
+    setResetStatsTargetTopic(null);
+  };
 
   // Greeting based on time of day
   const getGreeting = () => {
@@ -1351,10 +1503,17 @@ export default function App() {
 
   if (isAuthBootstrapping) {
     return (
-      <div className="min-h-screen bg-surface-950 flex items-center justify-center">
-        <div className="flex flex-col items-center gap-4">
-          <div className="w-12 h-12 border-2 border-surface-700 border-t-brand-500 rounded-full animate-spin"></div>
-          <p className="text-surface-400 text-sm">Oturum kontrol ediliyor...</p>
+      <div className="min-h-screen bg-gradient-to-br from-surface-950 via-surface-900 to-surface-950 flex items-center justify-center relative overflow-hidden">
+        <div className="absolute inset-0 mesh-gradient opacity-30"></div>
+        <div className="flex flex-col items-center gap-5 relative z-10 animate-fade-in">
+          <div className="relative">
+            <div className="w-16 h-16 border-3 border-surface-700/30 border-t-brand-500 rounded-full animate-spin"></div>
+            <div className="absolute inset-0 w-16 h-16 border-3 border-transparent border-b-violet-500 rounded-full animate-spin" style={{ animationDirection: 'reverse', animationDuration: '1s' }}></div>
+          </div>
+          <div className="text-center">
+            <p className="text-white font-bold text-base mb-1">KPSS Pro</p>
+            <p className="text-surface-400 text-sm font-medium">Oturum kontrol ediliyor...</p>
+          </div>
         </div>
       </div>
     );
@@ -1363,85 +1522,97 @@ export default function App() {
   // 1. LOGIN VIEW
   if (!user) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-surface-950 relative overflow-hidden">
-        {/* Animated Background */}
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-surface-950 via-surface-900 to-surface-950 relative overflow-hidden">
+        {/* Mesh Gradient Background */}
+        <div className="absolute inset-0 mesh-gradient opacity-40"></div>
+
+        {/* Animated Blobs */}
         <div className="absolute inset-0">
-          <div className="absolute top-[-20%] left-[-10%] w-[50%] h-[50%] bg-brand-600/15 rounded-full blur-[100px] animate-pulse-soft"></div>
-          <div className="absolute bottom-[-20%] right-[-10%] w-[50%] h-[50%] bg-violet-600/15 rounded-full blur-[100px] animate-pulse-soft" style={{ animationDelay: '1s' }}></div>
-          <div className="absolute top-[40%] left-[50%] w-[30%] h-[30%] bg-emerald-600/10 rounded-full blur-[80px] animate-pulse-soft" style={{ animationDelay: '2s' }}></div>
+          <div className="absolute top-[-20%] left-[-10%] w-[500px] h-[500px] bg-gradient-to-br from-brand-600/20 to-violet-600/15 rounded-full blur-[120px] animate-pulse-soft"></div>
+          <div className="absolute bottom-[-20%] right-[-10%] w-[500px] h-[500px] bg-gradient-to-br from-violet-600/20 to-purple-600/15 rounded-full blur-[120px] animate-pulse-soft" style={{ animationDelay: '1s' }}></div>
+          <div className="absolute top-[40%] left-[50%] w-[350px] h-[350px] bg-gradient-to-br from-emerald-600/15 to-cyan-600/10 rounded-full blur-[100px] animate-pulse-soft" style={{ animationDelay: '2s' }}></div>
         </div>
 
         {/* Subtle grid pattern */}
-        <div className="absolute inset-0 opacity-[0.03]" style={{ backgroundImage: 'radial-gradient(circle at 1px 1px, white 1px, transparent 0)', backgroundSize: '40px 40px' }}></div>
+        <div className="absolute inset-0 opacity-[0.015]" style={{ backgroundImage: 'radial-gradient(circle at 1px 1px, white 1px, transparent 0)', backgroundSize: '48px 48px' }}></div>
 
         <div className="w-full max-w-md relative z-10 px-5">
           <div className="animate-fade-in">
             {/* Logo & Title */}
-            <div className="text-center mb-10">
-              <div className="inline-flex p-4 bg-gradient-to-br from-brand-500 to-violet-600 rounded-2xl shadow-lg shadow-brand-500/25 mb-6 animate-float">
-                <Icon name="Brain" className="w-10 h-10 text-white" />
+            <div className="text-center mb-12">
+              <div className="inline-flex p-5 bg-gradient-to-br from-brand-500 via-violet-600 to-purple-600 rounded-3xl shadow-2xl shadow-brand-500/30 mb-7 animate-float relative overflow-hidden">
+                <div className="absolute inset-0 bg-gradient-to-br from-white/20 to-transparent opacity-50"></div>
+                <Icon name="Brain" className="w-12 h-12 text-white relative z-10" />
               </div>
-              <h1 className="text-4xl font-black text-white mb-2 tracking-tight">KPSS Pro</h1>
-              <p className="text-surface-400 text-base">Akilli hazirlik ile basariya bir adim daha yakin.</p>
+              <h1 className="text-5xl font-black text-white mb-3 tracking-tight bg-gradient-to-r from-white via-white to-white/80 bg-clip-text">
+                KPSS Pro
+              </h1>
+              <p className="text-surface-400 text-base font-medium">Akıllı hazırlık ile başarıya bir adım daha yakın.</p>
             </div>
 
-            {/* Login Card */}
-            <div className="bg-white/[0.06] backdrop-blur-2xl border border-white/[0.08] rounded-3xl p-7 shadow-2xl">
-              <form onSubmit={handleLoginSubmit} className="space-y-4">
+            {/* Login Card - Premium Glassmorphic */}
+            <div className="glass-card rounded-3xl p-8 shadow-premium-lg relative overflow-hidden">
+              <form onSubmit={handleLoginSubmit} className="space-y-5 relative z-10">
                 <div>
-                  <label className="block text-xs font-semibold text-surface-400 uppercase tracking-wider mb-2 ml-1">E-posta</label>
+                  <label className="block text-xs font-bold text-surface-700 dark:text-surface-300 uppercase tracking-wider mb-2.5 ml-1">
+                    E-posta
+                  </label>
                   <div className="relative group">
                     <input
                       type="email"
                       value={loginEmail}
                       onChange={(e) => setLoginEmail(e.target.value)}
-                      className="w-full pl-11 pr-4 py-3.5 bg-white/[0.06] border border-white/[0.08] rounded-xl focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500/50 text-white placeholder-surface-500 outline-none transition-all text-sm"
+                      className="w-full pl-12 pr-4 py-4 bg-surface-50/50 dark:bg-white/[0.04] border-2 border-surface-200/50 dark:border-white/[0.06] rounded-2xl focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500/60 text-surface-900 dark:text-white placeholder-surface-400 dark:placeholder-surface-500 outline-none transition-all text-sm font-medium hover:border-surface-300 dark:hover:border-white/[0.12] focus:bg-white dark:focus:bg-white/[0.06]"
                       placeholder="ornek@mail.com"
                       autoComplete="email"
                     />
-                    <Icon name="User" className="w-4.5 h-4.5 text-surface-500 absolute left-3.5 top-1/2 -translate-y-1/2 transition-colors group-focus-within:text-brand-400" />
+                    <Icon name="User" className="w-5 h-5 text-surface-400 dark:text-surface-500 absolute left-4 top-1/2 -translate-y-1/2 transition-colors group-focus-within:text-brand-500" />
                   </div>
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold text-surface-400 uppercase tracking-wider mb-2 ml-1">Sifre</label>
+                  <label className="block text-xs font-bold text-surface-700 dark:text-surface-300 uppercase tracking-wider mb-2.5 ml-1">
+                    Şifre
+                  </label>
                   <div className="relative group">
                     <input
                       type="password"
                       value={loginPassword}
                       onChange={(e) => setLoginPassword(e.target.value)}
-                      className="w-full pl-11 pr-4 py-3.5 bg-white/[0.06] border border-white/[0.08] rounded-xl focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500/50 text-white placeholder-surface-500 outline-none transition-all text-sm"
-                      placeholder="Sifrenizi giriniz"
+                      className="w-full pl-12 pr-4 py-4 bg-surface-50/50 dark:bg-white/[0.04] border-2 border-surface-200/50 dark:border-white/[0.06] rounded-2xl focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500/60 text-surface-900 dark:text-white placeholder-surface-400 dark:placeholder-surface-500 outline-none transition-all text-sm font-medium hover:border-surface-300 dark:hover:border-white/[0.12] focus:bg-white dark:focus:bg-white/[0.06]"
+                      placeholder="Şifrenizi giriniz"
                       autoComplete={authMode === 'register' ? 'new-password' : 'current-password'}
                     />
-                    <div className="absolute left-3.5 top-1/2 -translate-y-1/2 text-surface-500 transition-colors group-focus-within:text-brand-400">
-                       <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                    <div className="absolute left-4 top-1/2 -translate-y-1/2 text-surface-400 dark:text-surface-500 transition-colors group-focus-within:text-brand-500">
+                       <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
                     </div>
                   </div>
                 </div>
 
                 {authMode === 'register' && (
                   <div>
-                    <label className="block text-xs font-semibold text-surface-400 uppercase tracking-wider mb-2 ml-1">Sifre Tekrar</label>
+                    <label className="block text-xs font-bold text-surface-700 dark:text-surface-300 uppercase tracking-wider mb-2.5 ml-1">
+                      Şifre Tekrar
+                    </label>
                     <div className="relative group">
                       <input
                         type="password"
                         value={loginPasswordConfirm}
                         onChange={(e) => setLoginPasswordConfirm(e.target.value)}
-                        className="w-full pl-11 pr-4 py-3.5 bg-white/[0.06] border border-white/[0.08] rounded-xl focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500/50 text-white placeholder-surface-500 outline-none transition-all text-sm"
-                        placeholder="Sifrenizi tekrar giriniz"
+                        className="w-full pl-12 pr-4 py-4 bg-surface-50/50 dark:bg-white/[0.04] border-2 border-surface-200/50 dark:border-white/[0.06] rounded-2xl focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500/60 text-surface-900 dark:text-white placeholder-surface-400 dark:placeholder-surface-500 outline-none transition-all text-sm font-medium hover:border-surface-300 dark:hover:border-white/[0.12] focus:bg-white dark:focus:bg-white/[0.06]"
+                        placeholder="Şifrenizi tekrar giriniz"
                         autoComplete="new-password"
                       />
-                      <div className="absolute left-3.5 top-1/2 -translate-y-1/2 text-surface-500 transition-colors group-focus-within:text-brand-400">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                      <div className="absolute left-4 top-1/2 -translate-y-1/2 text-surface-400 dark:text-surface-500 transition-colors group-focus-within:text-brand-500">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
                       </div>
                     </div>
                   </div>
                 )}
 
                 {loginError && (
-                  <div className="p-3.5 bg-red-500/10 border border-red-500/15 rounded-xl text-red-300 text-sm flex items-center gap-2.5">
-                     <Icon name="XCircle" className="w-4 h-4 text-red-400 flex-shrink-0" />
+                  <div className="p-4 bg-red-500/10 dark:bg-red-500/5 border-2 border-red-500/20 dark:border-red-500/10 rounded-2xl text-red-600 dark:text-red-300 text-sm font-medium flex items-center gap-3 backdrop-blur-sm">
+                     <Icon name="XCircle" className="w-5 h-5 text-red-500 dark:text-red-400 flex-shrink-0" />
                      {loginError}
                   </div>
                 )}
@@ -1449,14 +1620,15 @@ export default function App() {
                 <button
                   type="submit"
                   disabled={isAuthLoading}
-                  className="w-full py-3.5 px-6 bg-gradient-to-r from-brand-600 to-violet-600 text-white font-bold rounded-xl hover:shadow-lg hover:shadow-brand-600/25 transition-all duration-200 transform hover:-translate-y-0.5 active:translate-y-0 flex items-center justify-center gap-2 mt-2 disabled:opacity-60 disabled:cursor-not-allowed disabled:transform-none"
+                  className="w-full py-4 px-6 bg-gradient-to-r from-brand-600 via-violet-600 to-purple-600 text-white font-bold rounded-2xl hover:shadow-2xl hover:shadow-brand-600/30 transition-all duration-300 transform hover:-translate-y-1 hover:scale-[1.02] active:translate-y-0 active:scale-100 flex items-center justify-center gap-2.5 mt-3 disabled:opacity-60 disabled:cursor-not-allowed disabled:transform-none text-base relative overflow-hidden group/btn"
                 >
-                  {isAuthLoading ? 'Bekleyin...' : authMode === 'register' ? 'Kayit Ol' : 'Giris Yap'}
-                  {!isAuthLoading && <Icon name="ChevronRight" className="w-4 h-4" />}
+                  <div className="absolute inset-0 bg-gradient-to-r from-white/20 to-transparent opacity-0 group-hover/btn:opacity-100 transition-opacity duration-300"></div>
+                  <span className="relative z-10">{isAuthLoading ? 'Bekleyin...' : authMode === 'register' ? 'Kayıt Ol' : 'Giriş Yap'}</span>
+                  {!isAuthLoading && <Icon name="ChevronRight" className="w-5 h-5 relative z-10 transition-transform group-hover/btn:translate-x-1" />}
                 </button>
               </form>
 
-              <div className="mt-6 pt-5 border-t border-white/[0.06] text-center">
+              <div className="mt-7 pt-6 border-t border-surface-200/50 dark:border-white/[0.06] text-center">
                 <button
                   type="button"
                   onClick={() => {
@@ -1465,9 +1637,9 @@ export default function App() {
                     setLoginPassword('');
                     setLoginPasswordConfirm('');
                   }}
-                  className="text-xs text-surface-400 hover:text-white transition-colors font-semibold"
+                  className="text-sm text-surface-600 dark:text-surface-400 hover:text-brand-600 dark:hover:text-brand-400 transition-colors font-semibold"
                 >
-                  {authMode === 'login' ? 'Hesabin yok mu? Kayit ol' : 'Zaten hesabin var mi? Giris yap'}
+                  {authMode === 'login' ? 'Hesabın yok mu? Kayıt ol' : 'Zaten hesabın var mı? Giriş yap'}
                 </button>
               </div>
             </div>
@@ -1479,7 +1651,24 @@ export default function App() {
 
   // 2. QUIZ SETUP VIEW
   if (currentView === 'quiz-setup' && activeTopic) {
-    const setupTopicQuestions = allQuestions[activeTopic.sub.id] || [];
+    const allSetupTopicQuestions = allQuestions[activeTopic.sub.id] || [];
+    const setupTopicProgress = getTopicProgress(activeTopic.sub.id);
+    const wrongQuestionIdSet = new Set(setupTopicProgress.wrongQuestionIds);
+    const blankQuestionIdSet = new Set(setupTopicProgress.blankQuestionIds);
+    const statusFilterActive = quizStatusFilter.wrong || quizStatusFilter.blank;
+    const getFilteredQuestionsByStatus = (status: { wrong: boolean; blank: boolean }) => {
+      const isActive = status.wrong || status.blank;
+      if (!isActive) return allSetupTopicQuestions;
+      return allSetupTopicQuestions.filter((question, index) => {
+        const questionTrackingId = getQuestionTrackingId(question, activeTopic.sub.id, index);
+        const includeWrong = status.wrong && wrongQuestionIdSet.has(questionTrackingId);
+        const includeBlank = status.blank && blankQuestionIdSet.has(questionTrackingId);
+        return includeWrong || includeBlank;
+      });
+    };
+    const setupTopicQuestions = getFilteredQuestionsByStatus(quizStatusFilter);
+    const wrongOnlyQuestionCount = getFilteredQuestionsByStatus({ wrong: true, blank: false }).length;
+    const blankOnlyQuestionCount = getFilteredQuestionsByStatus({ wrong: false, blank: true }).length;
     const maxQuestions = setupTopicQuestions.length;
     const catColor = getCatColor(activeTopic.cat.id);
     const sourceTagCounter = setupTopicQuestions.reduce<Record<string, number>>((acc, question) => {
@@ -1504,6 +1693,19 @@ export default function App() {
     }, 0);
     const isTagDistributionActive = selectedTagTotalQuestionCount > 0;
     const effectiveQuestionCount = isTagDistributionActive ? selectedTagTotalQuestionCount : quizConfig.questionCount;
+    const updateQuizStatusFilter = (nextStatusFilter: { wrong: boolean; blank: boolean }) => {
+      const nextFilteredQuestions = getFilteredQuestionsByStatus(nextStatusFilter);
+      const nextQuestionCount = nextFilteredQuestions.length > 0
+        ? Math.min(quizConfig.questionCount, nextFilteredQuestions.length)
+        : 0;
+      setQuizStatusFilter(nextStatusFilter);
+      setQuizTagQuestionCounts({});
+      setQuizConfig((prev) => ({
+        ...prev,
+        questionCount: nextQuestionCount,
+        durationSeconds: getAutoDurationForQuestionCount(nextQuestionCount),
+      }));
+    };
 
     const updateTagQuestionCount = (sourceKey: string, nextCount: number, maxCount: number) => {
       const clampedCount = Math.min(maxCount, Math.max(0, Math.floor(nextCount)));
@@ -1517,31 +1719,91 @@ export default function App() {
     };
 
     return (
-      <div className="min-h-screen bg-surface-50 dark:bg-surface-900 flex items-center justify-center p-4">
+      <div className="min-h-screen bg-surface-50 dark:bg-surface-900 flex items-start justify-center p-3 sm:p-4 md:py-8">
         <div className="w-full max-w-lg animate-fade-in-scale">
           {/* Back Button */}
           <button
             onClick={() => { setActiveTopic(null); setCurrentView('dashboard'); }}
-            className="flex items-center gap-2 text-surface-400 hover:text-surface-700 dark:hover:text-white transition-colors mb-6 font-medium text-sm"
+            className="flex items-center gap-2 text-surface-400 hover:text-surface-700 dark:hover:text-white transition-colors mb-4 md:mb-6 font-medium text-xs md:text-sm"
           >
             <Icon name="ArrowLeft" className="w-4 h-4" />
             Geri Don
           </button>
 
-          <div className="bg-white dark:bg-surface-800 rounded-3xl shadow-card dark:shadow-card-dark p-7 md:p-9 border border-surface-100 dark:border-surface-700">
+          <div className="bg-white dark:bg-surface-800 rounded-2xl md:rounded-3xl shadow-card dark:shadow-card-dark p-4 sm:p-5 md:p-9 border border-surface-100 dark:border-surface-700">
             {/* Header */}
-            <div className="text-center mb-8">
-              <div className={`w-16 h-16 ${catColor.bgLight} ${catColor.bgDark} rounded-2xl mx-auto flex items-center justify-center mb-5 ${catColor.text} ${catColor.textDark}`}>
-                <Icon name="Settings" className="w-8 h-8" />
+            <div className="text-center mb-5 md:mb-8">
+              <div className={`w-12 h-12 md:w-16 md:h-16 ${catColor.bgLight} ${catColor.bgDark} rounded-xl md:rounded-2xl mx-auto flex items-center justify-center mb-3 md:mb-5 ${catColor.text} ${catColor.textDark}`}>
+                <Icon name="Settings" className="w-6 h-6 md:w-8 md:h-8" />
               </div>
-              <h2 className="text-2xl font-extrabold text-surface-800 dark:text-white mb-1">Sinavi Ozellestir</h2>
-              <p className="text-surface-400 text-sm">{activeTopic.cat.name} &middot; {activeTopic.sub.name}</p>
+              <h2 className="text-xl md:text-2xl font-extrabold text-surface-800 dark:text-white mb-1">Sinavi Ozellestir</h2>
+              <p className="text-surface-400 text-xs md:text-sm break-words">{activeTopic.cat.name} &middot; {activeTopic.sub.name}</p>
             </div>
 
             {/* Settings */}
-            <div className="space-y-6">
+            <div className="space-y-4 md:space-y-6">
+              {/* Status Filter */}
+              {(wrongOnlyQuestionCount > 0 || blankOnlyQuestionCount > 0) && (
+                <div className="bg-surface-50 dark:bg-surface-900/50 p-3.5 md:p-5 rounded-xl md:rounded-2xl border border-surface-100 dark:border-surface-700/50">
+                  <div className="flex items-center justify-between mb-3">
+                    <label className="font-bold text-surface-700 dark:text-surface-200 text-sm flex items-center gap-2">
+                      <Icon name="Target" className="w-4 h-4 text-surface-400" />
+                      Soru Kaynagi
+                    </label>
+                    <span className="text-[11px] font-bold text-surface-500 dark:text-surface-300 bg-white dark:bg-surface-800 px-2 py-0.5 rounded-full border border-surface-200 dark:border-surface-600">
+                      {statusFilterActive ? `${maxQuestions} soru` : 'Tum sorular'}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => updateQuizStatusFilter({ wrong: !quizStatusFilter.wrong, blank: quizStatusFilter.blank })}
+                      disabled={wrongOnlyQuestionCount === 0}
+                      className={`text-left rounded-xl border px-2.5 md:px-3 py-2 md:py-2.5 transition ${
+                        quizStatusFilter.wrong
+                          ? 'border-red-300 dark:border-red-800/40 bg-red-50 dark:bg-red-900/20'
+                          : 'border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800'
+                      } disabled:opacity-40 disabled:cursor-not-allowed`}
+                    >
+                      <p className="text-[11px] md:text-xs font-bold text-surface-700 dark:text-surface-200">Yanlislarim</p>
+                      <p className="text-[11px] text-red-600 dark:text-red-300 mt-0.5">{wrongOnlyQuestionCount} soru</p>
+                    </button>
+                    <button
+                      onClick={() => updateQuizStatusFilter({ wrong: quizStatusFilter.wrong, blank: !quizStatusFilter.blank })}
+                      disabled={blankOnlyQuestionCount === 0}
+                      className={`text-left rounded-xl border px-2.5 md:px-3 py-2 md:py-2.5 transition ${
+                        quizStatusFilter.blank
+                          ? 'border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/70'
+                          : 'border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800'
+                      } disabled:opacity-40 disabled:cursor-not-allowed`}
+                    >
+                      <p className="text-[11px] md:text-xs font-bold text-surface-700 dark:text-surface-200">Boslarim</p>
+                      <p className="text-[11px] text-slate-600 dark:text-slate-300 mt-0.5">{blankOnlyQuestionCount} soru</p>
+                    </button>
+                  </div>
+
+                  {statusFilterActive && (
+                    <div className="mt-2.5 flex items-center justify-between">
+                      <p className="text-[11px] text-brand-600 dark:text-brand-300 font-medium">
+                        {quizStatusFilter.wrong && quizStatusFilter.blank
+                          ? 'Yanlis + bos sorulardan secilecek.'
+                          : quizStatusFilter.wrong
+                            ? 'Sadece yanlis sorulardan secilecek.'
+                            : 'Sadece bos sorulardan secilecek.'}
+                      </p>
+                      <button
+                        onClick={() => updateQuizStatusFilter({ wrong: false, blank: false })}
+                        className="text-[11px] font-bold text-surface-500 hover:text-surface-700 dark:text-surface-300 dark:hover:text-white"
+                      >
+                        Temizle
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Question Count */}
-              <div className="bg-surface-50 dark:bg-surface-900/50 p-5 rounded-2xl border border-surface-100 dark:border-surface-700/50">
+              <div className="bg-surface-50 dark:bg-surface-900/50 p-3.5 md:p-5 rounded-xl md:rounded-2xl border border-surface-100 dark:border-surface-700/50">
                 <div className="flex justify-between items-center mb-3">
                   <label className="font-bold text-surface-700 dark:text-surface-200 text-sm flex items-center gap-2">
                     <Icon name="Hash" className="w-4 h-4 text-surface-400" />
@@ -1554,7 +1816,7 @@ export default function App() {
                 <div className="flex items-center gap-4">
                   <input
                     type="range"
-                    min="1"
+                    min="0"
                     max={maxQuestions}
                     value={quizConfig.questionCount}
                     onChange={(e) => {
@@ -1582,7 +1844,7 @@ export default function App() {
 
               {/* Tag Distribution */}
               {sourceTagOptions.length > 0 && (
-                <div className="bg-surface-50 dark:bg-surface-900/50 p-5 rounded-2xl border border-surface-100 dark:border-surface-700/50">
+                <div className="bg-surface-50 dark:bg-surface-900/50 p-3.5 md:p-5 rounded-xl md:rounded-2xl border border-surface-100 dark:border-surface-700/50">
                   <div className="flex items-center justify-between mb-3">
                     <label className="font-bold text-surface-700 dark:text-surface-200 text-sm flex items-center gap-2">
                       <Icon name="BookOpen" className="w-4 h-4 text-surface-400" />
@@ -1597,7 +1859,7 @@ export default function App() {
                     Bir veya birden fazla etiket secip her etiketten kac soru gelecegini belirleyin. 0 degeri, o etiketi kapatir.
                   </p>
 
-                  <div className="space-y-2 max-h-56 overflow-y-auto custom-scrollbar pr-1">
+                  <div className="space-y-2 max-h-[52vh] md:max-h-56 overflow-y-auto custom-scrollbar pr-0.5 md:pr-1">
                     {sourceTagOptions.map((option) => {
                       const selectedCount = Math.min(
                         option.totalCount,
@@ -1608,31 +1870,31 @@ export default function App() {
                       return (
                         <div
                           key={option.sourceKey}
-                          className={`rounded-xl border p-2.5 transition ${
+                          className={`rounded-xl border p-2.5 md:p-3 transition ${
                             isSelected
                               ? 'border-brand-200 dark:border-brand-800/40 bg-brand-50/50 dark:bg-brand-900/10'
                               : 'border-surface-200 dark:border-surface-700 bg-white/80 dark:bg-surface-800/70'
                           }`}
                         >
-                          <div className="flex items-center justify-between gap-2">
-                            <label className="flex items-center gap-2 min-w-0 cursor-pointer">
+                          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                            <label className="flex items-start gap-2 min-w-0 cursor-pointer">
                               <input
                                 type="checkbox"
                                 checked={isSelected}
                                 onChange={(e) => updateTagQuestionCount(option.sourceKey, e.target.checked ? Math.min(1, option.totalCount) : 0, option.totalCount)}
-                                className="w-4 h-4 accent-brand-600"
+                                className="w-4 h-4 accent-brand-600 mt-0.5"
                               />
                               <div className="min-w-0">
-                                <p className="text-sm font-semibold text-surface-700 dark:text-surface-200 truncate">{option.label}</p>
-                                <p className="text-[11px] text-surface-400">{option.totalCount} soru mevcut</p>
+                                <p className="text-[13px] md:text-sm font-semibold text-surface-700 dark:text-surface-200 break-words leading-snug">{option.label}</p>
+                                <p className="text-[11px] text-surface-400 mt-0.5">{option.totalCount} soru mevcut</p>
                               </div>
                             </label>
 
-                            <div className="flex items-center gap-1.5">
+                            <div className="flex items-center gap-1.5 self-end sm:self-auto">
                               <button
                                 onClick={() => updateTagQuestionCount(option.sourceKey, selectedCount - 1, option.totalCount)}
                                 disabled={selectedCount === 0}
-                                className="w-7 h-7 rounded-md border border-surface-200 dark:border-surface-600 text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                                className="w-8 h-8 md:w-7 md:h-7 rounded-md border border-surface-200 dark:border-surface-600 text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-700 disabled:opacity-40 disabled:cursor-not-allowed"
                               >
                                 -
                               </button>
@@ -1642,12 +1904,12 @@ export default function App() {
                                 max={option.totalCount}
                                 value={selectedCount}
                                 onChange={(e) => updateTagQuestionCount(option.sourceKey, parseInt(e.target.value, 10) || 0, option.totalCount)}
-                                className="w-14 h-7 rounded-md border border-surface-200 dark:border-surface-600 bg-white dark:bg-surface-800 text-center text-xs font-bold text-surface-700 dark:text-surface-200 outline-none focus:border-brand-500"
+                                className="w-14 h-8 md:h-7 rounded-md border border-surface-200 dark:border-surface-600 bg-white dark:bg-surface-800 text-center text-xs font-bold text-surface-700 dark:text-surface-200 outline-none focus:border-brand-500"
                               />
                               <button
                                 onClick={() => updateTagQuestionCount(option.sourceKey, selectedCount + 1, option.totalCount)}
                                 disabled={selectedCount >= option.totalCount}
-                                className="w-7 h-7 rounded-md border border-surface-200 dark:border-surface-600 text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                                className="w-8 h-8 md:w-7 md:h-7 rounded-md border border-surface-200 dark:border-surface-600 text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-700 disabled:opacity-40 disabled:cursor-not-allowed"
                               >
                                 +
                               </button>
@@ -1683,7 +1945,7 @@ export default function App() {
               )}
 
               {/* Duration */}
-              <div className="bg-surface-50 dark:bg-surface-900/50 p-5 rounded-2xl border border-surface-100 dark:border-surface-700/50">
+              <div className="bg-surface-50 dark:bg-surface-900/50 p-3.5 md:p-5 rounded-xl md:rounded-2xl border border-surface-100 dark:border-surface-700/50">
                 <label className="block font-bold text-surface-700 dark:text-surface-200 text-sm mb-3 flex items-center gap-2">
                   <Icon name="Timer" className="w-4 h-4 text-surface-400" />
                   Sure
@@ -1715,7 +1977,7 @@ export default function App() {
             </div>
 
             {/* Actions */}
-            <div className="flex gap-3 mt-8">
+            <div className="flex gap-2.5 md:gap-3 mt-6 md:mt-8">
               <button
                 onClick={() => { setActiveTopic(null); setCurrentView('dashboard'); }}
                 className="flex-1 py-3.5 rounded-xl font-bold text-sm text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-700/50 transition"
@@ -1758,7 +2020,9 @@ export default function App() {
       : quizSize === 1
         ? 'text-base leading-7'
         : 'text-lg leading-8';
-    const questionStemTypographyClass = `font-serif tracking-[0.005em] ${questionStemTextSizeClass}`;
+    const questionContextTypographyClass = `font-sans font-semibold tracking-[0.008em] ${questionStemTextSizeClass}`;
+    const questionItemsTypographyClass = `font-sans font-light tracking-normal ${questionStemTextSizeClass}`;
+    const questionRootTypographyClass = `font-sans font-extrabold tracking-[0.012em] ${questionStemTextSizeClass}`;
     const quizConfirmMeta = quizConfirmAction === 'exit'
       ? {
           title: 'Sinavdan cikmak istiyor musunuz?',
@@ -1943,7 +2207,7 @@ export default function App() {
                   )}
 
                   {currentQuestion.contextText && (
-                    <p className={`${questionStemTypographyClass} text-surface-700 dark:text-surface-100 font-bold mb-3`}>
+                    <p className={`${questionContextTypographyClass} text-surface-700 dark:text-surface-100 mb-3`}>
                       {currentQuestion.contextText}
                     </p>
                   )}
@@ -1958,7 +2222,7 @@ export default function App() {
                             <span className={`mt-2 rounded-full flex-shrink-0 ${catColor.bg} ${
                               quizSize === 0 ? 'w-1.5 h-1.5' : 'w-2 h-2'
                             }`}></span>
-                            <p className={`${questionStemTypographyClass} text-surface-700 dark:text-surface-300 font-light`}>
+                            <p className={`${questionItemsTypographyClass} text-surface-700 dark:text-surface-300`}>
                               {item}
                             </p>
                           </div>
@@ -1967,7 +2231,7 @@ export default function App() {
                     </div>
                   )}
 
-                  <h3 className={`${questionStemTypographyClass} font-bold text-surface-900 dark:text-white`}>
+                  <h3 className={`${questionRootTypographyClass} text-surface-900 dark:text-white`}>
                     {currentQuestion.questionText}
                   </h3>
                 </div>
@@ -2326,24 +2590,32 @@ export default function App() {
 
   // 4. DASHBOARD & ADMIN LAYOUT
   return (
-    <div className="min-h-screen flex bg-surface-50 dark:bg-surface-900 transition-colors duration-300">
+    <div className="min-h-screen flex bg-gradient-to-br from-surface-50 via-surface-100 to-surface-50 dark:from-surface-950 dark:via-surface-900 dark:to-surface-950 transition-colors duration-300 relative overflow-hidden">
+      {/* Background mesh gradient */}
+      <div className="fixed inset-0 mesh-gradient pointer-events-none opacity-50 dark:opacity-30"></div>
 
       {/* Mobile Header */}
-      <div className="lg:hidden fixed top-0 w-full bg-white/80 dark:bg-surface-900/80 backdrop-blur-xl z-50 border-b border-surface-200 dark:border-surface-800 px-4 h-14 flex justify-between items-center">
-        <div className="flex items-center gap-2.5 font-extrabold text-lg text-surface-800 dark:text-white">
-          <div className="bg-gradient-to-tr from-brand-600 to-violet-600 p-1.5 rounded-lg shadow-glow">
-            <Icon name="Brain" className="w-4 h-4 text-white" />
+      <div className="lg:hidden fixed top-0 w-full glass-card backdrop-blur-2xl z-50 border-b shadow-premium px-4 h-16 flex justify-between items-center">
+        <div className="flex items-center gap-3 font-black text-lg">
+          <div className="bg-gradient-to-br from-brand-500 via-violet-600 to-purple-600 p-2 rounded-xl shadow-lg shadow-brand-500/30 relative overflow-hidden">
+            <div className="absolute inset-0 bg-gradient-to-br from-white/20 to-transparent"></div>
+            <Icon name="Brain" className="w-5 h-5 text-white relative z-10" />
           </div>
-          KPSS Pro
+          <span className="bg-gradient-to-r from-surface-800 to-surface-700 dark:from-white dark:to-white/80 bg-clip-text text-transparent">
+            KPSS Pro
+          </span>
         </div>
         <div className="flex items-center gap-2">
           <button
             onClick={() => setIsDarkMode(!isDarkMode)}
-            className="p-2 text-surface-400 hover:text-surface-600 dark:hover:text-white bg-surface-100 dark:bg-surface-800 rounded-lg transition-colors"
+            className="p-2.5 text-surface-500 dark:text-surface-400 hover:text-brand-600 dark:hover:text-brand-400 bg-surface-100 dark:bg-surface-800 rounded-xl transition-all hover:scale-105 active:scale-95"
           >
-            <Icon name={isDarkMode ? "Sun" : "Moon"} className="w-4 h-4" />
+            <Icon name={isDarkMode ? "Sun" : "Moon"} className="w-5 h-5" />
           </button>
-          <button onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)} className="p-2 text-surface-600 dark:text-surface-300 bg-surface-100 dark:bg-surface-800 rounded-lg">
+          <button
+            onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+            className="p-2.5 text-surface-600 dark:text-surface-300 bg-surface-100 dark:bg-surface-800 rounded-xl transition-all hover:scale-105 active:scale-95"
+          >
             <Icon name={isMobileMenuOpen ? "X" : "Menu"} className="w-5 h-5" />
           </button>
         </div>
@@ -2356,32 +2628,34 @@ export default function App() {
 
       {/* Sidebar */}
       <aside className={`
-        fixed inset-y-0 left-0 z-40 w-72 bg-white dark:bg-surface-800 border-r border-surface-200 dark:border-surface-700 transform transition-transform duration-300 ease-in-out
+        fixed inset-y-0 left-0 z-50 w-72 glass-card border-r shadow-premium-lg transform transition-all duration-300 ease-in-out
         ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'} lg:translate-x-0 lg:static
         flex flex-col
       `}>
-        <div className="flex flex-col h-full p-5">
+        <div className="flex flex-col h-full p-6 relative z-10">
           {/* Logo */}
-          <div className="flex items-center gap-3 mb-8 pl-1 pt-1">
-            <div className="bg-gradient-to-tr from-brand-600 to-violet-600 p-2 rounded-xl shadow-glow">
-              <Icon name="Brain" className="w-6 h-6 text-white" />
+          <div className="flex items-center gap-3 mb-10 pl-1">
+            <div className="bg-gradient-to-br from-brand-500 via-violet-600 to-purple-600 p-2.5 rounded-2xl shadow-2xl shadow-brand-500/30 relative overflow-hidden hover:scale-105 transition-transform duration-300">
+              <div className="absolute inset-0 bg-gradient-to-br from-white/20 to-transparent"></div>
+              <Icon name="Brain" className="w-6 h-6 text-white relative z-10" />
             </div>
-            <span className="text-xl font-black text-surface-800 dark:text-white tracking-tight">
+            <span className="text-xl font-black bg-gradient-to-r from-surface-800 to-surface-700 dark:from-white dark:to-white/80 bg-clip-text text-transparent tracking-tight">
               KPSS Pro
             </span>
           </div>
 
           {/* User Card */}
-          <div className="p-4 rounded-2xl bg-gradient-to-br from-surface-900 to-surface-800 dark:from-surface-700 dark:to-surface-800 text-white shadow-lg mb-6 relative overflow-hidden">
-            <div className="absolute top-0 right-0 w-24 h-24 bg-brand-500 rounded-full blur-[40px] opacity-15 -mr-8 -mt-8"></div>
+          <div className="p-5 rounded-2xl bg-gradient-to-br from-brand-600 via-violet-600 to-purple-600 text-white shadow-2xl shadow-brand-500/30 mb-7 relative overflow-hidden group hover:scale-[1.02] transition-all duration-300">
+            <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full blur-[60px] -mr-10 -mt-10"></div>
+            <div className="absolute inset-0 bg-gradient-to-br from-white/10 to-transparent opacity-50"></div>
             <div className="relative z-10">
-              <div className="flex items-center gap-3 mb-2">
-                <div className="w-9 h-9 bg-white/10 rounded-lg flex items-center justify-center">
-                  <Icon name="User" className="w-4 h-4" />
+              <div className="flex items-center gap-3.5">
+                <div className="w-11 h-11 bg-white/15 backdrop-blur-sm rounded-xl flex items-center justify-center ring-2 ring-white/20">
+                  <Icon name="User" className="w-5 h-5" />
                 </div>
-                <div>
-                  <div className="font-bold text-sm truncate">{user.username}</div>
-                  <div className="text-[10px] text-surface-400">{user.role === 'admin' ? 'Yonetici' : 'Premium Uye'}</div>
+                <div className="flex-1 min-w-0">
+                  <div className="font-bold text-base truncate mb-0.5">{user.username}</div>
+                  <div className="text-xs text-white/70 font-medium">{user.role === 'admin' ? 'Yönetici' : 'Premium Üye'}</div>
                 </div>
               </div>
             </div>
@@ -2792,66 +3066,120 @@ export default function App() {
           {/* ===== DASHBOARD - HOME ===== */}
           {currentView === 'dashboard' && !activeCategory && (
             <div className="animate-fade-in h-full flex flex-col overflow-hidden">
-              <div className="mb-4 shrink-0">
-                <p className="text-brand-500 font-bold text-xs mb-1">{getGreeting()}</p>
-                <h1 className="text-2xl md:text-3xl font-extrabold text-surface-800 dark:text-white mb-1.5 tracking-tight">
-                  {user.username}
-                </h1>
-                <p className="text-surface-400 text-xs md:text-sm max-w-2xl">
-                  Bugunku calismana bir ders secerek basla. Kutular kucuk tutuldu, tum dashboard tek ekranda kalir.
-                </p>
-              </div>
+              <div className="mb-3 md:mb-4 shrink-0 rounded-2xl shadow-premium glass-card p-3 md:p-5 relative overflow-hidden">
+                {/* Decorative gradient blob */}
+                <div className="absolute top-0 right-0 w-64 h-64 bg-gradient-to-br from-brand-500/10 via-violet-500/5 to-transparent rounded-full blur-3xl"></div>
 
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mb-4 shrink-0">
-                <div className="bg-white dark:bg-surface-800 rounded-lg p-3 border border-surface-100 dark:border-surface-700">
-                  <div className="flex items-center gap-1.5 mb-1">
-                    <div className="w-6 h-6 bg-brand-50 dark:bg-brand-900/20 rounded-md flex items-center justify-center">
-                      <Icon name="Layers" className="w-3.5 h-3.5 text-brand-500" />
-                    </div>
+                <div className="flex items-center justify-between gap-3 sm:items-start sm:gap-4 relative z-10">
+                  <div>
+                    <p className="hidden sm:block text-gradient-primary font-bold text-xs md:text-sm mb-1">{getGreeting()}</p>
+                    <h1 className="text-lg md:text-4xl font-black text-surface-800 dark:text-white mb-0.5 md:mb-1.5 tracking-tight">
+                      {user.username}
+                    </h1>
+                    <p className="text-surface-600 dark:text-surface-400 text-[11px] md:text-sm max-w-2xl leading-snug md:leading-relaxed font-medium">
+                      Bir ders seçerek devam et. Mobil görünüm tek ekrana optimize edildi.
+                    </p>
                   </div>
-                  <p className="text-xl font-extrabold text-surface-800 dark:text-white">{categories.length}</p>
-                  <p className="text-[11px] text-surface-400 font-medium">Kategori</p>
-                </div>
-                <div className="bg-white dark:bg-surface-800 rounded-lg p-3 border border-surface-100 dark:border-surface-700">
-                  <div className="flex items-center gap-1.5 mb-1">
-                    <div className="w-6 h-6 bg-emerald-50 dark:bg-emerald-900/20 rounded-md flex items-center justify-center">
-                      <Icon name="BookOpen" className="w-3.5 h-3.5 text-emerald-500" />
-                    </div>
-                  </div>
-                  <p className="text-xl font-extrabold text-surface-800 dark:text-white">{categories.reduce((sum, c) => sum + c.subCategories.length, 0)}</p>
-                  <p className="text-[11px] text-surface-400 font-medium">Konu</p>
-                </div>
-                <div className="bg-white dark:bg-surface-800 rounded-lg p-3 border border-surface-100 dark:border-surface-700">
-                  <div className="flex items-center gap-1.5 mb-1">
-                    <div className="w-6 h-6 bg-violet-50 dark:bg-violet-900/20 rounded-md flex items-center justify-center">
-                      <Icon name="FileQuestion" className="w-3.5 h-3.5 text-violet-500" />
-                    </div>
-                  </div>
-                  <p className="text-xl font-extrabold text-surface-800 dark:text-white">{getTotalQuestionCount()}</p>
-                  <p className="text-[11px] text-surface-400 font-medium">Soru</p>
-                </div>
-                <div className="bg-white dark:bg-surface-800 rounded-lg p-3 border border-surface-100 dark:border-surface-700">
-                  <div className="flex items-center gap-1.5 mb-1">
-                    <div className="w-6 h-6 bg-sky-50 dark:bg-sky-900/20 rounded-md flex items-center justify-center">
-                      <Icon name="Target" className="w-3.5 h-3.5 text-sky-500" />
-                    </div>
-                  </div>
-                  <p className="text-xl font-extrabold text-surface-800 dark:text-white">{overallProgressStats.seenCount}</p>
-                  <p className="text-[11px] text-surface-400 font-medium">Karsina Cikan</p>
-                </div>
-                <div className="bg-white dark:bg-surface-800 rounded-lg p-3 border border-surface-100 dark:border-surface-700">
-                  <div className="flex items-center gap-1.5 mb-1">
-                    <div className="w-6 h-6 bg-amber-50 dark:bg-amber-900/20 rounded-md flex items-center justify-center">
-                      <Icon name="CheckCircle" className="w-3.5 h-3.5 text-amber-500" />
-                    </div>
-                  </div>
-                  <p className="text-xl font-extrabold text-surface-800 dark:text-white">{overallProgressStats.correctCount}</p>
-                  <p className="text-[11px] text-surface-400 font-medium">Toplam Dogru</p>
+                  <button
+                    onClick={handleResetTopicProgressStats}
+                    disabled={!hasAnyProgressStats}
+                    className="h-8 md:h-10 px-3 md:px-4 rounded-xl border-2 border-red-200 dark:border-red-900/40 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-300 text-[10px] md:text-sm font-bold hover:bg-red-100 dark:hover:bg-red-900/30 hover:-translate-y-0.5 transition-all disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:translate-y-0 shadow-sm hover:shadow-md shrink-0"
+                    title="Tüm istatistikleri sıfırla"
+                  >
+                    İstatistikleri Sıfırla
+                  </button>
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 flex-1 min-h-0 overflow-y-auto custom-scrollbar pr-1">
-                {categories.map((cat) => {
+              <div className="hidden">
+                <div className="glass-card rounded-xl p-3 border border-sky-100 dark:border-sky-900/30 shadow-premium hover-lift">
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <div className="w-7 h-7 bg-gradient-to-br from-sky-500 to-sky-600 rounded-lg flex items-center justify-center shadow-lg shadow-sky-500/25">
+                      <Icon name="Target" className="w-3.5 h-3.5 text-white" />
+                    </div>
+                  </div>
+                  <p className="text-xl font-black text-surface-800 dark:text-white leading-none mb-1">{overallProgressStats.seenCount}</p>
+                  <p className="text-[10px] text-surface-500 dark:text-surface-400 font-bold uppercase tracking-wide">Karşına Çıkan</p>
+                </div>
+                <div className="glass-card rounded-xl p-3 border border-emerald-100 dark:border-emerald-900/30 shadow-premium hover-lift">
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <div className="w-7 h-7 bg-gradient-to-br from-emerald-500 to-emerald-600 rounded-lg flex items-center justify-center shadow-lg shadow-emerald-500/25">
+                      <Icon name="CheckCircle" className="w-3.5 h-3.5 text-white" />
+                    </div>
+                  </div>
+                  <p className="text-xl font-black text-surface-800 dark:text-white leading-none mb-1">{overallProgressStats.correctCount}</p>
+                  <p className="text-[10px] text-surface-500 dark:text-surface-400 font-bold uppercase tracking-wide">Doğru</p>
+                </div>
+                <div className="glass-card rounded-xl p-3 border border-red-100 dark:border-red-900/30 shadow-premium hover-lift">
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <div className="w-7 h-7 bg-gradient-to-br from-red-500 to-red-600 rounded-lg flex items-center justify-center shadow-lg shadow-red-500/25">
+                      <Icon name="CircleX" className="w-3.5 h-3.5 text-white" />
+                    </div>
+                  </div>
+                  <p className="text-xl font-black text-surface-800 dark:text-white leading-none mb-1">{overallProgressStats.wrongCount}</p>
+                  <p className="text-[10px] text-surface-500 dark:text-surface-400 font-bold uppercase tracking-wide">Yanlış</p>
+                </div>
+                <div className="glass-card rounded-xl p-3 border border-slate-100 dark:border-slate-700/50 shadow-premium hover-lift">
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <div className="w-7 h-7 bg-gradient-to-br from-slate-500 to-slate-600 rounded-lg flex items-center justify-center shadow-lg shadow-slate-500/25">
+                      <Icon name="Minus" className="w-3.5 h-3.5 text-white" />
+                    </div>
+                  </div>
+                  <p className="text-xl font-black text-surface-800 dark:text-white leading-none mb-1">{overallProgressStats.blankCount}</p>
+                  <p className="text-[10px] text-surface-500 dark:text-surface-400 font-bold uppercase tracking-wide">Boş</p>
+                </div>
+              </div>
+
+              <div className="hidden md:grid grid-cols-5 gap-3 mb-5 shrink-0 stagger-children">
+                <div className="glass-card rounded-xl p-4 border border-brand-100 dark:border-brand-900/30 shadow-premium hover-lift animate-fade-in-scale">
+                  <div className="flex items-center gap-2 mb-2">
+                    <div className="w-8 h-8 bg-gradient-to-br from-brand-500 to-brand-600 rounded-xl flex items-center justify-center shadow-lg shadow-brand-500/30">
+                      <Icon name="Layers" className="w-4 h-4 text-white" />
+                    </div>
+                  </div>
+                  <p className="text-2xl font-black text-surface-800 dark:text-white mb-1 animate-count-up">{categories.length}</p>
+                  <p className="text-xs text-surface-500 dark:text-surface-400 font-bold uppercase tracking-wide">Kategori</p>
+                </div>
+                <div className="glass-card rounded-xl p-4 border border-emerald-100 dark:border-emerald-900/30 shadow-premium hover-lift animate-fade-in-scale">
+                  <div className="flex items-center gap-2 mb-2">
+                    <div className="w-8 h-8 bg-gradient-to-br from-emerald-500 to-emerald-600 rounded-xl flex items-center justify-center shadow-lg shadow-emerald-500/30">
+                      <Icon name="BookOpen" className="w-4 h-4 text-white" />
+                    </div>
+                  </div>
+                  <p className="text-2xl font-black text-surface-800 dark:text-white mb-1 animate-count-up">{categories.reduce((sum, c) => sum + c.subCategories.length, 0)}</p>
+                  <p className="text-xs text-surface-500 dark:text-surface-400 font-bold uppercase tracking-wide">Konu</p>
+                </div>
+                <div className="glass-card rounded-xl p-4 border border-violet-100 dark:border-violet-900/30 shadow-premium hover-lift animate-fade-in-scale">
+                  <div className="flex items-center gap-2 mb-2">
+                    <div className="w-8 h-8 bg-gradient-to-br from-violet-500 to-violet-600 rounded-xl flex items-center justify-center shadow-lg shadow-violet-500/30">
+                      <Icon name="FileQuestion" className="w-4 h-4 text-white" />
+                    </div>
+                  </div>
+                  <p className="text-2xl font-black text-surface-800 dark:text-white mb-1 animate-count-up">{getTotalQuestionCount()}</p>
+                  <p className="text-xs text-surface-500 dark:text-surface-400 font-bold uppercase tracking-wide">Soru</p>
+                </div>
+                <div className="glass-card rounded-xl p-4 border border-sky-100 dark:border-sky-900/30 shadow-premium hover-lift animate-fade-in-scale">
+                  <div className="flex items-center gap-2 mb-2">
+                    <div className="w-8 h-8 bg-gradient-to-br from-sky-500 to-sky-600 rounded-xl flex items-center justify-center shadow-lg shadow-sky-500/30">
+                      <Icon name="Target" className="w-4 h-4 text-white" />
+                    </div>
+                  </div>
+                  <p className="text-2xl font-black text-surface-800 dark:text-white mb-1 animate-count-up">{overallProgressStats.seenCount}</p>
+                  <p className="text-xs text-surface-500 dark:text-surface-400 font-bold uppercase tracking-wide">Karşına Çıkan</p>
+                </div>
+                <div className="glass-card rounded-xl p-4 border border-amber-100 dark:border-amber-900/30 shadow-premium hover-lift animate-fade-in-scale">
+                  <div className="flex items-center gap-2 mb-2">
+                    <div className="w-8 h-8 bg-gradient-to-br from-amber-500 to-amber-600 rounded-xl flex items-center justify-center shadow-lg shadow-amber-500/30">
+                      <Icon name="CheckCircle" className="w-4 h-4 text-white" />
+                    </div>
+                  </div>
+                  <p className="text-2xl font-black text-surface-800 dark:text-white mb-1 animate-count-up">{overallProgressStats.correctCount}</p>
+                  <p className="text-xs text-surface-500 dark:text-surface-400 font-bold uppercase tracking-wide">Toplam Doğru</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-2 md:gap-4 flex-1 min-h-0 auto-rows-max content-start overflow-visible md:overflow-y-auto custom-scrollbar pr-0 md:pr-1.5 pb-0 md:pb-1">
+                {categories.map((cat, index) => {
                   const color = getCatColor(cat.id);
                   const questionCount = cat.subCategories.reduce((sum, sub) => sum + (allQuestions[sub.id]?.length || 0), 0);
 
@@ -2859,28 +3187,38 @@ export default function App() {
                     <button
                       key={cat.id}
                       onClick={() => setActiveCategory(cat)}
-                      className="group relative bg-white dark:bg-surface-800 rounded-xl p-3.5 border border-surface-100 dark:border-surface-700 hover:border-surface-300 dark:hover:border-surface-600 transition-all duration-200 text-left overflow-hidden animate-fade-in"
+                      className="group relative w-full min-h-[98px] md:min-h-[150px] glass-card rounded-2xl p-2.5 md:p-4 shadow-premium hover:shadow-premium-lg hover:-translate-y-1 transition-all duration-300 text-left overflow-hidden animate-fade-in-scale flex flex-col"
+                      style={{ animationDelay: `${index * 60}ms` }}
                     >
-                      <div className="relative z-10">
-                        <div className="flex items-start justify-between mb-2">
-                          <div className={`w-9 h-9 rounded-lg ${color.bgLight} ${color.bgDark} flex items-center justify-center ${color.text} ${color.textDark}`}>
-                            <Icon name={cat.iconName} className="w-4.5 h-4.5" />
+                      {/* Animated gradient background blob */}
+                      <div className={`pointer-events-none absolute -right-10 -top-12 h-32 w-32 rounded-full bg-gradient-to-br ${color.gradient} opacity-[0.08] blur-3xl transition-all duration-500 group-hover:opacity-[0.15] group-hover:scale-110`} />
+
+                      {/* Shimmer effect on hover */}
+                      <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500">
+                        <div className="absolute inset-0 shimmer"></div>
+                      </div>
+
+                      <div className="relative z-10 h-full flex flex-col">
+                        <div className="flex items-start justify-between mb-1.5 md:mb-3">
+                          <div className={`w-8 h-8 md:w-11 md:h-11 rounded-lg md:rounded-xl bg-gradient-to-br ${color.gradient} flex items-center justify-center shadow-lg transition-transform duration-300 group-hover:scale-110 group-hover:rotate-3`}>
+                            <Icon name={cat.iconName} className="w-4 h-4 md:w-5.5 md:h-5.5 text-white" />
                           </div>
-                          <div className={`w-7 h-7 rounded-md bg-surface-50 dark:bg-surface-700 flex items-center justify-center text-surface-300 group-hover:bg-gradient-to-r group-hover:${color.gradient} group-hover:text-white transition-all`}>
-                            <Icon name="ChevronRight" className="w-3.5 h-3.5" />
+                          <div className={`w-6 h-6 md:w-8 md:h-8 rounded-lg bg-surface-100 dark:bg-surface-700/50 flex items-center justify-center text-surface-400 transition-all duration-300 group-hover:bg-gradient-to-br group-hover:${color.gradient} group-hover:text-white group-hover:scale-110`}>
+                            <Icon name="ChevronRight" className="w-3 md:w-4 md:h-4 transition-transform duration-300 group-hover:translate-x-0.5" />
                           </div>
                         </div>
 
-                        <h3 className="text-sm md:text-base font-bold text-surface-800 dark:text-white mb-0.5">{cat.name}</h3>
-                        <p className="text-surface-400 text-xs mb-2 leading-relaxed line-clamp-1">{cat.description}</p>
+                        <h3 className="text-xs md:text-base font-black text-surface-800 dark:text-white mb-0.5 md:mb-1 line-clamp-1 tracking-tight">{cat.name}</h3>
+                        <p className="hidden md:block text-surface-500 dark:text-surface-400 text-[11px] md:text-xs mb-auto leading-relaxed line-clamp-2 font-medium">{cat.description}</p>
+                        <p className="md:hidden text-[10px] text-surface-500 dark:text-surface-400 font-bold mt-auto">{cat.subCategories.length} konu - {questionCount} soru</p>
 
-                        <div className="flex items-center gap-2.5 text-[11px] text-surface-400 font-medium">
-                          <span className="flex items-center gap-1">
-                            <Icon name="BookOpen" className="w-3 h-3" />
+                        <div className="hidden md:flex items-center gap-2 md:gap-3 text-[10px] md:text-xs text-surface-500 dark:text-surface-400 font-bold mt-3 pt-2.5 border-t border-surface-200/50 dark:border-surface-700/50">
+                          <span className="flex items-center gap-1.5 whitespace-nowrap">
+                            <Icon name="BookOpen" className="w-3.5 h-3.5" />
                             {cat.subCategories.length} konu
                           </span>
-                          <span className="flex items-center gap-1">
-                            <Icon name="FileQuestion" className="w-3 h-3" />
+                          <span className="flex items-center gap-1.5 whitespace-nowrap">
+                            <Icon name="FileQuestion" className="w-3.5 h-3.5" />
                             {questionCount} soru
                           </span>
                         </div>
@@ -2903,22 +3241,22 @@ export default function App() {
                 Tum Dersler
               </button>
 
-              <div className="mb-3 shrink-0">
-                <div className="flex items-center gap-3 mb-1.5">
-                  <div className={`w-9 h-9 rounded-lg ${getCatColor(activeCategory.id).bgLight} ${getCatColor(activeCategory.id).bgDark} flex items-center justify-center ${getCatColor(activeCategory.id).text} ${getCatColor(activeCategory.id).textDark}`}>
-                    <Icon name={activeCategory.iconName} className="w-5 h-5" />
+              <div className="mb-2.5 rounded-xl border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800 p-2.5 md:p-3.5 shrink-0">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className={`w-8 h-8 md:w-9 md:h-9 rounded-lg ${getCatColor(activeCategory.id).bgLight} ${getCatColor(activeCategory.id).bgDark} flex items-center justify-center ${getCatColor(activeCategory.id).text} ${getCatColor(activeCategory.id).textDark}`}>
+                      <Icon name={activeCategory.iconName} className="w-4 h-4 md:w-4.5 md:h-4.5" />
+                    </div>
+                    <div className="min-w-0">
+                      <h1 className="text-base md:text-xl font-extrabold text-surface-800 dark:text-white truncate">
+                        {activeCategory.name}
+                      </h1>
+                    </div>
                   </div>
-                  <h1 className="text-xl md:text-2xl font-extrabold text-surface-800 dark:text-white">
-                    {activeCategory.name}
-                  </h1>
+                  <span className="px-1.5 md:px-2 py-0.5 md:py-1 rounded-md bg-surface-50 dark:bg-surface-700 text-[10px] md:text-[11px] font-bold text-surface-500 dark:text-surface-300 whitespace-nowrap">
+                    {activeCategory.subCategories.length} konu
+                  </span>
                 </div>
-                <p className="text-surface-400 text-xs md:text-sm ml-[46px]">{activeCategory.description}</p>
-              </div>
-
-              <div className="mb-3 rounded-xl border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800 p-3 shrink-0">
-                <p className="text-xs text-surface-500 dark:text-surface-400">
-                  Konular liste seklinde gosterilir. Her satirda toplam soru, karsina cikan soru, dogru, yanlis ve bos istatistiklerini gorebilirsin.
-                </p>
               </div>
 
               <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar pr-1 space-y-2">
@@ -2927,37 +3265,127 @@ export default function App() {
                   const color = getCatColor(activeCategory.id);
                   const topicProgress = getTopicProgress(sub.id);
                   const seenCount = topicProgress.seenQuestionIds.length;
+                  const attempted = topicProgress.correctCount + topicProgress.wrongCount;
+                  const accuracy = attempted > 0 ? Math.round((topicProgress.correctCount / attempted) * 100) : 0;
+                  const hasTopicProgressStats = seenCount > 0 || topicProgress.completedQuizCount > 0;
 
                   return (
                     <button
                       key={sub.id}
                       onClick={() => openQuizSetup(activeCategory, sub)}
-                      className="w-full text-left group cursor-pointer bg-white dark:bg-surface-800 rounded-xl p-3 border border-surface-100 dark:border-surface-700 hover:border-surface-300 dark:hover:border-surface-600 transition-all duration-200 animate-fade-in"
+                      className="w-full text-left group cursor-pointer bg-white dark:bg-surface-800 rounded-xl p-2 md:p-2.5 border border-surface-100 dark:border-surface-700 hover:border-surface-300 dark:hover:border-surface-600 transition-all duration-200 animate-fade-in"
                     >
-                      <div className="flex items-center justify-between gap-2 mb-2">
-                        <div className="flex items-center gap-2.5 min-w-0">
-                          <div className={`w-8 h-8 ${color.bgLight} ${color.bgDark} rounded-lg flex items-center justify-center ${color.text} ${color.textDark}`}>
-                            <Icon name={activeCategory.iconName} className="w-4 h-4" />
+                      <div className="flex items-center justify-between gap-2 mb-1.5">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <div className={`w-6 h-6 ${color.bgLight} ${color.bgDark} rounded-md flex items-center justify-center ${color.text} ${color.textDark}`}>
+                            <Icon name={activeCategory.iconName} className="w-3 h-3" />
                           </div>
-                          <h3 className="text-sm md:text-base font-bold text-surface-800 dark:text-surface-100 truncate">
-                            {sub.name}
-                          </h3>
+                          <div className="min-w-0 flex items-baseline gap-1.5">
+                            <h3 className="text-[12px] md:text-[13px] font-bold text-surface-800 dark:text-surface-100 truncate">
+                              {sub.name}
+                            </h3>
+                            <span className="text-[10px] md:text-[11px] text-surface-400 dark:text-surface-500 font-semibold whitespace-nowrap">
+                              ({questionCount})
+                            </span>
+                          </div>
                         </div>
-                        <div className={`w-7 h-7 rounded-md bg-surface-50 dark:bg-surface-700 flex items-center justify-center group-hover:bg-gradient-to-r group-hover:${color.gradient} group-hover:text-white transition-all`}>
-                          <Icon name="Play" className="w-3.5 h-3.5 text-surface-300 group-hover:text-white transition-colors" />
+                        <div className="flex items-center gap-1.5">
+                          <span className={`px-1.5 py-0.5 rounded-md text-[10px] font-bold ${color.bgLight} ${color.bgDark} ${color.text} ${color.textDark}`}>
+                            %{accuracy}
+                          </span>
+                          <span
+                            role="button"
+                            tabIndex={hasTopicProgressStats ? 0 : -1}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              if (!hasTopicProgressStats) return;
+                              handleResetSingleTopicProgressStats(sub.id, sub.name);
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                if (!hasTopicProgressStats) return;
+                                handleResetSingleTopicProgressStats(sub.id, sub.name);
+                              }
+                            }}
+                            className={`w-5 h-5 rounded-md flex items-center justify-center transition-colors ${
+                              hasTopicProgressStats
+                                ? 'bg-red-50 text-red-500 hover:bg-red-100 dark:bg-red-900/20 dark:text-red-300 dark:hover:bg-red-900/30 cursor-pointer'
+                                : 'bg-surface-100 dark:bg-surface-700 text-surface-300 dark:text-surface-500 cursor-not-allowed'
+                            }`}
+                            title={hasTopicProgressStats ? 'Bu konunun istatistiklerini sifirla' : 'Bu konuda sifirlanacak istatistik yok'}
+                          >
+                            <Icon name="RotateCcw" className="w-2.5 h-2.5" />
+                          </span>
+                          <div className={`w-5 h-5 rounded-md bg-surface-50 dark:bg-surface-700 flex items-center justify-center group-hover:bg-gradient-to-r group-hover:${color.gradient} group-hover:text-white transition-all`}>
+                            <Icon name="Play" className="w-2.5 h-2.5 text-surface-300 group-hover:text-white transition-colors" />
+                          </div>
                         </div>
                       </div>
 
-                      <p className="text-[11px] text-surface-500 dark:text-surface-400 mb-2 leading-relaxed">
-                        Bu bolumde {questionCount} soru var. Su ana kadar {seenCount} soru karsina cikti. {topicProgress.correctCount} dogru, {topicProgress.wrongCount} yanlis, {topicProgress.blankCount} bos.
-                      </p>
-
-                      <div className="grid grid-cols-2 md:grid-cols-5 gap-1.5 text-[11px]">
-                        <span className="rounded-md px-2 py-1 bg-surface-50 dark:bg-surface-900/60 text-surface-500 dark:text-surface-300">Toplam: {questionCount}</span>
-                        <span className="rounded-md px-2 py-1 bg-brand-50 dark:bg-brand-900/20 text-brand-600 dark:text-brand-300">Karsina Cikan: {seenCount}</span>
-                        <span className="rounded-md px-2 py-1 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300">Dogru: {topicProgress.correctCount}</span>
-                        <span className="rounded-md px-2 py-1 bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300">Yanlis: {topicProgress.wrongCount}</span>
-                        <span className="rounded-md px-2 py-1 bg-slate-100 dark:bg-slate-700/70 text-slate-600 dark:text-slate-200">Bos: {topicProgress.blankCount}</span>
+                      <div className="rounded-md border border-surface-200 dark:border-surface-700 overflow-hidden bg-surface-50/70 dark:bg-surface-900/50">
+                        <div className="grid grid-cols-4 divide-x divide-surface-200 dark:divide-surface-700 text-[9px] md:text-[11px]">
+                          <div className="px-1.5 md:px-2 py-1">
+                            <p className="font-semibold leading-none whitespace-nowrap">
+                              <span className="text-surface-400 dark:text-surface-500">Gorulen:</span>{' '}
+                              <span className="text-brand-600 dark:text-brand-300 font-bold">{seenCount}</span>
+                            </p>
+                          </div>
+                          <div className="px-1.5 md:px-2 py-1">
+                            <p className="font-semibold leading-none whitespace-nowrap">
+                              <span className="text-surface-400 dark:text-surface-500">Dogru:</span>{' '}
+                              <span className="text-emerald-700 dark:text-emerald-300 font-bold">{topicProgress.correctCount}</span>
+                            </p>
+                          </div>
+                          <span
+                            role="button"
+                            tabIndex={0}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              openQuizSetup(activeCategory, sub, 'wrong');
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                openQuizSetup(activeCategory, sub, 'wrong');
+                              }
+                            }}
+                            className="block px-1.5 md:px-2 py-1 hover:bg-red-50 dark:hover:bg-red-900/20 transition cursor-pointer"
+                            title="Yanlis sorulardan sinav olustur"
+                          >
+                            <p className="font-semibold leading-none whitespace-nowrap">
+                              <span className="text-surface-400 dark:text-surface-500">Yanlis:</span>{' '}
+                              <span className="text-red-700 dark:text-red-300 font-bold">{topicProgress.wrongCount}</span>
+                            </p>
+                          </span>
+                          <span
+                            role="button"
+                            tabIndex={0}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              openQuizSetup(activeCategory, sub, 'blank');
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                openQuizSetup(activeCategory, sub, 'blank');
+                              }
+                            }}
+                            className="block px-1.5 md:px-2 py-1 hover:bg-slate-100 dark:hover:bg-slate-700/50 transition cursor-pointer"
+                            title="Bos sorulardan sinav olustur"
+                          >
+                            <p className="font-semibold leading-none whitespace-nowrap">
+                              <span className="text-surface-400 dark:text-surface-500">Bos:</span>{' '}
+                              <span className="text-slate-600 dark:text-slate-200 font-bold">{topicProgress.blankCount}</span>
+                            </p>
+                          </span>
+                        </div>
                       </div>
                     </button>
                   );
@@ -2969,6 +3397,69 @@ export default function App() {
       </main>
 
       {/* ===== MODALS ===== */}
+
+      {/* Reset Stats Confirm Modal */}
+      {isResetStatsModalOpen && (
+        <div
+          className="fixed inset-0 z-[75] flex items-center justify-center bg-slate-950/60 backdrop-blur-sm p-4 modal-backdrop"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) handleCancelResetTopicProgressStats();
+          }}
+        >
+          <div className="relative w-full max-w-md rounded-3xl border border-red-200/70 dark:border-red-900/40 bg-white/95 dark:bg-surface-800/95 shadow-2xl overflow-hidden modal-content animate-fade-in-scale">
+            <div className="absolute -top-14 -right-10 w-36 h-36 rounded-full bg-red-500/20 blur-3xl pointer-events-none"></div>
+            <div className="absolute -bottom-16 -left-10 w-36 h-36 rounded-full bg-amber-500/15 blur-3xl pointer-events-none"></div>
+
+            <div className="relative p-6 sm:p-7">
+              <div className="w-12 h-12 rounded-2xl bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-300 flex items-center justify-center mb-4">
+                <Icon name="CircleX" className="w-6 h-6" />
+              </div>
+              <h3 className="text-xl font-extrabold text-surface-900 dark:text-white mb-2">
+                {resetStatsTargetTopic ? 'Konu istatistiklerini sifirla' : 'Istatistikleri sifirla'}
+              </h3>
+              <p className="text-sm text-surface-500 dark:text-surface-400 leading-relaxed mb-4">
+                {resetStatsTargetTopic
+                  ? `"${resetStatsTargetTopic.name}" konusu icin kayitli istatistikler silinecek. Bu islem geri alinamaz.`
+                  : 'Tum istatistik kayitlariniz silinecek. Bu islem geri alinamaz.'}
+              </p>
+
+              <div className="grid grid-cols-2 gap-2 mb-6 text-[11px]">
+                <div className="rounded-lg border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900/50 px-3 py-2">
+                  <p className="text-surface-400 mb-0.5">Karsina Cikan</p>
+                  <p className="font-extrabold text-surface-700 dark:text-surface-100">{resetStatsPreview.seenCount}</p>
+                </div>
+                <div className="rounded-lg border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900/50 px-3 py-2">
+                  <p className="text-surface-400 mb-0.5">Dogru</p>
+                  <p className="font-extrabold text-surface-700 dark:text-surface-100">{resetStatsPreview.correctCount}</p>
+                </div>
+                <div className="rounded-lg border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900/50 px-3 py-2">
+                  <p className="text-surface-400 mb-0.5">Yanlis</p>
+                  <p className="font-extrabold text-surface-700 dark:text-surface-100">{resetStatsPreview.wrongCount}</p>
+                </div>
+                <div className="rounded-lg border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900/50 px-3 py-2">
+                  <p className="text-surface-400 mb-0.5">Bos</p>
+                  <p className="font-extrabold text-surface-700 dark:text-surface-100">{resetStatsPreview.blankCount}</p>
+                </div>
+              </div>
+
+              <div className="flex gap-3">
+                <button
+                  onClick={handleCancelResetTopicProgressStats}
+                  className="flex-1 h-11 rounded-xl border border-surface-200 dark:border-surface-700 text-surface-500 dark:text-surface-300 hover:bg-surface-100 dark:hover:bg-surface-700 transition text-sm font-bold"
+                >
+                  Vazgec
+                </button>
+                <button
+                  onClick={handleConfirmResetTopicProgressStats}
+                  className="flex-[1.2] h-11 rounded-xl bg-gradient-to-r from-red-500 to-rose-500 text-white text-sm font-bold shadow-lg shadow-red-500/20 hover:shadow-red-500/30 transition"
+                >
+                  {resetStatsTargetTopic ? 'Konuyu Sifirla' : 'Tumunu Sifirla'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Question Modal */}
       {isQuestionModalOpen && (
