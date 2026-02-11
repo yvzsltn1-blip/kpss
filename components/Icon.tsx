@@ -43,6 +43,7 @@ import {
   FileQuestion,
   Layers,
   PenLine,
+  Flag,
 } from 'lucide-react';
 
 export const Icon = ({ name, className }: { name: string, className?: string }) => {
@@ -90,6 +91,7 @@ export const Icon = ({ name, className }: { name: string, className?: string }) 
     FileQuestion: <FileQuestion className={className} />,
     Layers: <Layers className={className} />,
     PenLine: <PenLine className={className} />,
+    Flag: <Flag className={className} />,
   };
 
   return <>{icons[name] || <BookOpen className={className} />}</>;

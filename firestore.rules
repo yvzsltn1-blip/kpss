@@ -1,0 +1,47 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && request.auth.token.admin == true;
+    }
+
+    // Sorular herkes tarafindan okunabilir, yazma islemleri sadece admin claim ile yapilir.
+    match /questions/{questionId} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    // Hatali soru bildirimleri
+    match /questionReports/{reportId} {
+      allow read: if isAdmin();
+      allow create: if isSignedIn() && isValidReportCreate();
+      allow update, delete: if isAdmin();
+    }
+
+    function isValidReportCreate() {
+      return request.resource.data.keys().hasOnly([
+          'questionId',
+          'topicId',
+          'categoryId',
+          'reporterUsername',
+          'reporterRole',
+          'note',
+          'questionTextSnapshot',
+          'createdAt'
+        ]) &&
+        request.resource.data.questionId is string &&
+        request.resource.data.questionId.size() > 0 &&
+        request.resource.data.createdAt is timestamp &&
+        (!('topicId' in request.resource.data) || request.resource.data.topicId == null || request.resource.data.topicId is string) &&
+        (!('categoryId' in request.resource.data) || request.resource.data.categoryId == null || request.resource.data.categoryId is string) &&
+        (!('reporterUsername' in request.resource.data) || request.resource.data.reporterUsername == null || request.resource.data.reporterUsername is string) &&
+        (!('reporterRole' in request.resource.data) || request.resource.data.reporterRole == null || request.resource.data.reporterRole is string) &&
+        (!('note' in request.resource.data) || request.resource.data.note == null || request.resource.data.note is string) &&
+        (!('questionTextSnapshot' in request.resource.data) || request.resource.data.questionTextSnapshot == null || request.resource.data.questionTextSnapshot is string);
+    }
+  }
+}

@@ -18,3 +18,14 @@ View your app in AI Studio: https://ai.studio/apps/drive/15E1TEqQQRHIi9L660VBUcD
 2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
 3. Run the app:
    `npm run dev`
+
+## Admin Auth + Custom Claim
+
+1. Install dependencies:
+   `npm install`
+2. Firebase Authentication'da bir kullanici olusturun (email/password).
+3. Admin yapmak istediginiz email'e custom claim verin:
+   `npm run set-admin-claim -- admin@example.com`
+
+Required env for step 3:
+- `GOOGLE_APPLICATION_CREDENTIALS_JSON`: Firebase service account JSON (single-line string).

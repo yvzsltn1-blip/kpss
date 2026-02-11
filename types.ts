@@ -31,6 +31,18 @@ export interface Question {
   explanation: string;
 }
 
+export interface QuestionReport {
+  id?: string;
+  questionId: string;
+  topicId?: string | null;
+  categoryId?: string | null;
+  reporterUsername?: string | null;
+  reporterRole?: Role | null;
+  note?: string | null;
+  questionTextSnapshot?: string | null;
+  createdAt?: unknown;
+}
+
 export interface QuizState {
   currentQuestionIndex: number;
   userAnswers: (number | null)[]; // Stores the selected option index for each question
