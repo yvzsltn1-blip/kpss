@@ -1,12 +1,26 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { INITIAL_CATEGORIES, INITIAL_QUESTIONS } from './constants';
+import { INITIAL_CATEGORIES } from './constants';
 import { Category, User, SubCategory, Question, QuizState } from './types';
 import { Icon } from './components/Icon';
-import { parseBulkQuestions } from './services/questionParser';
+import { parseBulkQuestionsWithReport } from './services/questionParser';
+
+// --- Firebase Importları ---
+import { db } from './firebase';
+import { 
+  collection, 
+  deleteDoc, 
+  updateDoc, 
+  doc, 
+  onSnapshot, 
+  query, 
+  where, 
+  writeBatch, 
+  getDocs
+} from 'firebase/firestore';
 
 type ViewState = 'dashboard' | 'quiz-setup' | 'quiz' | 'admin';
 
-// Category color map for visual distinction
+// Kategori Renk Tanımları
 const CATEGORY_COLORS: Record<string, { bg: string; bgLight: string; bgDark: string; text: string; textDark: string; gradient: string; shadow: string; border: string; borderDark: string }> = {
   '1': { // Tarih - Amber
     bg: 'bg-amber-500', bgLight: 'bg-amber-50', bgDark: 'dark:bg-amber-900/20',
@@ -42,10 +56,128 @@ const DEFAULT_COLOR = {
 };
 
 const getCatColor = (id: string) => CATEGORY_COLORS[id] || DEFAULT_COLOR;
+const ADMIN_QUESTIONS_PER_PAGE = 5;
+
+const STORAGE_KEYS = {
+  user: 'kpsspro_user',
+  theme: 'kpsspro_theme',
+  quizSize: 'kpsspro_quiz_size',
+  categories: 'kpsspro_categories',
+} as const;
+
+const getStoredUser = (): User | null => {
+  if (typeof window === 'undefined') return null;
+  try {
+    const rawUser = window.localStorage.getItem(STORAGE_KEYS.user);
+    if (!rawUser) return null;
+    const parsed = JSON.parse(rawUser) as Partial<User>;
+    if (!parsed || typeof parsed.username !== 'string') return null;
+    if (parsed.role !== 'admin' && parsed.role !== 'user') return null;
+    return {
+      username: parsed.username,
+      role: parsed.role,
+    };
+  } catch {
+    return null;
+  }
+};
+
+const getStoredCategories = (): Category[] => {
+  if (typeof window === 'undefined') return INITIAL_CATEGORIES;
+  try {
+    const rawCategories = window.localStorage.getItem(STORAGE_KEYS.categories);
+    if (!rawCategories) return INITIAL_CATEGORIES;
+    const parsed = JSON.parse(rawCategories);
+    if (!Array.isArray(parsed)) return INITIAL_CATEGORIES;
+
+    const isValid = parsed.every((cat: unknown) => {
+      const typedCat = cat as Partial<Category>;
+      return (
+        typedCat &&
+        typeof typedCat.id === 'string' &&
+        typeof typedCat.name === 'string' &&
+        typeof typedCat.iconName === 'string' &&
+        typeof typedCat.description === 'string' &&
+        Array.isArray(typedCat.subCategories) &&
+        typedCat.subCategories.every((sub: unknown) => {
+          const typedSub = sub as Partial<SubCategory>;
+          return typedSub && typeof typedSub.id === 'string' && typeof typedSub.name === 'string';
+        })
+      );
+    });
+
+    return isValid ? (parsed as Category[]) : INITIAL_CATEGORIES;
+  } catch {
+    return INITIAL_CATEGORIES;
+  }
+};
+
+const getStoredTheme = (): boolean => {
+  if (typeof window === 'undefined') return true;
+  try {
+    const storedTheme = window.localStorage.getItem(STORAGE_KEYS.theme);
+    if (storedTheme === 'dark') return true;
+    if (storedTheme === 'light') return false;
+  } catch {
+    // Ignore storage errors and continue with default
+  }
+  return true;
+};
+
+const getStoredQuizSize = (): 0 | 1 | 2 => {
+  if (typeof window === 'undefined') return 0;
+  try {
+    const storedSize = window.localStorage.getItem(STORAGE_KEYS.quizSize);
+    if (storedSize === '1') return 1;
+    if (storedSize === '2') return 2;
+  } catch {
+    // Ignore storage errors and use default
+  }
+  return 0;
+};
+
+type QuestionFormState = {
+  imageUrl: string;
+  contextText: string;
+  itemsText: string;
+  sourceTag: string;
+  questionRoot: string;
+  optionsText: string;
+  correctOption: number;
+  explanation: string;
+};
+
+type PendingQuestionDraft = {
+  imageUrl: string | null;
+  contextText: string | null;
+  contentItems: string[] | null;
+  sourceTag: string | null;
+  questionText: string;
+  options: string[];
+  correctOptionIndex: number;
+  explanation: string;
+  topicId: string;
+  createdAt: Date;
+};
+
+const EMPTY_QUESTION_FORM: QuestionFormState = {
+  imageUrl: '',
+  contextText: '',
+  itemsText: '',
+  sourceTag: '',
+  questionRoot: '',
+  optionsText: '',
+  correctOption: 0,
+  explanation: '',
+};
 
 export default function App() {
+  const getAutoDurationForQuestionCount = (questionCount: number): number => {
+    return Math.max(0, questionCount) * 30;
+  };
+
   // -- State --
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<User | null>(() => getStoredUser());
   const [currentView, setCurrentView] = useState<ViewState>('dashboard');
 
   // Login State
@@ -53,10 +185,10 @@ export default function App() {
   const [loginPassword, setLoginPassword] = useState('');
   const [loginError, setLoginError] = useState('');
 
-  const [categories, setCategories] = useState<Category[]>(INITIAL_CATEGORIES);
+  const [categories, setCategories] = useState<Category[]>(() => getStoredCategories());
   const [activeCategory, setActiveCategory] = useState<Category | null>(null);
   const [activeTopic, setActiveTopic] = useState<{ cat: Category, sub: SubCategory } | null>(null);
-  const [isDarkMode, setIsDarkMode] = useState(false);
+  const [isDarkMode, setIsDarkMode] = useState<boolean>(() => getStoredTheme());
 
   // Quiz Configuration State
   const [quizConfig, setQuizConfig] = useState({
@@ -64,8 +196,8 @@ export default function App() {
     durationSeconds: 300,
   });
 
-  // Questions State
-  const [allQuestions, setAllQuestions] = useState<Record<string, Question[]>>(INITIAL_QUESTIONS);
+  // --- SORULAR STATE (ARTIK BOŞ BAŞLIYOR) ---
+  const [allQuestions, setAllQuestions] = useState<Record<string, Question[]>>({});
 
   // Quiz State
   const [quizState, setQuizState] = useState<QuizState>({
@@ -83,6 +215,12 @@ export default function App() {
   // Admin Panel State
   const [adminSelectedCatId, setAdminSelectedCatId] = useState<string>('');
   const [adminSelectedTopicId, setAdminSelectedTopicId] = useState<string>('');
+  const [adminQuestionSearch, setAdminQuestionSearch] = useState('');
+  const [adminQuestionPage, setAdminQuestionPage] = useState(1);
+  const [isAdminActionsOpen, setIsAdminActionsOpen] = useState(false);
+  const [adminPreviewQuestion, setAdminPreviewQuestion] = useState<Question | null>(null);
+  const [adminPreviewSelectedOption, setAdminPreviewSelectedOption] = useState<number | null>(null);
+  const [adminPreviewChecked, setAdminPreviewChecked] = useState(false);
 
   // Admin Modals
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
@@ -98,6 +236,7 @@ export default function App() {
     imageUrl: '',
     contextText: '',
     itemsText: '',
+    sourceTag: '',
     questionRoot: '',
     optionsText: '',
     correctOption: 0,
@@ -108,21 +247,15 @@ export default function App() {
   const [isBulkImportOpen, setIsBulkImportOpen] = useState(false);
   const [bulkText, setBulkText] = useState('');
   const [bulkParsed, setBulkParsed] = useState<Question[]>([]);
+  const [bulkParseErrors, setBulkParseErrors] = useState<string[]>([]);
   const [bulkStep, setBulkStep] = useState<'paste' | 'preview'>('paste');
 
   // Add Question Form State
-  const [questionForm, setQuestionForm] = useState({
-    imageUrl: '',
-    contextText: '',
-    itemsText: '',
-    questionRoot: '',
-    optionsText: '',
-    correctOption: 0,
-    explanation: ''
-  });
+  const [questionForm, setQuestionForm] = useState<QuestionFormState>(EMPTY_QUESTION_FORM);
+  const [pendingQuestions, setPendingQuestions] = useState<PendingQuestionDraft[]>([]);
 
   // Quiz Font Size: 0=compact, 1=normal, 2=large
-  const [quizSize, setQuizSize] = useState<0 | 1 | 2>(0);
+  const [quizSize, setQuizSize] = useState<0 | 1 | 2>(() => getStoredQuizSize());
 
   // Mobile Menu
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -134,18 +267,82 @@ export default function App() {
 
   // -- Effects --
   useEffect(() => {
-    if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
-      setIsDarkMode(true);
-    }
-  }, []);
-
-  useEffect(() => {
     if (isDarkMode) {
       document.documentElement.classList.add('dark');
     } else {
       document.documentElement.classList.remove('dark');
     }
+    try {
+      window.localStorage.setItem(STORAGE_KEYS.theme, isDarkMode ? 'dark' : 'light');
+    } catch {
+      // Ignore storage errors
+    }
   }, [isDarkMode]);
+
+  useEffect(() => {
+    try {
+      if (user) {
+        window.localStorage.setItem(STORAGE_KEYS.user, JSON.stringify(user));
+      } else {
+        window.localStorage.removeItem(STORAGE_KEYS.user);
+      }
+    } catch {
+      // Ignore storage errors
+    }
+  }, [user]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(STORAGE_KEYS.categories, JSON.stringify(categories));
+    } catch {
+      // Ignore storage errors
+    }
+  }, [categories]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(STORAGE_KEYS.quizSize, String(quizSize));
+    } catch {
+      // Ignore storage errors
+    }
+  }, [quizSize]);
+
+  // --- FIREBASE VERİ ÇEKME EFFECT'İ ---
+  useEffect(() => {
+    // Firestore'daki "questions" koleksiyonunu dinle
+    const q = query(collection(db, "questions"));
+    
+    // Canlı dinleyici (Real-time listener)
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const groupedQuestions: Record<string, Question[]> = {};
+      
+      snapshot.forEach((doc) => {
+        const data = doc.data();
+        // Firestore verisini Question tipine çeviriyoruz
+        const question = { 
+          ...data, 
+          id: doc.id, // Firestore ID'sini kullan
+          options: data.options || [], // Güvenlik önlemi
+          contentItems: data.contentItems || undefined
+        } as Question & { topicId: string }; 
+
+        // Soruları konu ID'lerine (topicId) göre grupla
+        const tId = question.topicId;
+        if (!tId) return; // topicId yoksa atla
+
+        if (!groupedQuestions[tId]) {
+          groupedQuestions[tId] = [];
+        }
+        groupedQuestions[tId].push(question);
+      });
+      
+      // Tarihe göre (oluşturulma sırası) veya başka bir şeye göre sıralama yapılabilir
+      // Şimdilik olduğu gibi kaydediyoruz
+      setAllQuestions(groupedQuestions);
+    });
+
+    return () => unsubscribe();
+  }, []);
 
   // Timer Logic
   useEffect(() => {
@@ -166,22 +363,32 @@ export default function App() {
     };
   }, [currentView, quizState.isTimerActive, quizState.showResults]);
 
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+      if (autoAdvanceRef.current) clearTimeout(autoAdvanceRef.current);
+    };
+  }, []);
+
   // -- Handlers --
 
   const handleLoginSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError('');
+    const normalizedUsername = loginUsername.trim();
 
-    if (!loginUsername.trim() || !loginPassword.trim()) {
+    if (!normalizedUsername || !loginPassword.trim()) {
       setLoginError('Kullanici adi ve sifre giriniz.');
       return;
     }
 
-    if (loginUsername === 'admin' && loginPassword === 'admin') {
+    if (normalizedUsername === 'admin' && loginPassword === 'admin') {
       setUser({ username: 'Yonetici', role: 'admin' });
     } else {
-      setUser({ username: loginUsername, role: 'user' });
+      setUser({ username: normalizedUsername, role: 'user' });
     }
+
+    setLoginPassword('');
   };
 
   const handleLogout = () => {
@@ -192,6 +399,7 @@ export default function App() {
     setLoginUsername('');
     setLoginPassword('');
     setLoginError('');
+    setIsMobileMenuOpen(false);
     resetQuiz();
   };
 
@@ -214,9 +422,10 @@ export default function App() {
   const openQuizSetup = (category: Category, sub: SubCategory) => {
     setActiveTopic({ cat: category, sub: sub });
     const availableCount = allQuestions[sub.id]?.length || 0;
+    const initialQuestionCount = availableCount > 0 ? Math.min(10, availableCount) : 0;
     setQuizConfig({
-      questionCount: availableCount > 0 ? Math.min(10, availableCount) : 0,
-      durationSeconds: 120,
+      questionCount: initialQuestionCount,
+      durationSeconds: getAutoDurationForQuestionCount(initialQuestionCount),
     });
     setCurrentView('quiz-setup');
   };
@@ -238,7 +447,15 @@ export default function App() {
       isTimerActive: true
     }));
 
-    const topicQuestions = allQuestions[activeTopic.sub.id] || [];
+    // Soruları karıştır ve seç
+    const topicQuestions = [...(allQuestions[activeTopic.sub.id] || [])];
+    
+    // Basit karıştırma algoritması (Fisher-Yates)
+    for (let i = topicQuestions.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [topicQuestions[i], topicQuestions[j]] = [topicQuestions[j], topicQuestions[i]];
+    }
+    
     const selectedQuestions = topicQuestions.slice(0, quizConfig.questionCount);
 
     setTimeout(() => {
@@ -329,20 +546,168 @@ export default function App() {
     return `${m}:${s < 10 ? '0' : ''}${s}`;
   };
 
-  // --- Admin Handlers ---
-  const handleDeleteQuestion = (questionId: string, topicId: string) => {
+  // --- Admin Handlers (GÜNCELLENDİ) ---
+
+  const handleDeleteQuestion = async (questionId: string, topicId: string) => {
     if (!user || user.role !== 'admin') return;
     if (!window.confirm("Bu soruyu kalici olarak silmek istediginize emin misiniz?")) return;
-    const updatedTopicQuestions = (allQuestions[topicId] || []).filter(q => q.id !== questionId);
-    setAllQuestions(prev => ({ ...prev, [topicId]: updatedTopicQuestions }));
+    
+    try {
+      await deleteDoc(doc(db, "questions", questionId));
+      if (adminPreviewQuestion?.id === questionId) {
+        handleCloseAdminPreview();
+      }
+      // Manuel state güncellemesine gerek yok, onSnapshot halledecek
+    } catch (error) {
+      console.error("Silme hatası:", error);
+      alert("Soru silinirken hata oluştu.");
+    }
   };
 
-  const handleBulkDeleteQuestions = () => {
+  const getCreatedAtMillis = (question: Question): number => {
+    const createdAt = (question as Question & { createdAt?: unknown }).createdAt;
+    if (!createdAt) return 0;
+    if (createdAt instanceof Date) return createdAt.getTime();
+    if (typeof createdAt === 'number' && Number.isFinite(createdAt)) return createdAt;
+    if (typeof createdAt === 'string') {
+      const ms = Date.parse(createdAt);
+      return Number.isFinite(ms) ? ms : 0;
+    }
+    if (typeof createdAt === 'object' && createdAt !== null && 'toDate' in createdAt) {
+      const maybeTimestamp = createdAt as { toDate: () => Date };
+      try {
+        return maybeTimestamp.toDate().getTime();
+      } catch {
+        return 0;
+      }
+    }
+    return 0;
+  };
+
+  const getLatestTopicQuestions = (count: number): Array<Question & { id: string }> => {
+    if (!adminSelectedTopicId) return [];
+    const topicQuestions = allQuestions[adminSelectedTopicId] || [];
+    return [...topicQuestions]
+      .filter((q): q is Question & { id: string } => typeof q.id === 'string' && q.id.length > 0)
+      .sort((a, b) => getCreatedAtMillis(b) - getCreatedAtMillis(a))
+      .slice(0, count);
+  };
+
+  const commitInChunks = async (
+    questions: Array<Question & { id: string }>,
+    action: (batch: ReturnType<typeof writeBatch>, question: Question & { id: string }) => void
+  ) => {
+    const chunkSize = 450;
+    for (let i = 0; i < questions.length; i += chunkSize) {
+      const chunk = questions.slice(i, i + chunkSize);
+      const batch = writeBatch(db);
+      chunk.forEach((question) => action(batch, question));
+      await batch.commit();
+    }
+  };
+
+  const handleBulkDeleteQuestions = async () => {
     if (!adminSelectedTopicId) return;
     const count = allQuestions[adminSelectedTopicId]?.length || 0;
     if (count === 0) return;
     if (!window.confirm(`Bu konudaki ${count} sorunun tamamini silmek istediginize emin misiniz?`)) return;
-    setAllQuestions(prev => ({ ...prev, [adminSelectedTopicId]: [] }));
+
+    try {
+      // Önce bu konuya ait tüm soruları bul
+      const q = query(collection(db, "questions"), where("topicId", "==", adminSelectedTopicId));
+      const snapshot = await getDocs(q);
+
+      // Hepsini silmek için batch oluştur
+      const batch = writeBatch(db);
+      snapshot.forEach((doc) => {
+        batch.delete(doc.ref);
+      });
+
+      await batch.commit();
+      // Manuel state güncellemesine gerek yok
+    } catch (error) {
+      console.error("Toplu silme hatası:", error);
+      alert("Toplu silme sırasında hata oluştu.");
+    }
+  };
+
+  const handleDeleteLatestQuestions = async () => {
+    if (!adminSelectedTopicId) return;
+    const totalCount = (allQuestions[adminSelectedTopicId] || []).length;
+    if (totalCount === 0) return;
+
+    const rawInput = window.prompt(`Kac adet son eklenen soruyu silmek istiyorsunuz? (1-${totalCount})`, '5');
+    if (!rawInput) return;
+
+    const requested = parseInt(rawInput, 10);
+    if (!Number.isFinite(requested) || requested <= 0) {
+      alert("Lutfen gecerli bir sayi girin.");
+      return;
+    }
+
+    const deleteCount = Math.min(requested, totalCount);
+    const deletable = getLatestTopicQuestions(deleteCount);
+
+    if (deletable.length === 0) {
+      alert("Silinebilir soru bulunamadi.");
+      return;
+    }
+
+    if (!window.confirm(`Bu konudaki son eklenen ${deletable.length} soruyu silmek istediginize emin misiniz?`)) return;
+
+    try {
+      await commitInChunks(deletable, (batch, q) => {
+        batch.delete(doc(db, "questions", q.id));
+      });
+      setIsAdminActionsOpen(false);
+    } catch (error) {
+      console.error("Son sorulari silme hatası:", error);
+      alert("Son eklenen sorular silinirken bir hata oluştu.");
+    }
+  };
+
+  const handleTagLatestQuestions = async () => {
+    if (!adminSelectedTopicId) return;
+    const totalCount = (allQuestions[adminSelectedTopicId] || []).length;
+    if (totalCount === 0) return;
+
+    const rawInput = window.prompt(`Kac adet son eklenen soruya etiket eklensin? (1-${totalCount})`, '5');
+    if (!rawInput) return;
+
+    const requested = parseInt(rawInput, 10);
+    if (!Number.isFinite(requested) || requested <= 0) {
+      alert("Lutfen gecerli bir sayi girin.");
+      return;
+    }
+
+    const rawTag = window.prompt('Eklenecek etiket nedir?', '');
+    if (rawTag === null) return;
+
+    const nextTag = rawTag.trim();
+    if (!nextTag) {
+      alert("Etiket bos olamaz.");
+      return;
+    }
+
+    const tagCount = Math.min(requested, totalCount);
+    const taggable = getLatestTopicQuestions(tagCount);
+
+    if (taggable.length === 0) {
+      alert("Etiketlenecek soru bulunamadi.");
+      return;
+    }
+
+    if (!window.confirm(`Son eklenen ${taggable.length} soruya "${nextTag}" etiketi eklensin mi?`)) return;
+
+    try {
+      await commitInChunks(taggable, (batch, q) => {
+        batch.update(doc(db, "questions", q.id), { sourceTag: nextTag });
+      });
+      setIsAdminActionsOpen(false);
+    } catch (error) {
+      console.error("Son sorulari etiketleme hatası:", error);
+      alert("Son sorular etiketlenirken bir hata oluştu.");
+    }
   };
 
   const handleStartEditQuestion = (q: Question, idx: number) => {
@@ -351,6 +716,7 @@ export default function App() {
       imageUrl: q.imageUrl || '',
       contextText: q.contextText || '',
       itemsText: q.contentItems ? q.contentItems.join('\n') : '',
+      sourceTag: q.sourceTag || '',
       questionRoot: q.questionText,
       optionsText: q.options.map((opt, i) => `${String.fromCharCode(65 + i)}) ${opt}`).join('\n'),
       correctOption: q.correctOptionIndex,
@@ -358,28 +724,30 @@ export default function App() {
     });
   };
 
-  const handleSaveEditQuestion = () => {
+  const handleSaveEditQuestion = async () => {
     if (!editingQuestion || !adminSelectedTopicId) return;
     const options = parseOptions(editForm.optionsText);
     const contentItems = parseItems(editForm.itemsText);
 
-    const updatedQuestion: Question = {
-      ...editingQuestion.question,
-      imageUrl: editForm.imageUrl.trim() || undefined,
-      contextText: editForm.contextText.trim() || undefined,
-      contentItems: contentItems.length > 0 ? contentItems : undefined,
+    const updatedData = {
+      imageUrl: editForm.imageUrl.trim() || null,
+      contextText: editForm.contextText.trim() || null,
+      contentItems: contentItems.length > 0 ? contentItems : null,
+      sourceTag: editForm.sourceTag.trim() || null,
       questionText: editForm.questionRoot,
       options,
       correctOptionIndex: editForm.correctOption,
       explanation: editForm.explanation,
+      // topicId değişmiyor
     };
 
-    setAllQuestions(prev => {
-      const topicQs = [...(prev[adminSelectedTopicId] || [])];
-      topicQs[editingQuestion.index] = updatedQuestion;
-      return { ...prev, [adminSelectedTopicId]: topicQs };
-    });
-    setEditingQuestion(null);
+    try {
+      await updateDoc(doc(db, "questions", editingQuestion.question.id!), updatedData);
+      setEditingQuestion(null);
+    } catch (error) {
+      console.error("Güncelleme hatası:", error);
+      alert("Güncelleme sırasında hata oluştu.");
+    }
   };
 
   const handleAddCategory = () => {
@@ -431,66 +799,183 @@ export default function App() {
     return items.length > 0 ? items : [text];
   };
 
-  const handleSaveQuestion = () => {
+  const getCurrentQuestionTopicId = (): string => {
     let topicId = '';
     if (currentView === 'admin' && adminSelectedTopicId) topicId = adminSelectedTopicId;
-    else return;
+    return topicId;
+  };
 
-    if (!topicId) return;
+  const buildDraftFromQuestionForm = (): PendingQuestionDraft | null => {
+    const topicId = getCurrentQuestionTopicId();
+    if (!topicId) return null;
+
+    const questionText = questionForm.questionRoot.trim();
+    if (!questionText) {
+      alert("Soru kökü boş bırakılamaz.");
+      return null;
+    }
 
     const options = parseOptions(questionForm.optionsText);
     const contentItems = parseItems(questionForm.itemsText);
 
-    const newQuestion: Question = {
-      id: Date.now().toString(),
-      imageUrl: questionForm.imageUrl.trim() || undefined,
-      contextText: questionForm.contextText.trim() || undefined,
-      contentItems: contentItems.length > 0 ? contentItems : undefined,
-      questionText: questionForm.questionRoot,
+    return {
+      imageUrl: questionForm.imageUrl.trim() || null,
+      contextText: questionForm.contextText.trim() || null,
+      contentItems: contentItems.length > 0 ? contentItems : null,
+      sourceTag: questionForm.sourceTag.trim() || null,
+      questionText,
       options: options,
       correctOptionIndex: questionForm.correctOption,
-      explanation: questionForm.explanation
+      explanation: questionForm.explanation.trim(),
+      topicId: topicId,
+      createdAt: new Date()
     };
+  };
 
-    setAllQuestions(prev => ({
-      ...prev,
-      [topicId]: [...(prev[topicId] || []), newQuestion]
-    }));
+  const handleAddQuestionToQueue = () => {
+    const draft = buildDraftFromQuestionForm();
+    if (!draft) return;
+    setPendingQuestions(prev => [...prev, draft]);
+    setQuestionForm(EMPTY_QUESTION_FORM);
+  };
 
-    setQuestionForm({ imageUrl: '', contextText: '', itemsText: '', questionRoot: '', optionsText: '', correctOption: 0, explanation: '' });
+  const handleSaveQuestion = async () => {
+    if (pendingQuestions.length === 0) {
+      alert("Kaydetmeden önce en az bir soruyu listeye ekleyin.");
+      return;
+    }
+    try {
+      const batch = writeBatch(db);
+      pendingQuestions.forEach((draft) => {
+        const docRef = doc(collection(db, "questions"));
+        batch.set(docRef, draft);
+      });
+
+      await batch.commit();
+      setPendingQuestions([]);
+      setQuestionForm(EMPTY_QUESTION_FORM);
+      setIsQuestionModalOpen(false);
+    } catch (error) {
+      console.error("Soru eklenirken hata:", error);
+      alert("Soru eklenirken bir hata oluştu. İnternet bağlantınızı kontrol edin.");
+    }
+  };
+
+  const handleRemovePendingQuestion = (index: number) => {
+    setPendingQuestions(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const handleCloseQuestionModal = () => {
+    if (pendingQuestions.length > 0) {
+      const confirmed = window.confirm(`Listede kaydedilmemiş ${pendingQuestions.length} soru var. Kapatırsanız silinecek. Devam etmek istiyor musunuz?`);
+      if (!confirmed) return;
+    }
+    setPendingQuestions([]);
+    setQuestionForm(EMPTY_QUESTION_FORM);
     setIsQuestionModalOpen(false);
   };
 
   // Bulk import handlers
   const handleBulkParse = () => {
     if (!bulkText.trim()) return;
-    const parsed = parseBulkQuestions(bulkText);
-    setBulkParsed(parsed);
+    const report = parseBulkQuestionsWithReport(bulkText);
+    setBulkParsed(report.questions);
+    setBulkParseErrors(report.errors);
     setBulkStep('preview');
   };
 
-  const handleBulkSave = () => {
+  const handleBulkSave = async () => {
     if (!adminSelectedTopicId || bulkParsed.length === 0) return;
-    setAllQuestions(prev => ({
-      ...prev,
-      [adminSelectedTopicId]: [...(prev[adminSelectedTopicId] || []), ...bulkParsed]
-    }));
-    setBulkText('');
-    setBulkParsed([]);
-    setBulkStep('paste');
-    setIsBulkImportOpen(false);
+    
+    try {
+      const batch = writeBatch(db);
+      
+      bulkParsed.forEach(q => {
+        const docRef = doc(collection(db, "questions")); // Yeni ID al
+        batch.set(docRef, {
+          imageUrl: q.imageUrl ?? null,
+          contextText: q.contextText ?? null,
+          contentItems: q.contentItems ?? null,
+          sourceTag: q.sourceTag ?? null,
+          questionText: q.questionText,
+          options: q.options,
+          correctOptionIndex: q.correctOptionIndex,
+          explanation: q.explanation ?? '',
+          topicId: adminSelectedTopicId,
+          createdAt: new Date()
+        });
+      });
+
+      await batch.commit(); // Hepsini tek seferde kaydet
+      
+      setBulkText('');
+      setBulkParsed([]);
+      setBulkParseErrors([]);
+      setBulkStep('paste');
+      setIsBulkImportOpen(false);
+    } catch (error) {
+      console.error("Toplu kayıt hatası:", error);
+      alert("Toplu kayıt sırasında bir hata oluştu.");
+    }
   };
 
   const handleBulkClose = () => {
     setIsBulkImportOpen(false);
     setBulkText('');
     setBulkParsed([]);
+    setBulkParseErrors([]);
     setBulkStep('paste');
   };
 
   const handleRemoveBulkQuestion = (index: number) => {
     setBulkParsed(prev => prev.filter((_, i) => i !== index));
   };
+
+  const handleOpenAdminPreview = (question: Question) => {
+    setAdminPreviewQuestion(question);
+    setAdminPreviewSelectedOption(null);
+    setAdminPreviewChecked(false);
+  };
+
+  const handleCloseAdminPreview = () => {
+    setAdminPreviewQuestion(null);
+    setAdminPreviewSelectedOption(null);
+    setAdminPreviewChecked(false);
+  };
+
+  const adminTopicQuestions = adminSelectedTopicId ? (allQuestions[adminSelectedTopicId] || []) : [];
+  const normalizedAdminSearch = adminQuestionSearch.trim().toLocaleLowerCase('tr');
+  const adminFilteredQuestions = adminTopicQuestions
+    .map((question, originalIndex) => ({ question, originalIndex }))
+    .filter(({ question }) => {
+      if (!normalizedAdminSearch) return true;
+      const haystack = [
+        question.questionText,
+        question.contextText || '',
+        (question.contentItems || []).join(' '),
+        question.options.join(' '),
+        question.sourceTag || '',
+      ]
+        .join(' ')
+        .toLocaleLowerCase('tr');
+      return haystack.includes(normalizedAdminSearch);
+    });
+  const adminTotalPages = Math.max(1, Math.ceil(adminFilteredQuestions.length / ADMIN_QUESTIONS_PER_PAGE));
+  const adminSafePage = Math.min(adminQuestionPage, adminTotalPages);
+  const adminPageStart = (adminSafePage - 1) * ADMIN_QUESTIONS_PER_PAGE;
+  const adminVisibleQuestions = adminFilteredQuestions.slice(adminPageStart, adminPageStart + ADMIN_QUESTIONS_PER_PAGE);
+
+  useEffect(() => {
+    if (adminQuestionPage !== adminSafePage) {
+      setAdminQuestionPage(adminSafePage);
+    }
+  }, [adminQuestionPage, adminSafePage]);
+
+  useEffect(() => {
+    if (!adminSelectedTopicId || currentView !== 'admin') {
+      setIsAdminActionsOpen(false);
+    }
+  }, [adminSelectedTopicId, currentView]);
 
   const calculateScore = () => {
     if (!quizState.questions || quizState.questions.length === 0) return 0;
@@ -502,7 +987,9 @@ export default function App() {
   };
 
   const getTotalQuestionCount = () => {
-    return Object.values(allQuestions).reduce((sum, qs) => sum + qs.length, 0);
+    return Object.values(allQuestions).reduce<number>((sum, qs) => {
+      return sum + (Array.isArray(qs) ? qs.length : 0);
+    }, 0);
   };
 
   // Greeting based on time of day
@@ -648,7 +1135,14 @@ export default function App() {
                     min="1"
                     max={maxQuestions}
                     value={quizConfig.questionCount}
-                    onChange={(e) => setQuizConfig({...quizConfig, questionCount: parseInt(e.target.value)})}
+                    onChange={(e) => {
+                      const nextQuestionCount = parseInt(e.target.value, 10);
+                      setQuizConfig({
+                        ...quizConfig,
+                        questionCount: nextQuestionCount,
+                        durationSeconds: getAutoDurationForQuestionCount(nextQuestionCount),
+                      });
+                    }}
                     disabled={maxQuestions === 0}
                     className="w-full h-2 bg-surface-200 dark:bg-surface-700 rounded-lg cursor-pointer"
                   />
@@ -667,7 +1161,7 @@ export default function App() {
                 </label>
                 <div className="flex items-center gap-2 overflow-hidden">
                   <button
-                    onClick={() => setQuizConfig(prev => ({...prev, durationSeconds: Math.max(30, prev.durationSeconds - 30)}))}
+                    onClick={() => setQuizConfig(prev => ({...prev, durationSeconds: Math.max(0, prev.durationSeconds - 30)}))}
                     className="w-11 h-11 rounded-xl bg-white dark:bg-surface-800 border border-surface-200 dark:border-surface-600 text-surface-500 hover:border-brand-500 hover:text-brand-600 transition flex items-center justify-center font-bold text-sm flex-shrink-0"
                   >
                     -30
@@ -839,6 +1333,13 @@ export default function App() {
                     }`}>
                       Soru {quizState.currentQuestionIndex + 1}
                     </span>
+                    {currentQuestion.sourceTag && (
+                      <span className={`rounded-full bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-200 font-semibold ${
+                        quizSize === 0 ? 'px-2 py-0.5 text-[10px]' : 'px-2.5 py-1 text-[11px]'
+                      }`}>
+                        {currentQuestion.sourceTag}
+                      </span>
+                    )}
                   </div>
 
                   {currentQuestion.imageUrl && (
@@ -862,13 +1363,10 @@ export default function App() {
                       quizSize === 0 ? 'mb-3 p-2.5' : quizSize === 1 ? 'mb-5 p-3.5' : 'mb-6 p-4'
                     }`}>
                       {currentQuestion.contentItems.map((item, i) => (
-                        <div key={i} className={`flex gap-2 text-surface-700 dark:text-surface-300 font-medium last:mb-0 ${
-                          quizSize === 0 ? 'text-xs mb-1' : quizSize === 1 ? 'text-sm mb-1.5' : 'text-sm mb-1.5 gap-3'
+                        <div key={i} className={`text-surface-700 dark:text-surface-300 font-medium last:mb-0 ${
+                          quizSize === 0 ? 'text-xs mb-1' : quizSize === 1 ? 'text-sm mb-1.5' : 'text-sm mb-1.5'
                         }`}>
-                          <span className={`flex items-center justify-center bg-surface-200 dark:bg-surface-700 rounded-full font-bold text-surface-500 dark:text-surface-400 mt-0.5 flex-shrink-0 ${
-                            quizSize === 0 ? 'w-4 h-4 text-[8px]' : 'w-5 h-5 text-[10px]'
-                          }`}>{['I','II','III','IV','V','VI','VII','VIII','IX','X'][i] || i+1}</span>
-                          <span>{item}</span>
+                          {item}
                         </div>
                       ))}
                     </div>
@@ -1066,6 +1564,11 @@ export default function App() {
                           </div>
                           <div className="flex-1 min-w-0">
                             <p className="text-sm font-medium text-surface-700 dark:text-surface-200 mb-1.5 leading-relaxed">{q.questionText}</p>
+                            {q.sourceTag && (
+                              <span className="inline-flex mb-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-200">
+                                {q.sourceTag}
+                              </span>
+                            )}
                             <div className="text-xs space-y-0.5">
                               {!isUnanswered && !isCorrect && (
                                 <p className="text-red-500">Cevabiniz: {String.fromCharCode(65 + userAnswer!)}) {q.options[userAnswer!]}</p>
@@ -1249,7 +1752,14 @@ export default function App() {
                     <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-2">Kategori</label>
                     <select
                       value={adminSelectedCatId}
-                      onChange={(e) => { setAdminSelectedCatId(e.target.value); setAdminSelectedTopicId(''); }}
+                      onChange={(e) => {
+                        setAdminSelectedCatId(e.target.value);
+                        setAdminSelectedTopicId('');
+                        setAdminQuestionSearch('');
+                        setAdminQuestionPage(1);
+                        setIsAdminActionsOpen(false);
+                        handleCloseAdminPreview();
+                      }}
                       className="w-full h-12 px-4 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 focus:ring-2 focus:ring-brand-500 outline-none dark:text-white text-sm font-medium"
                     >
                       <option value="">Secim Yapiniz</option>
@@ -1260,7 +1770,13 @@ export default function App() {
                     <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-2">Konu</label>
                     <select
                       value={adminSelectedTopicId}
-                      onChange={(e) => setAdminSelectedTopicId(e.target.value)}
+                      onChange={(e) => {
+                        setAdminSelectedTopicId(e.target.value);
+                        setAdminQuestionSearch('');
+                        setAdminQuestionPage(1);
+                        setIsAdminActionsOpen(false);
+                        handleCloseAdminPreview();
+                      }}
                       disabled={!adminSelectedCatId}
                       className="w-full h-12 px-4 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 focus:ring-2 focus:ring-brand-500 outline-none dark:text-white text-sm font-medium disabled:opacity-40"
                     >
@@ -1276,7 +1792,7 @@ export default function App() {
                   <div className="space-y-5 animate-fade-in">
                     <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center border-b border-surface-100 dark:border-surface-700 pb-5 gap-3">
                       <h3 className="text-xl font-bold text-surface-800 dark:text-white">
-                        Sorular <span className="text-surface-400 ml-1.5 text-sm font-medium">({allQuestions[adminSelectedTopicId]?.length || 0})</span>
+                        Sorular <span className="text-surface-400 ml-1.5 text-sm font-medium">({adminTopicQuestions.length})</span>
                       </h3>
                       <div className="flex gap-2 flex-wrap">
                         <button
@@ -1299,32 +1815,113 @@ export default function App() {
                           <Icon name="Layers" className="w-3.5 h-3.5" />
                           Toplu Aktar
                         </button>
-                        {(allQuestions[adminSelectedTopicId]?.length || 0) > 0 && (
-                          <button
-                            onClick={handleBulkDeleteQuestions}
-                            className="flex items-center gap-1.5 px-4 py-2.5 bg-red-600 text-white rounded-lg hover:bg-red-700 transition shadow-lg shadow-red-600/20 font-bold text-xs"
-                          >
-                            <Icon name="Trash" className="w-3.5 h-3.5" />
-                            Toplu Sil
-                          </button>
+                        {adminTopicQuestions.length > 0 && (
+                          <div className="relative">
+                            <button
+                              onClick={() => setIsAdminActionsOpen(prev => !prev)}
+                              className="flex items-center gap-1.5 px-3.5 py-2.5 bg-surface-100 dark:bg-surface-700 text-surface-600 dark:text-surface-300 rounded-lg hover:bg-surface-200 dark:hover:bg-surface-600 transition font-bold text-xs"
+                            >
+                              <Icon name="Settings" className="w-3.5 h-3.5" />
+                              Toplu Islemler
+                            </button>
+                            {isAdminActionsOpen && (
+                              <div className="absolute right-0 mt-2 w-44 rounded-lg border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800 shadow-xl z-20 overflow-hidden">
+                                <button
+                                  onClick={() => {
+                                    setIsAdminActionsOpen(false);
+                                    handleTagLatestQuestions();
+                                  }}
+                                  className="w-full text-left px-3 py-2.5 text-xs font-semibold text-surface-600 dark:text-surface-200 hover:bg-surface-50 dark:hover:bg-surface-700 transition"
+                                >
+                                  Son X Etiketle
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setIsAdminActionsOpen(false);
+                                    handleDeleteLatestQuestions();
+                                  }}
+                                  className="w-full text-left px-3 py-2.5 text-xs font-semibold text-orange-700 dark:text-orange-300 hover:bg-orange-50 dark:hover:bg-orange-900/20 transition"
+                                >
+                                  Son X Sil
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setIsAdminActionsOpen(false);
+                                    handleBulkDeleteQuestions();
+                                  }}
+                                  className="w-full text-left px-3 py-2.5 text-xs font-semibold text-red-700 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-900/20 transition"
+                                >
+                                  Toplu Sil
+                                </button>
+                              </div>
+                            )}
+                          </div>
                         )}
                       </div>
                     </div>
 
+                    <div className="flex flex-col md:flex-row gap-3 items-start md:items-center justify-between">
+                      <div className="w-full md:max-w-md">
+                        <input
+                          type="text"
+                          value={adminQuestionSearch}
+                          onChange={(e) => {
+                            setAdminQuestionSearch(e.target.value);
+                            setAdminQuestionPage(1);
+                          }}
+                          placeholder="Soru, secenek, aciklama veya kaynakta ara..."
+                          className="w-full h-10 px-3 rounded-lg bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white text-sm"
+                        />
+                      </div>
+                      <div className="w-full md:w-auto flex items-center justify-between md:justify-end gap-2">
+                        <span className="text-xs text-surface-400 font-medium">
+                          {adminFilteredQuestions.length} sonuc
+                        </span>
+                        <button
+                          onClick={() => setAdminQuestionPage(prev => Math.max(1, prev - 1))}
+                          disabled={adminSafePage <= 1}
+                          className="px-3 h-9 rounded-lg border border-surface-200 dark:border-surface-700 text-surface-500 dark:text-surface-300 hover:bg-surface-100 dark:hover:bg-surface-700 transition disabled:opacity-40 disabled:cursor-not-allowed text-xs font-semibold"
+                        >
+                          Geri
+                        </button>
+                        <span className="text-xs text-surface-500 dark:text-surface-400 font-semibold min-w-[56px] text-center">
+                          {adminSafePage}/{adminTotalPages}
+                        </span>
+                        <button
+                          onClick={() => setAdminQuestionPage(prev => Math.min(adminTotalPages, prev + 1))}
+                          disabled={adminSafePage >= adminTotalPages}
+                          className="px-3 h-9 rounded-lg border border-surface-200 dark:border-surface-700 text-surface-500 dark:text-surface-300 hover:bg-surface-100 dark:hover:bg-surface-700 transition disabled:opacity-40 disabled:cursor-not-allowed text-xs font-semibold"
+                        >
+                          Ileri
+                        </button>
+                      </div>
+                    </div>
+
                     <div className="space-y-3">
-                      {allQuestions[adminSelectedTopicId]?.length > 0 ? (
-                        allQuestions[adminSelectedTopicId].map((q, idx) => (
-                          <div key={q.id || idx} className="bg-surface-50 dark:bg-surface-900/50 p-4 rounded-xl border border-surface-100 dark:border-surface-700 flex justify-between items-start gap-3 hover:border-brand-200 dark:hover:border-brand-800/50 transition-colors group">
+                      {adminVisibleQuestions.length > 0 ? (
+                        adminVisibleQuestions.map(({ question: q, originalIndex }, idx) => (
+                          <div key={q.id || `${originalIndex}_${idx}`} className="bg-surface-50 dark:bg-surface-900/50 p-4 rounded-xl border border-surface-100 dark:border-surface-700 flex justify-between items-start gap-3 hover:border-brand-200 dark:hover:border-brand-800/50 transition-colors group">
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center gap-2 mb-2">
-                                <span className="px-2 py-0.5 bg-white dark:bg-surface-800 text-[10px] font-bold rounded text-surface-500 border border-surface-100 dark:border-surface-700">#{idx + 1}</span>
-                                <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold bg-emerald-50 dark:bg-emerald-900/20 px-1.5 py-0.5 rounded">Cevap: {String.fromCharCode(65 + q.correctOptionIndex)}</span>
+                                <span className="px-2 py-0.5 bg-white dark:bg-surface-800 text-[10px] font-bold rounded text-surface-500 border border-surface-100 dark:border-surface-700">#{adminPageStart + idx + 1}</span>
+                                <span title="Doğru cevap" className="text-[9px] text-emerald-600 dark:text-emerald-400 font-black bg-emerald-50 dark:bg-emerald-900/20 px-1 py-0.5 rounded min-w-[18px] text-center">{String.fromCharCode(65 + q.correctOptionIndex)}</span>
+                                {q.sourceTag && (
+                                  <span className="text-[10px] text-slate-600 dark:text-slate-200 font-semibold bg-slate-100 dark:bg-slate-700 px-1.5 py-0.5 rounded truncate max-w-[160px]">
+                                    {q.sourceTag}
+                                  </span>
+                                )}
                               </div>
                               <p className="text-surface-700 dark:text-surface-200 font-medium text-sm leading-relaxed truncate">{q.questionText}</p>
                             </div>
                             <div className="flex gap-1 shrink-0">
                               <button
-                                onClick={() => handleStartEditQuestion(q, idx)}
+                                onClick={() => handleOpenAdminPreview(q)}
+                                className="p-2 bg-white dark:bg-surface-800 text-surface-300 hover:text-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 rounded-lg transition-colors"
+                              >
+                                <Icon name="Eye" className="w-4 h-4" />
+                              </button>
+                              <button
+                                onClick={() => handleStartEditQuestion(q, originalIndex)}
                                 className="p-2 bg-white dark:bg-surface-800 text-surface-300 hover:text-brand-500 hover:bg-brand-50 dark:hover:bg-brand-900/20 rounded-lg transition-colors"
                               >
                                 <Icon name="PenLine" className="w-4 h-4" />
@@ -1343,7 +1940,9 @@ export default function App() {
                           <div className="w-14 h-14 bg-surface-100 dark:bg-surface-700 rounded-2xl flex items-center justify-center mx-auto mb-3 text-surface-300">
                             <Icon name="FileQuestion" className="w-6 h-6" />
                           </div>
-                          <p className="text-surface-400 font-medium text-sm">Bu konuda henuz soru bulunmuyor.</p>
+                          <p className="text-surface-400 font-medium text-sm">
+                            {adminTopicQuestions.length === 0 ? 'Bu konuda henuz soru bulunmuyor.' : 'Arama kriterine uygun soru bulunamadi.'}
+                          </p>
                         </div>
                       )}
                     </div>
@@ -1522,52 +2121,100 @@ export default function App() {
           <div className="bg-white dark:bg-surface-800 rounded-2xl p-6 max-w-2xl w-full shadow-2xl border border-surface-100 dark:border-surface-700 my-10 modal-content">
             <div className="flex justify-between items-center mb-6">
               <h3 className="text-xl font-extrabold text-surface-800 dark:text-white">Soru Ekle</h3>
-              <button onClick={() => setIsQuestionModalOpen(false)} className="p-2 bg-surface-100 dark:bg-surface-700 rounded-lg hover:bg-surface-200 dark:hover:bg-surface-600 transition">
+              <button onClick={handleCloseQuestionModal} className="p-2 bg-surface-100 dark:bg-surface-700 rounded-lg hover:bg-surface-200 dark:hover:bg-surface-600 transition">
                 <Icon name="X" className="w-4 h-4 text-surface-500" />
               </button>
             </div>
             <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar">
               <div>
-                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Gorsel URL</label>
+                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Görsel URL</label>
                 <input type="text" className="w-full px-4 py-3 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white text-sm" value={questionForm.imageUrl} onChange={e => setQuestionForm({...questionForm, imageUrl: e.target.value})} placeholder="https://..." />
               </div>
               <div>
-                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Giris Metni <span className="normal-case font-medium text-surface-300">(Opsiyonel)</span></label>
-                <textarea className="w-full px-4 py-3 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white h-16 resize-none text-sm" value={questionForm.contextText} onChange={e => setQuestionForm({...questionForm, contextText: e.target.value})} placeholder="Oncullerin ustunde yer alan giris metni..." />
+                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Giriş Metni <span className="normal-case font-medium text-surface-300">(Opsiyonel)</span></label>
+                <textarea className="w-full px-4 py-3 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white h-16 resize-none text-sm" value={questionForm.contextText} onChange={e => setQuestionForm({...questionForm, contextText: e.target.value})} placeholder="Öncüllerin üstünde yer alan giriş metni..." />
               </div>
               <div>
-                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Onculler <span className="normal-case font-medium text-surface-300">(Opsiyonel)</span></label>
+                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Öncüller <span className="normal-case font-medium text-surface-300">(Opsiyonel)</span></label>
                 <textarea
                   className="w-full px-4 py-3 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white h-20 resize-none text-sm"
-                  placeholder={"I. Madde Bir\nII. Madde Iki\nIII. Madde Uc"}
+                  placeholder={"I. Madde Bir\nII. Madde İki\nIII. Madde Üç"}
                   value={questionForm.itemsText}
                   onChange={e => setQuestionForm({...questionForm, itemsText: e.target.value})}
                 />
               </div>
               <div>
-                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Soru Koku</label>
-                <textarea className="w-full px-4 py-3 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white h-24 text-sm font-medium" value={questionForm.questionRoot} onChange={e => setQuestionForm({...questionForm, questionRoot: e.target.value})} placeholder="Asagidakilerden hangisi...?" />
+                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Soru Kökü</label>
+                <textarea className="w-full px-4 py-3 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white h-24 text-sm font-medium" value={questionForm.questionRoot} onChange={e => setQuestionForm({...questionForm, questionRoot: e.target.value})} placeholder="Aşağıdakilerden hangisi...?" />
               </div>
               <div>
-                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Siklar (Her satira bir sik)</label>
+                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">ŞIKLAR (Her satıra bir şık)</label>
                 <textarea className="w-full px-4 py-3 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white h-28 font-mono text-xs" value={questionForm.optionsText} onChange={e => setQuestionForm({...questionForm, optionsText: e.target.value})} placeholder={"A) ...\nB) ...\nC) ...\nD) ...\nE) ..."} />
               </div>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-[88px_minmax(0,1fr)_minmax(0,1fr)] gap-4">
                 <div>
-                  <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Dogru Cevap</label>
-                  <select className="w-full px-4 py-3 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white font-bold text-sm" value={questionForm.correctOption} onChange={e => setQuestionForm({...questionForm, correctOption: parseInt(e.target.value)})}>
+                  <label className="block text-[10px] font-bold text-surface-400 uppercase tracking-wider mb-1.5">Doğru</label>
+                  <select className="w-full px-2 py-2.5 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white font-extrabold text-center text-xs" value={questionForm.correctOption} onChange={e => setQuestionForm({...questionForm, correctOption: parseInt(e.target.value)})}>
                     <option value={0}>A</option><option value={1}>B</option><option value={2}>C</option><option value={3}>D</option><option value={4}>E</option>
                   </select>
                 </div>
                 <div>
-                  <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Aciklama</label>
+                  <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Açıklama</label>
                   <input type="text" className="w-full px-4 py-3 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white text-sm" value={questionForm.explanation} onChange={e => setQuestionForm({...questionForm, explanation: e.target.value})} />
                 </div>
+                <div>
+                  <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Kaynak Etiketi <span className="normal-case font-medium text-surface-300">(Opsiyonel)</span></label>
+                  <input
+                    type="text"
+                    className="w-full px-4 py-3 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white text-sm"
+                    value={questionForm.sourceTag}
+                    onChange={e => setQuestionForm({...questionForm, sourceTag: e.target.value})}
+                    placeholder="Örn: 2024 KPSS Deneme 3"
+                  />
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-50/70 dark:bg-surface-900/40 p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs font-bold uppercase tracking-wider text-surface-400">Kayıt Listesi</p>
+                  <span className="text-xs font-bold text-brand-600 dark:text-brand-400">{pendingQuestions.length} soru</span>
+                </div>
+                {pendingQuestions.length === 0 ? (
+                  <p className="text-xs text-surface-400">Sorular önce listeye eklenir, sonra tek seferde kaydedilir.</p>
+                ) : (
+                  <div className="space-y-2 max-h-36 overflow-y-auto pr-1 custom-scrollbar">
+                    {pendingQuestions.map((q, idx) => (
+                      <div key={`${q.questionText}-${idx}`} className="flex items-start justify-between gap-2 rounded-lg border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800 p-2.5">
+                        <div className="min-w-0">
+                          <p className="text-xs font-semibold text-surface-700 dark:text-surface-200 truncate">{idx + 1}. {q.questionText}</p>
+                          {q.sourceTag && (
+                            <span className="inline-flex mt-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-200">
+                              {q.sourceTag}
+                            </span>
+                          )}
+                        </div>
+                        <button
+                          onClick={() => handleRemovePendingQuestion(idx)}
+                          className="w-7 h-7 rounded-md flex items-center justify-center text-surface-300 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition shrink-0"
+                        >
+                          <Icon name="Trash" className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
             <div className="flex gap-3 mt-6 pt-5 border-t border-surface-100 dark:border-surface-700">
-              <button onClick={() => setIsQuestionModalOpen(false)} className="flex-1 py-3 font-bold text-sm text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-700 rounded-xl transition">Iptal</button>
-              <button onClick={handleSaveQuestion} className="flex-[2] py-3 bg-brand-600 text-white font-bold text-sm rounded-xl hover:bg-brand-700 shadow-lg shadow-brand-600/20 transition">Kaydet</button>
+              <button onClick={handleCloseQuestionModal} className="flex-1 py-3 font-bold text-sm text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-700 rounded-xl transition">İptal</button>
+              <button onClick={handleAddQuestionToQueue} className="flex-1 py-3 bg-amber-500 text-white font-bold text-sm rounded-xl hover:bg-amber-600 shadow-lg shadow-amber-500/20 transition">Listeye Ekle</button>
+              <button
+                onClick={handleSaveQuestion}
+                disabled={pendingQuestions.length === 0}
+                className="flex-1 py-3 bg-brand-600 text-white font-bold text-sm rounded-xl hover:bg-brand-700 shadow-lg shadow-brand-600/20 transition disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {pendingQuestions.length > 0 ? `${pendingQuestions.length} Soruyu Kaydet` : 'Kaydet'}
+              </button>
             </div>
           </div>
         </div>
@@ -1582,7 +2229,7 @@ export default function App() {
                 <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center">
                   <Icon name="PenLine" className="w-4 h-4 text-white" />
                 </div>
-                <h3 className="text-xl font-extrabold text-surface-800 dark:text-white">Soruyu Duzenle</h3>
+                <h3 className="text-xl font-extrabold text-surface-800 dark:text-white">Soruyu Düzenle</h3>
               </div>
               <button onClick={() => setEditingQuestion(null)} className="p-2 bg-surface-100 dark:bg-surface-700 rounded-lg hover:bg-surface-200 dark:hover:bg-surface-600 transition">
                 <Icon name="X" className="w-4 h-4 text-surface-500" />
@@ -1590,49 +2237,177 @@ export default function App() {
             </div>
             <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar">
               <div>
-                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Gorsel URL</label>
+                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Görsel URL</label>
                 <input type="text" className="w-full px-4 py-3 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white text-sm" value={editForm.imageUrl} onChange={e => setEditForm({...editForm, imageUrl: e.target.value})} placeholder="https://..." />
               </div>
               <div>
-                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Giris Metni <span className="normal-case font-medium text-surface-300">(Opsiyonel)</span></label>
-                <textarea className="w-full px-4 py-3 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white h-16 resize-none text-sm" value={editForm.contextText} onChange={e => setEditForm({...editForm, contextText: e.target.value})} placeholder="Oncullerin ustunde yer alan giris metni..." />
+                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Giriş Metni <span className="normal-case font-medium text-surface-300">(Opsiyonel)</span></label>
+                <textarea className="w-full px-4 py-3 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white h-16 resize-none text-sm" value={editForm.contextText} onChange={e => setEditForm({...editForm, contextText: e.target.value})} placeholder="Öncüllerin üstünde yer alan giriş metni..." />
               </div>
               <div>
-                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Onculler <span className="normal-case font-medium text-surface-300">(Opsiyonel)</span></label>
+                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Öncüller <span className="normal-case font-medium text-surface-300">(Opsiyonel)</span></label>
                 <textarea
                   className="w-full px-4 py-3 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white h-20 resize-none text-sm"
-                  placeholder={"I. Madde Bir\nII. Madde Iki\nIII. Madde Uc"}
+                  placeholder={"I. Madde Bir\nII. Madde İki\nIII. Madde Üç"}
                   value={editForm.itemsText}
                   onChange={e => setEditForm({...editForm, itemsText: e.target.value})}
                 />
               </div>
               <div>
-                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Soru Koku</label>
-                <textarea className="w-full px-4 py-3 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white h-24 text-sm font-medium" value={editForm.questionRoot} onChange={e => setEditForm({...editForm, questionRoot: e.target.value})} placeholder="Asagidakilerden hangisi...?" />
+                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Soru Kökü</label>
+                <textarea className="w-full px-4 py-3 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white h-24 text-sm font-medium" value={editForm.questionRoot} onChange={e => setEditForm({...editForm, questionRoot: e.target.value})} placeholder="Aşağıdakilerden hangisi...?" />
               </div>
               <div>
-                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Siklar</label>
+                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">ŞIKLAR</label>
                 <textarea className="w-full px-4 py-3 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white h-28 font-mono text-xs" value={editForm.optionsText} onChange={e => setEditForm({...editForm, optionsText: e.target.value})} placeholder={"A) ...\nB) ...\nC) ...\nD) ...\nE) ..."} />
               </div>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-[88px_minmax(0,1fr)_minmax(0,1fr)] gap-4">
                 <div>
-                  <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Dogru Cevap</label>
-                  <select className="w-full px-4 py-3 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white font-bold text-sm" value={editForm.correctOption} onChange={e => setEditForm({...editForm, correctOption: parseInt(e.target.value)})}>
+                  <label className="block text-[10px] font-bold text-surface-400 uppercase tracking-wider mb-1.5">Doğru</label>
+                  <select className="w-full px-2 py-2.5 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white font-extrabold text-center text-xs" value={editForm.correctOption} onChange={e => setEditForm({...editForm, correctOption: parseInt(e.target.value)})}>
                     <option value={0}>A</option><option value={1}>B</option><option value={2}>C</option><option value={3}>D</option><option value={4}>E</option>
                   </select>
                 </div>
                 <div>
-                  <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Aciklama</label>
+                  <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Açıklama</label>
                   <input type="text" className="w-full px-4 py-3 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white text-sm" value={editForm.explanation} onChange={e => setEditForm({...editForm, explanation: e.target.value})} />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Kaynak Etiketi <span className="normal-case font-medium text-surface-300">(Opsiyonel)</span></label>
+                  <input
+                    type="text"
+                    className="w-full px-4 py-3 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white text-sm"
+                    value={editForm.sourceTag}
+                    onChange={e => setEditForm({...editForm, sourceTag: e.target.value})}
+                    placeholder="Örn: 2024 KPSS Deneme 3"
+                  />
                 </div>
               </div>
             </div>
             <div className="flex gap-3 mt-6 pt-5 border-t border-surface-100 dark:border-surface-700">
-              <button onClick={() => setEditingQuestion(null)} className="flex-1 py-3 font-bold text-sm text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-700 rounded-xl transition">Iptal</button>
+              <button onClick={() => setEditingQuestion(null)} className="flex-1 py-3 font-bold text-sm text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-700 rounded-xl transition">İptal</button>
               <button onClick={handleSaveEditQuestion} className="flex-[2] py-3 bg-gradient-to-r from-amber-500 to-orange-500 text-white font-bold text-sm rounded-xl hover:shadow-lg hover:shadow-amber-500/20 transition flex items-center justify-center gap-2">
                 <Icon name="CircleCheck" className="w-4 h-4" />
-                Guncelle
+                Güncelle
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Admin Question Preview Modal */}
+      {adminPreviewQuestion && (
+        <div className="fixed inset-0 z-[65] flex items-center justify-center bg-black/55 backdrop-blur-sm p-4 modal-backdrop">
+          <div className="bg-white dark:bg-surface-800 rounded-2xl shadow-2xl border border-surface-100 dark:border-surface-700 w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden modal-content">
+            <div className="flex items-center justify-between p-5 border-b border-surface-100 dark:border-surface-700">
+              <div>
+                <h3 className="text-lg font-extrabold text-surface-800 dark:text-white">Soru Test Onizleme</h3>
+                <p className="text-xs text-surface-400">Sinav ekranina yakin gorunum</p>
+              </div>
+              <button onClick={handleCloseAdminPreview} className="w-9 h-9 rounded-xl bg-surface-100 dark:bg-surface-700 flex items-center justify-center hover:bg-surface-200 dark:hover:bg-surface-600 transition">
+                <Icon name="X" className="w-4 h-4 text-surface-500" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-5 space-y-4">
+              {adminPreviewQuestion.sourceTag && (
+                <span className="inline-flex px-2.5 py-1 rounded-full text-[11px] font-semibold bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-200">
+                  {adminPreviewQuestion.sourceTag}
+                </span>
+              )}
+              {adminPreviewQuestion.contextText && (
+                <p className="text-sm text-surface-600 dark:text-surface-300 leading-relaxed">
+                  {adminPreviewQuestion.contextText}
+                </p>
+              )}
+              {adminPreviewQuestion.contentItems && adminPreviewQuestion.contentItems.length > 0 && (
+                <div className="rounded-xl bg-surface-50 dark:bg-surface-900/50 border border-surface-100 dark:border-surface-700 p-3.5 space-y-1">
+                  {adminPreviewQuestion.contentItems.map((item, idx) => (
+                    <p key={idx} className="text-sm text-surface-700 dark:text-surface-300 font-medium">
+                      {item}
+                    </p>
+                  ))}
+                </div>
+              )}
+              <h4 className="text-base font-bold text-surface-800 dark:text-white leading-relaxed">
+                {adminPreviewQuestion.questionText}
+              </h4>
+
+              <div className="space-y-2">
+                {adminPreviewQuestion.options.map((option, idx) => {
+                  const isSelected = adminPreviewSelectedOption === idx;
+                  const isCorrect = idx === adminPreviewQuestion.correctOptionIndex;
+                  const checkedWrong = adminPreviewChecked && isSelected && !isCorrect;
+                  const checkedRight = adminPreviewChecked && isCorrect;
+
+                  return (
+                    <button
+                      key={`${option}_${idx}`}
+                      onClick={() => {
+                        setAdminPreviewSelectedOption(idx);
+                        setAdminPreviewChecked(false);
+                      }}
+                      className={`w-full text-left border-2 rounded-xl p-3.5 flex items-start gap-3 transition ${
+                        checkedRight
+                          ? 'bg-emerald-50 dark:bg-emerald-900/20 border-emerald-300 dark:border-emerald-700'
+                          : checkedWrong
+                            ? 'bg-red-50 dark:bg-red-900/20 border-red-300 dark:border-red-700'
+                            : isSelected
+                              ? 'bg-brand-50 dark:bg-brand-900/20 border-brand-300 dark:border-brand-700'
+                              : 'bg-white dark:bg-surface-800 border-surface-200 dark:border-surface-700 hover:border-surface-300 dark:hover:border-surface-500'
+                      }`}
+                    >
+                      <span className={`w-7 h-7 rounded-lg flex items-center justify-center text-xs font-bold ${
+                        checkedRight
+                          ? 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300'
+                          : checkedWrong
+                            ? 'bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300'
+                            : isSelected
+                              ? 'bg-brand-100 dark:bg-brand-900/40 text-brand-700 dark:text-brand-300'
+                              : 'bg-surface-100 dark:bg-surface-700 text-surface-500 dark:text-surface-400'
+                      }`}>
+                        {String.fromCharCode(65 + idx)}
+                      </span>
+                      <span className="text-sm text-surface-700 dark:text-surface-200 font-medium leading-relaxed">{option}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {adminPreviewChecked && adminPreviewQuestion.explanation && (
+                <div className="rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900/40 p-3.5">
+                  <p className="text-xs font-bold uppercase tracking-wider text-surface-400 mb-1.5">Aciklama</p>
+                  <p className="text-sm text-surface-600 dark:text-surface-300 leading-relaxed">{adminPreviewQuestion.explanation}</p>
+                </div>
+              )}
+            </div>
+
+            <div className="p-5 border-t border-surface-100 dark:border-surface-700 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+              <p className="text-xs font-semibold text-surface-500 dark:text-surface-400">
+                {adminPreviewChecked && adminPreviewSelectedOption !== null
+                  ? adminPreviewSelectedOption === adminPreviewQuestion.correctOptionIndex
+                    ? 'Dogru cevap.'
+                    : `Yanlis cevap. Dogru: ${String.fromCharCode(65 + adminPreviewQuestion.correctOptionIndex)}`
+                  : 'Bir secenek secip cevabi kontrol edebilirsiniz.'}
+              </p>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => {
+                    setAdminPreviewSelectedOption(null);
+                    setAdminPreviewChecked(false);
+                  }}
+                  className="px-3.5 h-10 rounded-lg border border-surface-200 dark:border-surface-700 text-surface-500 dark:text-surface-300 hover:bg-surface-100 dark:hover:bg-surface-700 transition text-xs font-bold"
+                >
+                  Sifirla
+                </button>
+                <button
+                  onClick={() => setAdminPreviewChecked(true)}
+                  disabled={adminPreviewSelectedOption === null}
+                  className="px-4 h-10 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 transition text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Cevabi Kontrol Et
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -1671,7 +2446,7 @@ export default function App() {
                 </div>
                 <div>
                   <h3 className="text-lg font-extrabold text-surface-800 dark:text-white">Toplu Soru Aktarimi</h3>
-                  <p className="text-xs text-surface-400">{bulkStep === 'paste' ? 'Sorulari yapistirin' : `${bulkParsed.length} soru ayristirildi`}</p>
+                  <p className="text-xs text-surface-400">{bulkStep === 'paste' ? 'Sorulari yapistirin' : `${bulkParsed.length} soru ayristirildi${bulkParseErrors.length > 0 ? `, ${bulkParseErrors.length} hata` : ''}`}</p>
                 </div>
               </div>
               <button onClick={handleBulkClose} className="w-9 h-9 rounded-xl bg-surface-100 dark:bg-surface-700 flex items-center justify-center hover:bg-surface-200 dark:hover:bg-surface-600 transition">
@@ -1682,11 +2457,17 @@ export default function App() {
             {bulkStep === 'paste' ? (
               /* Paste Step */
               <div className="flex flex-col flex-1 overflow-hidden p-5 gap-4">
+                <p className="text-xs text-surface-400">
+                  Duz metin veya JSON formati desteklenir. JSON icin alanlar: <span className="font-mono">questionText</span>, <span className="font-mono">contentItems</span>, <span className="font-mono">options</span>, <span className="font-mono">answer</span>.
+                </p>
                 <textarea
                   value={bulkText}
-                  onChange={(e) => setBulkText(e.target.value)}
+                  onChange={(e) => {
+                    setBulkText(e.target.value);
+                    if (bulkParseErrors.length > 0) setBulkParseErrors([]);
+                  }}
                   className="flex-1 min-h-[250px] w-full p-4 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white text-sm font-mono resize-none"
-                  placeholder={"Sorulari buraya yapistirin...\n\nOrnek format:\n1. Asagidakilerden hangisi...?\nA) Secenek 1\nB) Secenek 2\nC) Secenek 3\nD) Secenek 4\nE) Secenek 5\n\n1. COZUM: Aciklama... CEVAP: A"}
+                  placeholder={"Sorulari buraya yapistirin...\n\nDuz metin ornegi:\n1. Asagidakilerden hangisi...?\nA) Secenek 1\nB) Secenek 2\nC) Secenek 3\nD) Secenek 4\nE) Secenek 5\n\n1. COZUM: Aciklama... CEVAP: A\n\nJSON ornegi:\n[{\"questionText\":\"...\",\"contentItems\":[\"...\"],\"options\":[\"...\"],\"answer\":\"A\"}]"}
                 />
                 <button
                   onClick={handleBulkParse}
@@ -1701,6 +2482,23 @@ export default function App() {
               /* Preview Step */
               <div className="flex flex-col flex-1 overflow-hidden">
                 <div className="flex-1 overflow-y-auto p-5 space-y-3">
+                  {bulkParseErrors.length > 0 && (
+                    <div className="rounded-xl border border-amber-200 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-700 p-3">
+                      <p className="text-xs font-bold uppercase tracking-wider text-amber-700 dark:text-amber-300 mb-2">Schema Hata Listesi</p>
+                      <div className="space-y-1">
+                        {bulkParseErrors.slice(0, 12).map((err, idx) => (
+                          <p key={`${err}-${idx}`} className="text-xs text-amber-800 dark:text-amber-200">
+                            {idx + 1}. {err}
+                          </p>
+                        ))}
+                        {bulkParseErrors.length > 12 && (
+                          <p className="text-xs text-amber-700 dark:text-amber-300">
+                            +{bulkParseErrors.length - 12} hata daha...
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  )}
                   {bulkParsed.length === 0 ? (
                     <div className="text-center py-12">
                       <Icon name="FileQuestion" className="w-12 h-12 text-surface-300 dark:text-surface-600 mx-auto mb-3" />
@@ -1720,7 +2518,7 @@ export default function App() {
                               <div className="ml-8 mb-2 space-y-0.5">
                                 {q.contentItems.map((item, i) => (
                                   <p key={i} className="text-xs text-surface-500 dark:text-surface-400">
-                                    <span className="font-medium text-surface-400 dark:text-surface-500 mr-1">{['I','II','III','IV','V','VI','VII','VIII','IX','X'][i] || i+1}.</span> {item.substring(0, 60)}{item.length > 60 ? '...' : ''}
+                                    {item.substring(0, 60)}{item.length > 60 ? '...' : ''}
                                   </p>
                                 ))}
                               </div>

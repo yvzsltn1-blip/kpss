@@ -24,6 +24,7 @@ export interface Question {
   imageUrl?: string; // Optional image link
   contextText?: string; // Optional intro/context text above items
   contentItems?: string[]; // Optional list items (I., II., III. etc.)
+  sourceTag?: string; // Optional source label (e.g. "2025 Deneme 3")
   questionText: string;
   options: string[];
   correctOptionIndex: number;

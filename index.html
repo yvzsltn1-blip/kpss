@@ -73,6 +73,17 @@
   }
 }
 </script>
+<script>
+  (function () {
+    try {
+      var storedTheme = localStorage.getItem('kpsspro_theme');
+      var shouldUseDark = storedTheme !== 'light';
+      document.documentElement.classList.toggle('dark', shouldUseDark);
+    } catch {
+      document.documentElement.classList.add('dark');
+    }
+  })();
+</script>
 <link rel="stylesheet" href="/index.css">
 </head>
   <body class="bg-surface-50 text-surface-900 dark:bg-surface-900 dark:text-surface-100 transition-colors duration-300">
