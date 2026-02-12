@@ -32,6 +32,16 @@ service cloud.firestore {
       allow read, create, update, delete: if isSignedIn() && request.auth.uid == userId;
     }
 
+    // Kullaniciya ait favori sorular
+    match /users/{userId}/favoriteQuestions/{questionTrackingId} {
+      allow read, create, update, delete: if isSignedIn() && request.auth.uid == userId;
+    }
+
+    // Kullanicinin soru bazli cozum istatistikleri
+    match /users/{userId}/seenQuestions/{questionTrackingId} {
+      allow read, create, update, delete: if isSignedIn() && request.auth.uid == userId;
+    }
+
     function isValidReportCreate() {
       return request.resource.data.keys().hasOnly([
           'questionId',

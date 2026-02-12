@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#0f172a" />
+    <meta name="theme-color" content="#f8fafc" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>KPSS Pro - Akilli Hazirlik</title>
@@ -77,10 +77,10 @@
   (function () {
     try {
       var storedTheme = localStorage.getItem('kpsspro_theme');
-      var shouldUseDark = storedTheme !== 'light';
+      var shouldUseDark = storedTheme === 'dark';
       document.documentElement.classList.toggle('dark', shouldUseDark);
     } catch {
-      document.documentElement.classList.add('dark');
+      document.documentElement.classList.remove('dark');
     }
   })();
 </script>

@@ -57,6 +57,34 @@ type WrongQuestionStats = {
   lastWrongAt: number;
   resolvedAt: number;
 };
+type FavoriteQuestionRecord = {
+  questionTrackingId: string;
+  topicId: string;
+  questionId: string | null;
+  questionText: string;
+  sourceTag: string | null;
+  createdAt: number;
+  updatedAt: number;
+};
+type SeenQuestionStats = {
+  questionTrackingId: string;
+  topicId: string;
+  questionId: string | null;
+  questionText: string;
+  sourceTag: string | null;
+  firstSeenAt: number;
+  lastSeenAt: number;
+  seenCount: number;
+  answeredCount: number;
+  correctCount: number;
+  wrongCount: number;
+  blankCount: number;
+};
+type QuizStatusFilter = {
+  wrong: boolean;
+  blank: boolean;
+  favorite: boolean;
+};
 
 // Kategori Renk Tanımları
 const CATEGORY_COLORS: Record<string, { bg: string; bgLight: string; bgDark: string; text: string; textDark: string; gradient: string; shadow: string; border: string; borderDark: string }> = {
@@ -127,6 +155,22 @@ const getQuestionTrackingIdFromWrongDocId = (docId: string): string => {
     return docId;
   }
 };
+const getFavoriteQuestionDocId = (questionTrackingId: string): string => encodeURIComponent(questionTrackingId);
+const getQuestionTrackingIdFromFavoriteDocId = (docId: string): string => {
+  try {
+    return decodeURIComponent(docId);
+  } catch {
+    return docId;
+  }
+};
+const getSeenQuestionDocId = (questionTrackingId: string): string => encodeURIComponent(questionTrackingId);
+const getQuestionTrackingIdFromSeenDocId = (docId: string): string => {
+  try {
+    return decodeURIComponent(docId);
+  } catch {
+    return docId;
+  }
+};
 
 const getStoredCategories = (): Category[] => {
   if (typeof window === 'undefined') return INITIAL_CATEGORIES;
@@ -159,7 +203,7 @@ const getStoredCategories = (): Category[] => {
 };
 
 const getStoredTheme = (): boolean => {
-  if (typeof window === 'undefined') return true;
+  if (typeof window === 'undefined') return false;
   try {
     const storedTheme = window.localStorage.getItem(STORAGE_KEYS.theme);
     if (storedTheme === 'dark') return true;
@@ -167,7 +211,7 @@ const getStoredTheme = (): boolean => {
   } catch {
     // Ignore storage errors and continue with default
   }
-  return true;
+  return false;
 };
 
 const getStoredQuizSize = (): 0 | 1 | 2 => {
@@ -314,6 +358,51 @@ const getSourceTagLabel = (sourceKey: string): string => {
   return sourceKey === UNTAGGED_SOURCE_KEY ? 'Etiketsiz' : sourceKey;
 };
 
+const shuffleOptionsWithAnswer = (question: Question): Question => {
+  const options = Array.isArray(question.options) ? [...question.options] : [];
+  if (options.length < 2) {
+    return { ...question, options };
+  }
+
+  const indexedOptions = options.map((option, originalIndex) => ({ option, originalIndex }));
+  for (let i = indexedOptions.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [indexedOptions[i], indexedOptions[j]] = [indexedOptions[j], indexedOptions[i]];
+  }
+
+  const remappedCorrectIndex = indexedOptions.findIndex(
+    (entry) => entry.originalIndex === question.correctOptionIndex
+  );
+
+  return {
+    ...question,
+    options: indexedOptions.map((entry) => entry.option),
+    correctOptionIndex: remappedCorrectIndex >= 0 ? remappedCorrectIndex : question.correctOptionIndex,
+  };
+};
+
+const normalizeQuestionTrackingText = (value: string): string => value.trim().toLocaleLowerCase('tr');
+
+const getQuestionTrackingId = (question: Question, topicId: string, index: number): string => {
+  if (typeof question.id === 'string' && question.id.length > 0) {
+    return question.id;
+  }
+  return `${topicId}_${index}_${normalizeQuestionTrackingText(question.questionText)}`;
+};
+
+const getLegacyTrackingTextKey = (questionTrackingId: string, topicId: string): string | null => {
+  const topicPrefix = `${topicId}_`;
+  if (!questionTrackingId.startsWith(topicPrefix)) return null;
+  const withoutTopic = questionTrackingId.slice(topicPrefix.length);
+  const firstSeparatorIndex = withoutTopic.indexOf('_');
+  if (firstSeparatorIndex <= 0) return null;
+  const maybeIndex = withoutTopic.slice(0, firstSeparatorIndex);
+  if (!/^\d+$/.test(maybeIndex)) return null;
+  const rawText = withoutTopic.slice(firstSeparatorIndex + 1);
+  if (!rawText) return null;
+  return normalizeQuestionTrackingText(rawText);
+};
+
 type QuestionFormState = {
   imageUrl: string;
   contextText: string;
@@ -370,6 +459,8 @@ export default function App() {
   const [categories, setCategories] = useState<Category[]>(() => getStoredCategories());
   const [topicProgressStats, setTopicProgressStats] = useState<Record<string, TopicProgressStats>>({});
   const [wrongQuestionStatsById, setWrongQuestionStatsById] = useState<Record<string, WrongQuestionStats>>({});
+  const [favoriteQuestionsById, setFavoriteQuestionsById] = useState<Record<string, FavoriteQuestionRecord>>({});
+  const [seenQuestionsById, setSeenQuestionsById] = useState<Record<string, SeenQuestionStats>>({});
   const [activeCategory, setActiveCategory] = useState<Category | null>(null);
   const [activeTopic, setActiveTopic] = useState<{ cat: Category, sub: SubCategory } | null>(null);
   const [isDarkMode, setIsDarkMode] = useState<boolean>(() => getStoredTheme());
@@ -413,7 +504,11 @@ export default function App() {
   const [quizConfirmAction, setQuizConfirmAction] = useState<QuizConfirmAction | null>(null);
   const [isResetStatsModalOpen, setIsResetStatsModalOpen] = useState(false);
   const [resetStatsTargetTopic, setResetStatsTargetTopic] = useState<{ id: string; name: string } | null>(null);
-  const [quizStatusFilter, setQuizStatusFilter] = useState<{ wrong: boolean; blank: boolean }>({ wrong: false, blank: false });
+  const [quizStatusFilter, setQuizStatusFilter] = useState<QuizStatusFilter>({ wrong: false, blank: false, favorite: false });
+  const [topicSearchTerm, setTopicSearchTerm] = useState('');
+  const [topicCardFilter, setTopicCardFilter] = useState<'all' | 'in_progress' | 'completed' | 'not_started'>('all');
+  const [homeStatsCategoryFilter, setHomeStatsCategoryFilter] = useState<string>('all');
+  const [isRulesHelpModalOpen, setIsRulesHelpModalOpen] = useState(false);
 
   // Admin Modals
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
@@ -438,10 +533,12 @@ export default function App() {
 
   // Bulk Import State
   const [isBulkImportOpen, setIsBulkImportOpen] = useState(false);
+  const [bulkSourceTagInput, setBulkSourceTagInput] = useState('');
   const [bulkText, setBulkText] = useState('');
   const [bulkParsed, setBulkParsed] = useState<Question[]>([]);
   const [bulkParseErrors, setBulkParseErrors] = useState<string[]>([]);
   const [bulkStep, setBulkStep] = useState<'paste' | 'preview'>('paste');
+  const isBulkSourceTagValid = bulkSourceTagInput === ' ' || bulkSourceTagInput.trim().length > 0;
 
   // Add Question Form State
   const [questionForm, setQuestionForm] = useState<QuestionFormState>(EMPTY_QUESTION_FORM);
@@ -457,24 +554,80 @@ export default function App() {
   const timerRef = useRef<number | null>(null);
   // Auto-advance ref
   const autoAdvanceRef = useRef<number | null>(null);
+  const buildQuestionIdsByTopic = (status: WrongQuestionStatus): Record<string, string[]> => {
+    const trackingIdsByTopic: Record<string, Set<string>> = {};
+    const legacyTextKeysByTopic: Record<string, Set<string>> = {};
+    (Object.values(wrongQuestionStatsById) as WrongQuestionStats[]).forEach((stats) => {
+      if (stats.status !== status) return;
+      if (!trackingIdsByTopic[stats.topicId]) trackingIdsByTopic[stats.topicId] = new Set<string>();
+      trackingIdsByTopic[stats.topicId].add(stats.questionTrackingId);
+      const legacyTextKey = getLegacyTrackingTextKey(stats.questionTrackingId, stats.topicId);
+      if (!legacyTextKey) return;
+      if (!legacyTextKeysByTopic[stats.topicId]) legacyTextKeysByTopic[stats.topicId] = new Set<string>();
+      legacyTextKeysByTopic[stats.topicId].add(legacyTextKey);
+    });
+
+    const next: Record<string, string[]> = {};
+    Object.keys(allQuestions).forEach((topicId) => {
+      const topicQuestions = allQuestions[topicId] || [];
+      const activeTrackingIds = trackingIdsByTopic[topicId];
+      const legacyTextKeys = legacyTextKeysByTopic[topicId];
+      if (!activeTrackingIds && !legacyTextKeys) return;
+      const topicMatchedIds = new Set<string>();
+      topicQuestions.forEach((question, index) => {
+        const questionTrackingId = getQuestionTrackingId(question, topicId, index);
+        if (activeTrackingIds?.has(questionTrackingId)) {
+          topicMatchedIds.add(questionTrackingId);
+          return;
+        }
+        if (!legacyTextKeys) return;
+        const questionTextKey = normalizeQuestionTrackingText(question.questionText);
+        if (legacyTextKeys.has(questionTextKey)) {
+          topicMatchedIds.add(questionTrackingId);
+        }
+      });
+      if (topicMatchedIds.size > 0) {
+        next[topicId] = Array.from(topicMatchedIds);
+      }
+    });
+
+    return next;
+  };
+
   const wrongQuestionIdsByTopic = useMemo<Record<string, string[]>>(() => {
-    const next: Record<string, string[]> = {};
-    (Object.values(wrongQuestionStatsById) as WrongQuestionStats[]).forEach((stats) => {
-      if (stats.status !== 'active_wrong') return;
-      if (!next[stats.topicId]) next[stats.topicId] = [];
-      next[stats.topicId].push(stats.questionTrackingId);
-    });
-    return next;
-  }, [wrongQuestionStatsById]);
+    return buildQuestionIdsByTopic('active_wrong');
+  }, [wrongQuestionStatsById, allQuestions]);
   const blankQuestionIdsByTopic = useMemo<Record<string, string[]>>(() => {
-    const next: Record<string, string[]> = {};
-    (Object.values(wrongQuestionStatsById) as WrongQuestionStats[]).forEach((stats) => {
-      if (stats.status !== 'active_blank') return;
-      if (!next[stats.topicId]) next[stats.topicId] = [];
-      next[stats.topicId].push(stats.questionTrackingId);
+    return buildQuestionIdsByTopic('active_blank');
+  }, [wrongQuestionStatsById, allQuestions]);
+  const favoriteQuestionIdsByTopic = useMemo<Record<string, string[]>>(() => {
+    const trackingIdsByTopic: Record<string, Set<string>> = {};
+    (Object.values(favoriteQuestionsById) as FavoriteQuestionRecord[]).forEach((favoriteRecord) => {
+      if (!favoriteRecord.topicId || !favoriteRecord.questionTrackingId) return;
+      if (!trackingIdsByTopic[favoriteRecord.topicId]) trackingIdsByTopic[favoriteRecord.topicId] = new Set<string>();
+      trackingIdsByTopic[favoriteRecord.topicId].add(favoriteRecord.questionTrackingId);
     });
+
+    const next: Record<string, string[]> = {};
+    Object.keys(allQuestions).forEach((topicId) => {
+      const topicQuestions = allQuestions[topicId] || [];
+      const favoriteTrackingIds = trackingIdsByTopic[topicId];
+      if (!favoriteTrackingIds) return;
+      const topicMatchedIds = new Set<string>();
+      topicQuestions.forEach((question, index) => {
+        const questionTrackingId = getQuestionTrackingId(question, topicId, index);
+        if (favoriteTrackingIds.has(questionTrackingId)) {
+          topicMatchedIds.add(questionTrackingId);
+        }
+      });
+      if (topicMatchedIds.size > 0) {
+        next[topicId] = Array.from(topicMatchedIds);
+      }
+    });
+
     return next;
-  }, [wrongQuestionStatsById]);
+  }, [favoriteQuestionsById, allQuestions]);
+  
 
   // -- Effects --
   useEffect(() => {
@@ -497,6 +650,14 @@ export default function App() {
       // Ignore storage errors
     }
   }, [categories]);
+
+  useEffect(() => {
+    if (homeStatsCategoryFilter === 'all') return;
+    const hasSelectedCategory = categories.some((cat) => cat.id === homeStatsCategoryFilter);
+    if (!hasSelectedCategory) {
+      setHomeStatsCategoryFilter('all');
+    }
+  }, [categories, homeStatsCategoryFilter]);
 
   useEffect(() => {
     try {
@@ -715,11 +876,15 @@ export default function App() {
     if (!user?.uid) {
       setTopicProgressStats({});
       setWrongQuestionStatsById({});
+      setFavoriteQuestionsById({});
+      setSeenQuestionsById({});
       return;
     }
 
     const topicStatsQuery = query(collection(db, 'users', user.uid, 'topicStats'));
     const wrongQuestionsQuery = query(collection(db, 'users', user.uid, 'wrongQuestions'));
+    const favoriteQuestionsQuery = query(collection(db, 'users', user.uid, 'favoriteQuestions'));
+    const seenQuestionsQuery = query(collection(db, 'users', user.uid, 'seenQuestions'));
 
     const unsubscribeTopicStats = onSnapshot(
       topicStatsQuery,
@@ -793,9 +958,78 @@ export default function App() {
       }
     );
 
+    const unsubscribeFavoriteQuestions = onSnapshot(
+      favoriteQuestionsQuery,
+      (snapshot) => {
+        const nextFavorites: Record<string, FavoriteQuestionRecord> = {};
+        snapshot.forEach((favoriteDoc) => {
+          const data = favoriteDoc.data() as Record<string, unknown>;
+          const questionTrackingId =
+            (typeof data.questionTrackingId === 'string' && data.questionTrackingId.length > 0)
+              ? data.questionTrackingId
+              : getQuestionTrackingIdFromFavoriteDocId(favoriteDoc.id);
+          if (!questionTrackingId) return;
+          const topicId = typeof data.topicId === 'string' ? data.topicId : '';
+          const questionText = typeof data.questionText === 'string' ? data.questionText : '';
+          nextFavorites[questionTrackingId] = {
+            questionTrackingId,
+            topicId,
+            questionId: typeof data.questionId === 'string' ? data.questionId : null,
+            questionText,
+            sourceTag: typeof data.sourceTag === 'string' ? data.sourceTag : null,
+            createdAt: getTimestampMillis(data.createdAt),
+            updatedAt: getTimestampMillis(data.updatedAt),
+          };
+        });
+        setFavoriteQuestionsById(nextFavorites);
+      },
+      (error) => {
+        console.error('Favori sorular okunamadi:', error);
+        setFavoriteQuestionsById({});
+      }
+    );
+
+    const unsubscribeSeenQuestions = onSnapshot(
+      seenQuestionsQuery,
+      (snapshot) => {
+        const nextSeenQuestions: Record<string, SeenQuestionStats> = {};
+        snapshot.forEach((seenDoc) => {
+          const data = seenDoc.data() as Record<string, unknown>;
+          const questionTrackingId =
+            (typeof data.questionTrackingId === 'string' && data.questionTrackingId.length > 0)
+              ? data.questionTrackingId
+              : getQuestionTrackingIdFromSeenDocId(seenDoc.id);
+          if (!questionTrackingId) return;
+          const topicId = typeof data.topicId === 'string' ? data.topicId : '';
+          const questionText = typeof data.questionText === 'string' ? data.questionText : '';
+          nextSeenQuestions[questionTrackingId] = {
+            questionTrackingId,
+            topicId,
+            questionId: typeof data.questionId === 'string' ? data.questionId : null,
+            questionText,
+            sourceTag: typeof data.sourceTag === 'string' ? data.sourceTag : null,
+            firstSeenAt: getTimestampMillis(data.firstSeenAt),
+            lastSeenAt: getTimestampMillis(data.lastSeenAt),
+            seenCount: Number.isFinite(data.seenCount) ? Math.max(0, Math.floor(Number(data.seenCount))) : 0,
+            answeredCount: Number.isFinite(data.answeredCount) ? Math.max(0, Math.floor(Number(data.answeredCount))) : 0,
+            correctCount: Number.isFinite(data.correctCount) ? Math.max(0, Math.floor(Number(data.correctCount))) : 0,
+            wrongCount: Number.isFinite(data.wrongCount) ? Math.max(0, Math.floor(Number(data.wrongCount))) : 0,
+            blankCount: Number.isFinite(data.blankCount) ? Math.max(0, Math.floor(Number(data.blankCount))) : 0,
+          };
+        });
+        setSeenQuestionsById(nextSeenQuestions);
+      },
+      (error) => {
+        console.error('Cozulen soru istatistikleri okunamadi:', error);
+        setSeenQuestionsById({});
+      }
+    );
+
     return () => {
       unsubscribeTopicStats();
       unsubscribeWrongQuestions();
+      unsubscribeFavoriteQuestions();
+      unsubscribeSeenQuestions();
     };
   }, [user?.uid]);
 
@@ -806,7 +1040,7 @@ export default function App() {
         setQuizState(prev => {
           if (prev.timeLeft <= 1) {
             if (timerRef.current) clearInterval(timerRef.current);
-            return { ...prev, timeLeft: 0, showResults: true, isTimerActive: false };
+            return { ...prev, timeLeft: 0, isTimerActive: false };
           }
           return { ...prev, timeLeft: prev.timeLeft - 1 };
         });
@@ -819,11 +1053,30 @@ export default function App() {
   }, [currentView, quizState.isTimerActive, quizState.showResults]);
 
   useEffect(() => {
+    if (currentView !== 'quiz') return;
+    if (quizState.showResults) return;
+    if (quizState.timeLeft !== 0) return;
+    if (quizState.questions.length === 0) return;
+    handleFinishQuiz();
+  }, [currentView, quizState.showResults, quizState.timeLeft, quizState.questions.length]);
+
+  useEffect(() => {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
       if (autoAdvanceRef.current) clearTimeout(autoAdvanceRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    setTopicSearchTerm('');
+    setTopicCardFilter('all');
+  }, [activeCategory?.id]);
+
+  useEffect(() => {
+    if (currentView !== 'dashboard') {
+      setIsRulesHelpModalOpen(false);
+    }
+  }, [currentView]);
 
   // -- Handlers --
 
@@ -928,25 +1181,29 @@ export default function App() {
     });
   };
 
-  const openQuizSetup = (category: Category, sub: SubCategory, preset: 'all' | 'wrong' | 'blank' | 'both' = 'all') => {
+  const openQuizSetup = (category: Category, sub: SubCategory, preset: 'all' | 'wrong' | 'blank' | 'favorite' | 'both' = 'all') => {
     const topicQuestions = allQuestions[sub.id] || [];
     const wrongSet = new Set(wrongQuestionIdsByTopic[sub.id] || []);
     const blankSet = new Set(blankQuestionIdsByTopic[sub.id] || []);
+    const favoriteSet = new Set(favoriteQuestionIdsByTopic[sub.id] || []);
     const nextStatusFilter =
       preset === 'wrong'
-        ? { wrong: true, blank: false }
+        ? { wrong: true, blank: false, favorite: false }
         : preset === 'blank'
-          ? { wrong: false, blank: true }
+          ? { wrong: false, blank: true, favorite: false }
+          : preset === 'favorite'
+            ? { wrong: false, blank: false, favorite: true }
           : preset === 'both'
-            ? { wrong: true, blank: true }
-            : { wrong: false, blank: false };
-    const statusActive = nextStatusFilter.wrong || nextStatusFilter.blank;
+            ? { wrong: true, blank: true, favorite: false }
+            : { wrong: false, blank: false, favorite: false };
+    const statusActive = nextStatusFilter.wrong || nextStatusFilter.blank || nextStatusFilter.favorite;
     const filteredCount = statusActive
       ? topicQuestions.filter((question, index) => {
           const questionTrackingId = getQuestionTrackingId(question, sub.id, index);
           const includeWrong = nextStatusFilter.wrong && wrongSet.has(questionTrackingId);
           const includeBlank = nextStatusFilter.blank && blankSet.has(questionTrackingId);
-          return includeWrong || includeBlank;
+          const includeFavorite = nextStatusFilter.favorite && favoriteSet.has(questionTrackingId);
+          return includeWrong || includeBlank || includeFavorite;
         }).length
       : topicQuestions.length;
 
@@ -967,13 +1224,15 @@ export default function App() {
     const topicId = activeTopic.sub.id;
     const wrongSet = new Set(wrongQuestionIdsByTopic[topicId] || []);
     const blankSet = new Set(blankQuestionIdsByTopic[topicId] || []);
-    const isStatusFilterActive = quizStatusFilter.wrong || quizStatusFilter.blank;
+    const favoriteSet = new Set(favoriteQuestionIdsByTopic[topicId] || []);
+    const isStatusFilterActive = quizStatusFilter.wrong || quizStatusFilter.blank || quizStatusFilter.favorite;
     const topicQuestionsPool = (allQuestions[topicId] || []).filter((question, index) => {
       if (!isStatusFilterActive) return true;
       const questionTrackingId = getQuestionTrackingId(question, topicId, index);
       const includeWrong = quizStatusFilter.wrong && wrongSet.has(questionTrackingId);
       const includeBlank = quizStatusFilter.blank && blankSet.has(questionTrackingId);
-      return includeWrong || includeBlank;
+      const includeFavorite = quizStatusFilter.favorite && favoriteSet.has(questionTrackingId);
+      return includeWrong || includeBlank || includeFavorite;
     });
     const selectedTagEntries = Object.keys(quizTagQuestionCounts)
       .map((sourceKey) => ({
@@ -981,9 +1240,18 @@ export default function App() {
         count: Math.max(0, Math.floor(Number(quizTagQuestionCounts[sourceKey] || 0))),
       }))
       .filter((entry) => entry.count > 0);
+    let remainingTagQuota = Math.max(0, quizConfig.questionCount);
+    const boundedSelectedTagEntries = selectedTagEntries
+      .map((entry) => {
+        if (remainingTagQuota <= 0) return { ...entry, count: 0 };
+        const boundedCount = Math.min(entry.count, remainingTagQuota);
+        remainingTagQuota -= boundedCount;
+        return { ...entry, count: boundedCount };
+      })
+      .filter((entry) => entry.count > 0);
 
     let selectedQuestions: Question[] = [];
-    if (selectedTagEntries.length > 0) {
+    if (boundedSelectedTagEntries.length > 0) {
       const tagBuckets = topicQuestionsPool.reduce<Record<string, Question[]>>((acc, question) => {
         const sourceKey = getQuestionSourceKey(question);
         if (!acc[sourceKey]) acc[sourceKey] = [];
@@ -991,7 +1259,7 @@ export default function App() {
         return acc;
       }, {});
 
-      selectedTagEntries.forEach(({ sourceKey, count }) => {
+      boundedSelectedTagEntries.forEach(({ sourceKey, count }) => {
         const tagQuestions = [...(tagBuckets[sourceKey] || [])];
         for (let i = tagQuestions.length - 1; i > 0; i--) {
           const j = Math.floor(Math.random() * (i + 1));
@@ -1011,6 +1279,8 @@ export default function App() {
       }
       selectedQuestions = topicQuestionsPool.slice(0, quizConfig.questionCount);
     }
+
+    const selectedQuestionsWithShuffledOptions = selectedQuestions.map((question) => shuffleOptionsWithAnswer(question));
 
     setCurrentView('quiz');
     setQuizState(prev => ({
@@ -1032,11 +1302,11 @@ export default function App() {
     
 
     setTimeout(() => {
-      if (selectedQuestions.length > 0) {
+      if (selectedQuestionsWithShuffledOptions.length > 0) {
         setQuizState(prev => ({
           ...prev,
-          questions: selectedQuestions,
-          userAnswers: new Array(selectedQuestions.length).fill(null),
+          questions: selectedQuestionsWithShuffledOptions,
+          userAnswers: new Array(selectedQuestionsWithShuffledOptions.length).fill(null),
           loading: false
         }));
       } else {
@@ -1103,11 +1373,42 @@ export default function App() {
     }));
   };
 
-  const getQuestionTrackingId = (question: Question, topicId: string, index: number): string => {
-    if (typeof question.id === 'string' && question.id.length > 0) {
-      return question.id;
+  const toggleFavoriteQuestion = async (question: Question, questionIndex: number): Promise<void> => {
+    if (!user?.uid || !activeTopic) return;
+    const topicId = activeTopic.sub.id;
+    const questionTrackingId = getQuestionTrackingId(question, topicId, questionIndex);
+    const alreadyFavorite = Boolean(favoriteQuestionsById[questionTrackingId]);
+    const favoriteRef = doc(db, 'users', user.uid, 'favoriteQuestions', getFavoriteQuestionDocId(questionTrackingId));
+
+    try {
+      if (alreadyFavorite) {
+        setFavoriteQuestionsById((prev) => {
+          const next = { ...prev };
+          delete next[questionTrackingId];
+          return next;
+        });
+        await deleteDoc(favoriteRef);
+        return;
+      }
+
+      const now = Date.now();
+      const favoriteRecord: FavoriteQuestionRecord = {
+        questionTrackingId,
+        topicId,
+        questionId: typeof question.id === 'string' ? question.id : null,
+        questionText: question.questionText,
+        sourceTag: typeof question.sourceTag === 'string' ? question.sourceTag : null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      setFavoriteQuestionsById((prev) => ({
+        ...prev,
+        [questionTrackingId]: favoriteRecord,
+      }));
+      await setDoc(favoriteRef, favoriteRecord, { merge: true });
+    } catch (error) {
+      console.error('Favori sorular guncellenemedi:', error);
     }
-    return `${topicId}_${index}_${question.questionText.trim().toLocaleLowerCase('tr')}`;
   };
 
   const handleFinishQuiz = () => {
@@ -1121,7 +1422,9 @@ export default function App() {
       const currentQuestions = quizState.questions;
       const now = Date.now();
       const nextWrongQuestionStatsById = { ...wrongQuestionStatsById };
+      const nextSeenQuestionsById = { ...seenQuestionsById };
       const changedQuestionIds = new Set<string>();
+      const changedSeenQuestionIds = new Set<string>();
       const prevTopicStats = topicProgressStats[topicId] || EMPTY_TOPIC_PROGRESS;
       const nextTopicStats: TopicProgressStats = {
         ...prevTopicStats,
@@ -1138,7 +1441,24 @@ export default function App() {
       currentQuestions.forEach((question, index) => {
         const questionTrackingId = getQuestionTrackingId(question, topicId, index);
         const prevWrongStats = nextWrongQuestionStatsById[questionTrackingId];
+        const prevSeenStats = nextSeenQuestionsById[questionTrackingId];
         const answer = currentAnswers[index];
+
+        nextSeenQuestionsById[questionTrackingId] = {
+          questionTrackingId,
+          topicId,
+          questionId: typeof question.id === 'string' ? question.id : null,
+          questionText: question.questionText,
+          sourceTag: typeof question.sourceTag === 'string' ? question.sourceTag : null,
+          firstSeenAt: prevSeenStats?.firstSeenAt || now,
+          lastSeenAt: now,
+          seenCount: (prevSeenStats?.seenCount || 0) + 1,
+          answeredCount: (prevSeenStats?.answeredCount || 0) + (answer === null || answer === undefined ? 0 : 1),
+          correctCount: (prevSeenStats?.correctCount || 0) + (answer === question.correctOptionIndex ? 1 : 0),
+          wrongCount: (prevSeenStats?.wrongCount || 0) + (answer !== null && answer !== undefined && answer !== question.correctOptionIndex ? 1 : 0),
+          blankCount: (prevSeenStats?.blankCount || 0) + (answer === null || answer === undefined ? 1 : 0),
+        };
+        changedSeenQuestionIds.add(questionTrackingId);
 
         if (answer === null || answer === undefined) {
           nextTopicStats.totalBlankAnswers += 1;
@@ -1199,6 +1519,7 @@ export default function App() {
         [topicId]: nextTopicStats,
       }));
       setWrongQuestionStatsById(nextWrongQuestionStatsById);
+      setSeenQuestionsById(nextSeenQuestionsById);
 
       const persistTopicAndWrongStats = async () => {
         try {
@@ -1211,6 +1532,16 @@ export default function App() {
             batch.set(
               doc(db, 'users', user.uid, 'wrongQuestions', getWrongQuestionDocId(questionTrackingId)),
               wrongStats,
+              { merge: true }
+            );
+          });
+
+          changedSeenQuestionIds.forEach((questionTrackingId) => {
+            const seenStats = nextSeenQuestionsById[questionTrackingId];
+            if (!seenStats) return;
+            batch.set(
+              doc(db, 'users', user.uid, 'seenQuestions', getSeenQuestionDocId(questionTrackingId)),
+              seenStats,
               { merge: true }
             );
           });
@@ -1510,6 +1841,103 @@ export default function App() {
     setIsTopicModalOpen(false);
   };
 
+  const handleRenameTopic = () => {
+    if (!adminSelectedCatId || !adminSelectedTopicId) return;
+    const selectedCategory = categories.find((cat) => cat.id === adminSelectedCatId);
+    const selectedTopic = selectedCategory?.subCategories.find((sub) => sub.id === adminSelectedTopicId);
+    if (!selectedTopic) return;
+
+    const rawName = window.prompt('Yeni konu adini giriniz:', selectedTopic.name);
+    if (rawName === null) return;
+    const nextName = rawName.trim();
+    if (!nextName) {
+      alert('Konu adi bos olamaz.');
+      return;
+    }
+    if (nextName === selectedTopic.name) return;
+
+    setCategories((prev) => prev.map((cat) => {
+      if (cat.id !== adminSelectedCatId) return cat;
+      return {
+        ...cat,
+        subCategories: cat.subCategories.map((sub) => (
+          sub.id === adminSelectedTopicId
+            ? { ...sub, name: nextName }
+            : sub
+        )),
+      };
+    }));
+    setActiveCategory((prev) => {
+      if (!prev || prev.id !== adminSelectedCatId) return prev;
+      return {
+        ...prev,
+        subCategories: prev.subCategories.map((sub) => (
+          sub.id === adminSelectedTopicId
+            ? { ...sub, name: nextName }
+            : sub
+        )),
+      };
+    });
+  };
+
+  const handleDeleteTopic = async () => {
+    if (!adminSelectedCatId || !adminSelectedTopicId) return;
+    const selectedCategory = categories.find((cat) => cat.id === adminSelectedCatId);
+    const selectedTopic = selectedCategory?.subCategories.find((sub) => sub.id === adminSelectedTopicId);
+    if (!selectedTopic) return;
+
+    const questionCount = (allQuestions[adminSelectedTopicId] || []).length;
+    const confirmed = window.confirm(
+      `"${selectedTopic.name}" konusu silinsin mi?\n\n` +
+      `Bu islem konuyu kalici olarak kaldirir ve bu konudaki ${questionCount} soruyu da siler.`
+    );
+    if (!confirmed) return;
+
+    try {
+      const topicQuestionsSnapshot = await getDocs(
+        query(collection(db, 'questions'), where('topicId', '==', adminSelectedTopicId))
+      );
+      const refsToDelete = topicQuestionsSnapshot.docs.map((topicQuestionDoc) => topicQuestionDoc.ref);
+      for (let i = 0; i < refsToDelete.length; i += 400) {
+        const batch = writeBatch(db);
+        refsToDelete.slice(i, i + 400).forEach((ref) => {
+          batch.delete(ref);
+        });
+        await batch.commit();
+      }
+
+      setCategories((prev) => prev.map((cat) => {
+        if (cat.id !== adminSelectedCatId) return cat;
+        return {
+          ...cat,
+          subCategories: cat.subCategories.filter((sub) => sub.id !== adminSelectedTopicId),
+        };
+      }));
+      setActiveCategory((prev) => {
+        if (!prev || prev.id !== adminSelectedCatId) return prev;
+        return {
+          ...prev,
+          subCategories: prev.subCategories.filter((sub) => sub.id !== adminSelectedTopicId),
+        };
+      });
+
+      if (activeTopic?.sub.id === adminSelectedTopicId) {
+        resetQuiz();
+        setActiveTopic(null);
+        setCurrentView('dashboard');
+      }
+
+      setAdminSelectedTopicId('');
+      setAdminQuestionSearch('');
+      setAdminQuestionPage(1);
+      setIsAdminActionsOpen(false);
+      handleCloseAdminPreview();
+    } catch (error) {
+      console.error('Konu silme hatasi:', error);
+      alert('Konu silinirken bir hata olustu.');
+    }
+  };
+
   const parseOptions = (text: string): string[] => {
     const parts = text.split(/(?:^|\s+)[A-E]\)\s*/).filter(p => p.trim() !== '');
     if (parts.length >= 2) return parts.map(p => p.trim());
@@ -1604,6 +2032,10 @@ export default function App() {
 
   // Bulk import handlers
   const handleBulkParse = () => {
+    if (!isBulkSourceTagValid) {
+      alert('Etiket zorunlu. Bos gecmek icin sadece 1 adet bosluk girin.');
+      return;
+    }
     if (!bulkText.trim()) return;
     const report = parseBulkQuestionsWithReport(bulkText);
     setBulkParsed(report.questions);
@@ -1612,7 +2044,12 @@ export default function App() {
   };
 
   const handleBulkSave = async () => {
+    if (!isBulkSourceTagValid) {
+      alert('Etiket zorunlu. Bos gecmek icin sadece 1 adet bosluk girin.');
+      return;
+    }
     if (!adminSelectedTopicId || bulkParsed.length === 0) return;
+    const bulkSourceTag = bulkSourceTagInput === ' ' ? null : bulkSourceTagInput.trim();
     
     try {
       const batch = writeBatch(db);
@@ -1623,7 +2060,7 @@ export default function App() {
           imageUrl: q.imageUrl ?? null,
           contextText: q.contextText ?? null,
           contentItems: q.contentItems ?? null,
-          sourceTag: q.sourceTag ?? null,
+          sourceTag: bulkSourceTag,
           questionText: q.questionText,
           options: q.options,
           correctOptionIndex: q.correctOptionIndex,
@@ -1635,6 +2072,7 @@ export default function App() {
 
       await batch.commit(); // Hepsini tek seferde kaydet
       
+      setBulkSourceTagInput('');
       setBulkText('');
       setBulkParsed([]);
       setBulkParseErrors([]);
@@ -1648,6 +2086,7 @@ export default function App() {
 
   const handleBulkClose = () => {
     setIsBulkImportOpen(false);
+    setBulkSourceTagInput('');
     setBulkText('');
     setBulkParsed([]);
     setBulkParseErrors([]);
@@ -1681,6 +2120,8 @@ export default function App() {
   }, {});
 
   const adminVisibleReports = questionReports.slice(0, 50);
+  const adminSelectedCategory = categories.find((cat) => cat.id === adminSelectedCatId);
+  const adminSelectedTopic = adminSelectedCategory?.subCategories.find((sub) => sub.id === adminSelectedTopicId);
 
   const adminTopicQuestions = adminSelectedTopicId ? (allQuestions[adminSelectedTopicId] || []) : [];
   const normalizedAdminSearch = adminQuestionSearch.trim().toLocaleLowerCase('tr');
@@ -1753,7 +2194,75 @@ export default function App() {
     },
     { seenCount: 0, correctCount: 0, wrongCount: 0, blankCount: 0, completedQuizCount: 0 }
   );
-  const hasAnyProgressStats = overallProgressStats.seenCount > 0 || overallProgressStats.completedQuizCount > 0 || overallProgressStats.wrongCount > 0 || overallProgressStats.blankCount > 0 || Object.keys(wrongQuestionStatsById).length > 0;
+  const allSeenQuestionStats = Object.values(seenQuestionsById) as SeenQuestionStats[];
+  const selectedHomeStatsCategory = homeStatsCategoryFilter === 'all'
+    ? null
+    : (categories.find((cat) => cat.id === homeStatsCategoryFilter) || null);
+  const homeStatsTopicIds = useMemo<Set<string> | null>(() => {
+    if (homeStatsCategoryFilter === 'all') return null;
+    if (!selectedHomeStatsCategory) return new Set<string>();
+    return new Set(selectedHomeStatsCategory.subCategories.map((sub) => sub.id));
+  }, [homeStatsCategoryFilter, selectedHomeStatsCategory]);
+  const homeStats = useMemo(() => {
+    const includeTopic = (topicId: string): boolean => {
+      if (!homeStatsTopicIds) return true;
+      return homeStatsTopicIds.has(topicId);
+    };
+    const topicProgressEntries = Object.entries(topicProgressStats) as [string, TopicProgressStats][];
+
+    const progressStats = topicProgressEntries.reduce<{
+      seenCount: number;
+      correctCount: number;
+      wrongCount: number;
+      blankCount: number;
+      completedQuizCount: number;
+    }>((acc, [topicId, stats]) => {
+      if (!includeTopic(topicId)) return acc;
+      acc.seenCount += stats.seenCount;
+      acc.correctCount += stats.correctCount;
+      acc.wrongCount += stats.wrongCount;
+      acc.blankCount += stats.blankCount;
+      acc.completedQuizCount += stats.completedQuizCount;
+      return acc;
+    }, { seenCount: 0, correctCount: 0, wrongCount: 0, blankCount: 0, completedQuizCount: 0 });
+
+    const filteredTopicProgressStats = topicProgressEntries.filter(([topicId]) => includeTopic(topicId));
+    const totalWrongAnswers = filteredTopicProgressStats.reduce((sum, [, stats]) => sum + stats.totalWrongAnswers, 0);
+    const totalBlankAnswers = filteredTopicProgressStats.reduce((sum, [, stats]) => sum + stats.totalBlankAnswers, 0);
+
+    const filteredSeenQuestionStats = allSeenQuestionStats.filter((stats) => includeTopic(stats.topicId));
+    const uniqueSolvedCount = filteredSeenQuestionStats.reduce((sum, stats) => (
+      stats.answeredCount > 0 ? sum + 1 : sum
+    ), 0);
+    const totalAnsweredCount = filteredSeenQuestionStats.reduce((sum, stats) => sum + stats.answeredCount, 0);
+
+    const filteredFavoriteCount = (Object.values(favoriteQuestionsById) as FavoriteQuestionRecord[]).reduce((sum, favoriteRecord) => (
+      includeTopic(favoriteRecord.topicId) ? sum + 1 : sum
+    ), 0);
+
+    const answeredAttemptCount = progressStats.correctCount + totalWrongAnswers;
+    const accuracyPercent = answeredAttemptCount > 0
+      ? Math.round((progressStats.correctCount / answeredAttemptCount) * 100)
+      : 0;
+
+    return {
+      progressStats,
+      uniqueSolvedCount,
+      totalAnsweredCount,
+      filteredFavoriteCount,
+      totalWrongAnswers,
+      totalBlankAnswers,
+      accuracyPercent,
+    };
+  }, [allSeenQuestionStats, favoriteQuestionsById, homeStatsTopicIds, topicProgressStats]);
+  const seenQuestionStatsByTopic = useMemo<Record<string, SeenQuestionStats[]>>(() => {
+    const next: Record<string, SeenQuestionStats[]> = {};
+    allSeenQuestionStats.forEach((stats) => {
+      if (!next[stats.topicId]) next[stats.topicId] = [];
+      next[stats.topicId].push(stats);
+    });
+    return next;
+  }, [allSeenQuestionStats]);
   const hasProgressForTopic = (topicId: string): boolean => {
     const stats = getTopicProgress(topicId);
     const activeWrongCount = (wrongQuestionIdsByTopic[topicId] || []).length;
@@ -1771,12 +2280,7 @@ export default function App() {
           completedQuizCount: topicStats.completedQuizCount,
         };
       })()
-    : overallProgressStats;
-  const handleResetTopicProgressStats = () => {
-    if (!hasAnyProgressStats) return;
-    setResetStatsTargetTopic(null);
-    setIsResetStatsModalOpen(true);
-  };
+    : EMPTY_TOPIC_PROGRESS;
   const handleResetSingleTopicProgressStats = (topicId: string, topicName: string) => {
     if (!hasProgressForTopic(topicId)) return;
     setResetStatsTargetTopic({ id: topicId, name: topicName });
@@ -1792,6 +2296,10 @@ export default function App() {
       setResetStatsTargetTopic(null);
       return;
     }
+    if (!resetStatsTargetTopic) {
+      setIsResetStatsModalOpen(false);
+      return;
+    }
 
     try {
       const commitDeleteRefsInChunks = async (refs: Array<DocumentReference>) => {
@@ -1804,41 +2312,38 @@ export default function App() {
         }
       };
 
-      if (resetStatsTargetTopic) {
-        const topicId = resetStatsTargetTopic.id;
-        const wrongQuestionsForTopic = await getDocs(query(collection(db, 'users', user.uid, 'wrongQuestions'), where('topicId', '==', topicId)));
-        const refsToDelete = wrongQuestionsForTopic.docs.map((wrongDoc) => wrongDoc.ref);
-        refsToDelete.push(doc(db, 'users', user.uid, 'topicStats', topicId));
-        await commitDeleteRefsInChunks(refsToDelete);
+      const topicId = resetStatsTargetTopic.id;
+      const wrongQuestionsForTopic = await getDocs(query(collection(db, 'users', user.uid, 'wrongQuestions'), where('topicId', '==', topicId)));
+      const seenQuestionsForTopic = await getDocs(query(collection(db, 'users', user.uid, 'seenQuestions'), where('topicId', '==', topicId)));
+      const refsToDelete = wrongQuestionsForTopic.docs.map((wrongDoc) => wrongDoc.ref);
+      refsToDelete.push(...seenQuestionsForTopic.docs.map((seenDoc) => seenDoc.ref));
+      refsToDelete.push(doc(db, 'users', user.uid, 'topicStats', topicId));
+      await commitDeleteRefsInChunks(refsToDelete);
 
-        setTopicProgressStats((prev) => {
-          if (!prev[topicId]) return prev;
-          const next = { ...prev };
-          delete next[topicId];
-          return next;
+      setTopicProgressStats((prev) => {
+        if (!prev[topicId]) return prev;
+        const next = { ...prev };
+        delete next[topicId];
+        return next;
+      });
+      setWrongQuestionStatsById((prev) => {
+        const next = { ...prev };
+        Object.keys(next).forEach((questionTrackingId) => {
+          if (next[questionTrackingId].topicId === topicId) {
+            delete next[questionTrackingId];
+          }
         });
-        setWrongQuestionStatsById((prev) => {
-          const next = { ...prev };
-          Object.keys(next).forEach((questionTrackingId) => {
-            if (next[questionTrackingId].topicId === topicId) {
-              delete next[questionTrackingId];
-            }
-          });
-          return next;
+        return next;
+      });
+      setSeenQuestionsById((prev) => {
+        const next = { ...prev };
+        Object.keys(next).forEach((questionTrackingId) => {
+          if (next[questionTrackingId].topicId === topicId) {
+            delete next[questionTrackingId];
+          }
         });
-      } else {
-        const [topicStatsSnapshot, wrongQuestionsSnapshot] = await Promise.all([
-          getDocs(query(collection(db, 'users', user.uid, 'topicStats'))),
-          getDocs(query(collection(db, 'users', user.uid, 'wrongQuestions'))),
-        ]);
-        const refsToDelete = [
-          ...topicStatsSnapshot.docs.map((topicDoc) => topicDoc.ref),
-          ...wrongQuestionsSnapshot.docs.map((wrongDoc) => wrongDoc.ref),
-        ];
-        await commitDeleteRefsInChunks(refsToDelete);
-        setTopicProgressStats({});
-        setWrongQuestionStatsById({});
-      }
+        return next;
+      });
     } catch (error) {
       console.error('Istatistik sifirlama hatasi:', error);
       alert('Istatistikler sifirlanamadi. Lutfen tekrar deneyin.');
@@ -1847,15 +2352,6 @@ export default function App() {
       setResetStatsTargetTopic(null);
     }
   };
-
-  // Greeting based on time of day
-  const getGreeting = () => {
-    const hour = new Date().getHours();
-    if (hour < 12) return 'Gunaydin';
-    if (hour < 18) return 'Iyi gunler';
-    return 'Iyi aksamlar';
-  };
-
 
   // ===== RENDER VIEWS =====
 
@@ -2012,21 +2508,29 @@ export default function App() {
     const allSetupTopicQuestions = allQuestions[activeTopic.sub.id] || [];
     const wrongQuestionIdSet = new Set(wrongQuestionIdsByTopic[activeTopic.sub.id] || []);
     const blankQuestionIdSet = new Set(blankQuestionIdsByTopic[activeTopic.sub.id] || []);
-    const statusFilterActive = quizStatusFilter.wrong || quizStatusFilter.blank;
-    const getFilteredQuestionsByStatus = (status: { wrong: boolean; blank: boolean }) => {
-      const isActive = status.wrong || status.blank;
+    const favoriteQuestionIdSet = new Set(favoriteQuestionIdsByTopic[activeTopic.sub.id] || []);
+    const statusFilterActive = quizStatusFilter.wrong || quizStatusFilter.blank || quizStatusFilter.favorite;
+    const getFilteredQuestionsByStatus = (status: QuizStatusFilter) => {
+      const isActive = status.wrong || status.blank || status.favorite;
       if (!isActive) return allSetupTopicQuestions;
       return allSetupTopicQuestions.filter((question, index) => {
         const questionTrackingId = getQuestionTrackingId(question, activeTopic.sub.id, index);
         const includeWrong = status.wrong && wrongQuestionIdSet.has(questionTrackingId);
         const includeBlank = status.blank && blankQuestionIdSet.has(questionTrackingId);
-        return includeWrong || includeBlank;
+        const includeFavorite = status.favorite && favoriteQuestionIdSet.has(questionTrackingId);
+        return includeWrong || includeBlank || includeFavorite;
       });
     };
     const setupTopicQuestions = getFilteredQuestionsByStatus(quizStatusFilter);
-    const wrongOnlyQuestionCount = getFilteredQuestionsByStatus({ wrong: true, blank: false }).length;
-    const blankOnlyQuestionCount = getFilteredQuestionsByStatus({ wrong: false, blank: true }).length;
+    const wrongOnlyQuestionCount = getFilteredQuestionsByStatus({ wrong: true, blank: false, favorite: false }).length;
+    const blankOnlyQuestionCount = getFilteredQuestionsByStatus({ wrong: false, blank: true, favorite: false }).length;
+    const favoriteOnlyQuestionCount = getFilteredQuestionsByStatus({ wrong: false, blank: false, favorite: true }).length;
     const maxQuestions = setupTopicQuestions.length;
+    const activeSourceLabels = [
+      quizStatusFilter.wrong ? 'yanlis' : '',
+      quizStatusFilter.blank ? 'bos' : '',
+      quizStatusFilter.favorite ? 'favori' : '',
+    ].filter((label) => label.length > 0);
     const catColor = getCatColor(activeTopic.cat.id);
     const sourceTagCounter = setupTopicQuestions.reduce<Record<string, number>>((acc, question) => {
       const sourceKey = getQuestionSourceKey(question);
@@ -2050,7 +2554,25 @@ export default function App() {
     }, 0);
     const isTagDistributionActive = selectedTagTotalQuestionCount > 0;
     const effectiveQuestionCount = isTagDistributionActive ? selectedTagTotalQuestionCount : quizConfig.questionCount;
-    const updateQuizStatusFilter = (nextStatusFilter: { wrong: boolean; blank: boolean }) => {
+    const clampTagQuestionCountsToLimit = (
+      counts: Record<string, number>,
+      totalLimit: number
+    ): Record<string, number> => {
+      const safeLimit = Math.max(0, Math.floor(totalLimit));
+      let remaining = safeLimit;
+      const next: Record<string, number> = {};
+      sourceTagOptions.forEach((option) => {
+        const rawCount = Math.max(0, Math.floor(Number(counts[option.sourceKey] || 0)));
+        const boundedByTag = Math.min(option.totalCount, rawCount);
+        const bounded = Math.min(boundedByTag, remaining);
+        if (bounded > 0) {
+          next[option.sourceKey] = bounded;
+          remaining -= bounded;
+        }
+      });
+      return next;
+    };
+    const updateQuizStatusFilter = (nextStatusFilter: QuizStatusFilter) => {
       const nextFilteredQuestions = getFilteredQuestionsByStatus(nextStatusFilter);
       const nextQuestionCount = nextFilteredQuestions.length > 0
         ? Math.min(quizConfig.questionCount, nextFilteredQuestions.length)
@@ -2064,14 +2586,26 @@ export default function App() {
       }));
     };
 
-    const updateTagQuestionCount = (sourceKey: string, nextCount: number, maxCount: number) => {
-      const clampedCount = Math.min(maxCount, Math.max(0, Math.floor(nextCount)));
+    const updateTagQuestionCount = (sourceKey: string, nextCount: number) => {
+      const targetOption = sourceTagOptions.find((option) => option.sourceKey === sourceKey);
+      if (!targetOption) return;
       setQuizTagQuestionCounts((prev) => {
+        const normalizedPrev = clampTagQuestionCountsToLimit(prev, quizConfig.questionCount);
+        const otherSelectedTotal = Object.entries(normalizedPrev).reduce((sum, [key, value]) => {
+          if (key === sourceKey) return sum;
+          return sum + value;
+        }, 0);
+        const remainingForTarget = Math.max(0, quizConfig.questionCount - otherSelectedTotal);
+        const clampedCount = Math.min(
+          targetOption.totalCount,
+          remainingForTarget,
+          Math.max(0, Math.floor(nextCount))
+        );
         if (clampedCount <= 0) {
-          const { [sourceKey]: _removed, ...rest } = prev;
+          const { [sourceKey]: _removed, ...rest } = normalizedPrev;
           return rest;
         }
-        return { ...prev, [sourceKey]: clampedCount };
+        return { ...normalizedPrev, [sourceKey]: clampedCount };
       });
     };
 
@@ -2100,7 +2634,7 @@ export default function App() {
             {/* Settings */}
             <div className="space-y-4 md:space-y-6">
               {/* Status Filter */}
-              {(wrongOnlyQuestionCount > 0 || blankOnlyQuestionCount > 0) && (
+              {(wrongOnlyQuestionCount > 0 || blankOnlyQuestionCount > 0 || favoriteOnlyQuestionCount > 0) && (
                 <div className="bg-surface-50 dark:bg-surface-900/50 p-3.5 md:p-5 rounded-xl md:rounded-2xl border border-surface-100 dark:border-surface-700/50">
                   <div className="flex items-center justify-between mb-3">
                     <label className="font-bold text-surface-700 dark:text-surface-200 text-sm flex items-center gap-2">
@@ -2112,9 +2646,9 @@ export default function App() {
                     </span>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                     <button
-                      onClick={() => updateQuizStatusFilter({ wrong: !quizStatusFilter.wrong, blank: quizStatusFilter.blank })}
+                      onClick={() => updateQuizStatusFilter({ wrong: !quizStatusFilter.wrong, blank: quizStatusFilter.blank, favorite: quizStatusFilter.favorite })}
                       disabled={wrongOnlyQuestionCount === 0}
                       className={`text-left rounded-xl border px-2.5 md:px-3 py-2 md:py-2.5 transition ${
                         quizStatusFilter.wrong
@@ -2126,7 +2660,7 @@ export default function App() {
                       <p className="text-[11px] text-red-600 dark:text-red-300 mt-0.5">{wrongOnlyQuestionCount} soru</p>
                     </button>
                     <button
-                      onClick={() => updateQuizStatusFilter({ wrong: quizStatusFilter.wrong, blank: !quizStatusFilter.blank })}
+                      onClick={() => updateQuizStatusFilter({ wrong: quizStatusFilter.wrong, blank: !quizStatusFilter.blank, favorite: quizStatusFilter.favorite })}
                       disabled={blankOnlyQuestionCount === 0}
                       className={`text-left rounded-xl border px-2.5 md:px-3 py-2 md:py-2.5 transition ${
                         quizStatusFilter.blank
@@ -2137,19 +2671,27 @@ export default function App() {
                       <p className="text-[11px] md:text-xs font-bold text-surface-700 dark:text-surface-200">Boslarim</p>
                       <p className="text-[11px] text-slate-600 dark:text-slate-300 mt-0.5">{blankOnlyQuestionCount} soru</p>
                     </button>
+                    <button
+                      onClick={() => updateQuizStatusFilter({ wrong: quizStatusFilter.wrong, blank: quizStatusFilter.blank, favorite: !quizStatusFilter.favorite })}
+                      disabled={favoriteOnlyQuestionCount === 0}
+                      className={`text-left rounded-xl border px-2.5 md:px-3 py-2 md:py-2.5 transition ${
+                        quizStatusFilter.favorite
+                          ? 'border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20'
+                          : 'border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800'
+                      } disabled:opacity-40 disabled:cursor-not-allowed`}
+                    >
+                      <p className="text-[11px] md:text-xs font-bold text-surface-700 dark:text-surface-200">Favorilerim</p>
+                      <p className="text-[11px] text-amber-600 dark:text-amber-300 mt-0.5">{favoriteOnlyQuestionCount} soru</p>
+                    </button>
                   </div>
 
                   {statusFilterActive && (
                     <div className="mt-2.5 flex items-center justify-between">
                       <p className="text-[11px] text-brand-600 dark:text-brand-300 font-medium">
-                        {quizStatusFilter.wrong && quizStatusFilter.blank
-                          ? 'Yanlis + bos sorulardan secilecek.'
-                          : quizStatusFilter.wrong
-                            ? 'Sadece yanlis sorulardan secilecek.'
-                            : 'Sadece bos sorulardan secilecek.'}
+                        {`Sadece ${activeSourceLabels.join(' + ')} sorulardan secilecek.`}
                       </p>
                       <button
-                        onClick={() => updateQuizStatusFilter({ wrong: false, blank: false })}
+                        onClick={() => updateQuizStatusFilter({ wrong: false, blank: false, favorite: false })}
                         className="text-[11px] font-bold text-surface-500 hover:text-surface-700 dark:text-surface-300 dark:hover:text-white"
                       >
                         Temizle
@@ -2183,18 +2725,19 @@ export default function App() {
                         questionCount: nextQuestionCount,
                         durationSeconds: getAutoDurationForQuestionCount(nextQuestionCount),
                       });
+                      setQuizTagQuestionCounts((prev) => clampTagQuestionCountsToLimit(prev, nextQuestionCount));
                     }}
-                    disabled={maxQuestions === 0 || isTagDistributionActive}
+                    disabled={maxQuestions === 0}
                     className="w-full h-2 bg-surface-200 dark:bg-surface-700 rounded-lg cursor-pointer"
                   />
                   <div className="w-14 h-10 flex items-center justify-center bg-white dark:bg-surface-800 border border-surface-200 dark:border-surface-600 rounded-xl font-extrabold text-lg text-surface-800 dark:text-white flex-shrink-0">
-                    {effectiveQuestionCount}
+                    {quizConfig.questionCount}
                   </div>
                 </div>
                 {maxQuestions === 0 && <p className="text-red-500 text-xs mt-2 font-medium">Bu konuda henuz soru bulunmuyor.</p>}
                 {isTagDistributionActive && (
                   <p className="text-[11px] text-brand-600 dark:text-brand-300 mt-2 font-medium">
-                    Etiket dagilimi aktif. Toplam soru sayisi etiketlerden hesaplanir.
+                    Etiket dagilimi aktif. Secili etiket toplam sorusu: {selectedTagTotalQuestionCount}.
                   </p>
                 )}
               </div>
@@ -2208,7 +2751,7 @@ export default function App() {
                       Etiket Dagilimi
                     </label>
                     <span className="text-[11px] font-bold text-surface-500 dark:text-surface-300 bg-white dark:bg-surface-800 px-2 py-0.5 rounded-full border border-surface-200 dark:border-surface-600">
-                      Secili: {selectedTagTotalQuestionCount}
+                      Secili: {selectedTagTotalQuestionCount} / {quizConfig.questionCount}
                     </span>
                   </div>
 
@@ -2223,6 +2766,12 @@ export default function App() {
                         Math.max(0, quizTagQuestionCounts[option.sourceKey] || 0)
                       );
                       const isSelected = selectedCount > 0;
+                      const selectedWithoutCurrent = Math.max(0, selectedTagTotalQuestionCount - selectedCount);
+                      const maxSelectableForOption = Math.min(
+                        option.totalCount,
+                        Math.max(0, quizConfig.questionCount - selectedWithoutCurrent)
+                      );
+                      const cannotSelectNew = !isSelected && maxSelectableForOption === 0;
 
                       return (
                         <div
@@ -2238,7 +2787,8 @@ export default function App() {
                               <input
                                 type="checkbox"
                                 checked={isSelected}
-                                onChange={(e) => updateTagQuestionCount(option.sourceKey, e.target.checked ? Math.min(1, option.totalCount) : 0, option.totalCount)}
+                                onChange={(e) => updateTagQuestionCount(option.sourceKey, e.target.checked ? Math.min(1, maxSelectableForOption) : 0)}
+                                disabled={cannotSelectNew}
                                 className="w-4 h-4 accent-brand-600 mt-0.5"
                               />
                               <div className="min-w-0">
@@ -2249,7 +2799,7 @@ export default function App() {
 
                             <div className="flex items-center gap-1.5 self-end sm:self-auto">
                               <button
-                                onClick={() => updateTagQuestionCount(option.sourceKey, selectedCount - 1, option.totalCount)}
+                                onClick={() => updateTagQuestionCount(option.sourceKey, selectedCount - 1)}
                                 disabled={selectedCount === 0}
                                 className="w-8 h-8 md:w-7 md:h-7 rounded-md border border-surface-200 dark:border-surface-600 text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-700 disabled:opacity-40 disabled:cursor-not-allowed"
                               >
@@ -2258,14 +2808,14 @@ export default function App() {
                               <input
                                 type="number"
                                 min={0}
-                                max={option.totalCount}
+                                max={maxSelectableForOption}
                                 value={selectedCount}
-                                onChange={(e) => updateTagQuestionCount(option.sourceKey, parseInt(e.target.value, 10) || 0, option.totalCount)}
+                                onChange={(e) => updateTagQuestionCount(option.sourceKey, parseInt(e.target.value, 10) || 0)}
                                 className="w-14 h-8 md:h-7 rounded-md border border-surface-200 dark:border-surface-600 bg-white dark:bg-surface-800 text-center text-xs font-bold text-surface-700 dark:text-surface-200 outline-none focus:border-brand-500"
                               />
                               <button
-                                onClick={() => updateTagQuestionCount(option.sourceKey, selectedCount + 1, option.totalCount)}
-                                disabled={selectedCount >= option.totalCount}
+                                onClick={() => updateTagQuestionCount(option.sourceKey, selectedCount + 1)}
+                                disabled={selectedCount >= maxSelectableForOption}
                                 className="w-8 h-8 md:w-7 md:h-7 rounded-md border border-surface-200 dark:border-surface-600 text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-700 disabled:opacity-40 disabled:cursor-not-allowed"
                               >
                                 +
@@ -2280,7 +2830,7 @@ export default function App() {
                   <div className="mt-3 flex items-center justify-between gap-2">
                     <p className="text-xs text-surface-500 dark:text-surface-400">
                       {isTagDistributionActive
-                        ? `Toplam ${selectedTagTotalQuestionCount} soru etiket seciminden gelecek.`
+                        ? `Toplam ${selectedTagTotalQuestionCount} soru etiket seciminden gelecek (ust limit: ${quizConfig.questionCount}).`
                         : 'Etiket secmezseniz sorular rastgele secilir.'}
                     </p>
                     {isTagDistributionActive && (
@@ -2377,6 +2927,12 @@ export default function App() {
       : quizSize === 1
         ? 'text-base leading-7'
         : 'text-lg leading-8';
+    const currentQuestionTrackingId = currentQuestion
+      ? getQuestionTrackingId(currentQuestion, activeTopic.sub.id, quizState.currentQuestionIndex)
+      : null;
+    const isCurrentQuestionFavorite = currentQuestionTrackingId
+      ? Boolean(favoriteQuestionsById[currentQuestionTrackingId])
+      : false;
     const questionContextTypographyClass = `font-sans font-semibold tracking-[0.008em] ${questionStemTextSizeClass}`;
     const questionItemsTypographyClass = `font-sans font-light tracking-normal ${questionStemTextSizeClass}`;
     const questionRootTypographyClass = `font-sans font-extrabold tracking-[0.012em] ${questionStemTextSizeClass}`;
@@ -2541,6 +3097,18 @@ export default function App() {
                           {currentQuestion.sourceTag}
                         </span>
                       )}
+                      <button
+                        onClick={() => void toggleFavoriteQuestion(currentQuestion, quizState.currentQuestionIndex)}
+                        className={`inline-flex items-center gap-1 rounded-lg border font-semibold transition ${
+                          isCurrentQuestionFavorite
+                            ? 'border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-300'
+                            : 'border-surface-200 dark:border-surface-600 bg-surface-50 dark:bg-surface-700/50 text-surface-500 dark:text-surface-300 hover:bg-surface-100 dark:hover:bg-surface-700'
+                        } ${quizSize === 0 ? 'px-2 py-1 text-[10px]' : 'px-2.5 py-1 text-[11px]'}`}
+                        title={isCurrentQuestionFavorite ? 'Favoriden cikar' : 'Favorilere ekle'}
+                      >
+                        <Icon name="Star" className={`w-3 h-3 ${isCurrentQuestionFavorite ? 'fill-current' : ''}`} />
+                        {isCurrentQuestionFavorite ? 'Favli' : 'Favla'}
+                      </button>
                       <button
                         onClick={() => handleReportQuestion(currentQuestion)}
                         disabled={!currentQuestion.id || isSubmittingReport}
@@ -2804,6 +3372,8 @@ export default function App() {
                     const userAnswer = quizState.userAnswers[idx];
                     const isCorrect = userAnswer === q.correctOptionIndex;
                     const isUnanswered = userAnswer === null;
+                    const questionTrackingId = getQuestionTrackingId(q, activeTopic.sub.id, idx);
+                    const isFavorite = Boolean(favoriteQuestionsById[questionTrackingId]);
 
                     return (
                       <div key={idx} className="bg-white dark:bg-surface-800 rounded-xl p-4 border border-surface-100 dark:border-surface-700 shadow-card dark:shadow-card-dark">
@@ -2834,6 +3404,17 @@ export default function App() {
                               )}
                             </div>
                           </div>
+                          <button
+                            onClick={() => void toggleFavoriteQuestion(q, idx)}
+                            className={`w-8 h-8 rounded-lg border flex items-center justify-center transition ${
+                              isFavorite
+                                ? 'border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 text-amber-500 dark:text-amber-300'
+                                : 'border-surface-200 dark:border-surface-600 bg-surface-50 dark:bg-surface-700 text-surface-400 hover:text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-900/20'
+                            }`}
+                            title={isFavorite ? 'Favoriden cikar' : 'Favorilere ekle'}
+                          >
+                            <Icon name="Star" className={`w-4 h-4 ${isFavorite ? 'fill-current' : ''}`} />
+                          </button>
                         </div>
                       </div>
                     );
@@ -2952,8 +3533,8 @@ export default function App() {
       <div className="fixed inset-0 mesh-gradient pointer-events-none opacity-50 dark:opacity-30"></div>
 
       {/* Mobile Header */}
-      <div className="lg:hidden fixed top-0 w-full glass-card backdrop-blur-2xl z-50 border-b shadow-premium px-4 h-16 flex justify-between items-center">
-        <div className="flex items-center gap-3 font-black text-lg">
+      <div className="lg:hidden mobile-top-header fixed top-0 inset-x-0 glass-card backdrop-blur-2xl z-50 border-b border-white/60 dark:border-surface-700/80 shadow-premium px-3 h-[68px] flex justify-between items-center">
+        <div className="flex items-center gap-3 font-black text-[17px] tracking-tight">
           <div className="bg-gradient-to-br from-brand-500 via-violet-600 to-purple-600 p-2 rounded-xl shadow-lg shadow-brand-500/30 relative overflow-hidden">
             <div className="absolute inset-0 bg-gradient-to-br from-white/20 to-transparent"></div>
             <Icon name="Brain" className="w-5 h-5 text-white relative z-10" />
@@ -2965,13 +3546,13 @@ export default function App() {
         <div className="flex items-center gap-2">
           <button
             onClick={() => setIsDarkMode(!isDarkMode)}
-            className="p-2.5 text-surface-500 dark:text-surface-400 hover:text-brand-600 dark:hover:text-brand-400 bg-surface-100 dark:bg-surface-800 rounded-xl transition-all hover:scale-105 active:scale-95"
+            className="p-2 text-surface-500 dark:text-surface-400 hover:text-brand-600 dark:hover:text-brand-400 bg-surface-100/80 dark:bg-surface-800/80 rounded-xl border border-white/60 dark:border-surface-700/70 transition-all active:scale-95"
           >
             <Icon name={isDarkMode ? "Sun" : "Moon"} className="w-5 h-5" />
           </button>
           <button
             onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-            className="p-2.5 text-surface-600 dark:text-surface-300 bg-surface-100 dark:bg-surface-800 rounded-xl transition-all hover:scale-105 active:scale-95"
+            className="p-2 text-surface-600 dark:text-surface-300 bg-surface-100/80 dark:bg-surface-800/80 rounded-xl border border-white/60 dark:border-surface-700/70 transition-all active:scale-95"
           >
             <Icon name={isMobileMenuOpen ? "X" : "Menu"} className="w-5 h-5" />
           </button>
@@ -2980,18 +3561,18 @@ export default function App() {
 
       {/* Mobile Menu Overlay */}
       {isMobileMenuOpen && (
-        <div className="lg:hidden fixed inset-0 z-40 bg-black/40 backdrop-blur-sm" onClick={() => setIsMobileMenuOpen(false)}></div>
+        <div className="lg:hidden fixed inset-0 z-40 bg-black/45 backdrop-blur-sm" onClick={() => setIsMobileMenuOpen(false)}></div>
       )}
 
       {/* Sidebar */}
       <aside className={`
-        fixed inset-y-0 left-0 z-50 w-72 glass-card border-r shadow-premium-lg transform transition-all duration-300 ease-in-out
+        fixed inset-y-0 left-0 z-50 w-[86%] max-w-[320px] lg:w-72 glass-card border-r shadow-premium-lg transform transition-all duration-300 ease-in-out
         ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'} lg:translate-x-0 lg:static
         flex flex-col
       `}>
-        <div className="flex flex-col h-full p-6 relative z-10">
+        <div className="flex flex-col h-full p-4 pt-5 md:p-6 relative z-10">
           {/* Logo */}
-          <div className="flex items-center gap-3 mb-10 pl-1">
+          <div className="flex items-center gap-3 mb-7 pl-1">
             <div className="bg-gradient-to-br from-brand-500 via-violet-600 to-purple-600 p-2.5 rounded-2xl shadow-2xl shadow-brand-500/30 relative overflow-hidden hover:scale-105 transition-transform duration-300">
               <div className="absolute inset-0 bg-gradient-to-br from-white/20 to-transparent"></div>
               <Icon name="Brain" className="w-6 h-6 text-white relative z-10" />
@@ -3002,7 +3583,7 @@ export default function App() {
           </div>
 
           {/* User Card */}
-          <div className="p-5 rounded-2xl bg-gradient-to-br from-brand-600 via-violet-600 to-purple-600 text-white shadow-2xl shadow-brand-500/30 mb-7 relative overflow-hidden group hover:scale-[1.02] transition-all duration-300">
+          <div className="p-4 md:p-5 rounded-2xl bg-gradient-to-br from-brand-600 via-violet-600 to-purple-600 text-white shadow-2xl shadow-brand-500/30 mb-6 relative overflow-hidden group hover:scale-[1.02] transition-all duration-300">
             <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full blur-[60px] -mr-10 -mt-10"></div>
             <div className="absolute inset-0 bg-gradient-to-br from-white/10 to-transparent opacity-50"></div>
             <div className="relative z-10">
@@ -3096,12 +3677,12 @@ export default function App() {
       </aside>
 
       {/* Main Panel */}
-      <main className={`flex-1 lg:ml-0 pt-14 lg:pt-0 min-h-screen pb-20 lg:pb-0 ${
+      <main className={`flex-1 lg:ml-0 pt-[76px] lg:pt-0 min-h-screen pb-[88px] lg:pb-0 ${
         currentView === 'dashboard' ? 'overflow-hidden' : 'overflow-y-auto custom-scrollbar'
       }`}>
         <div className={`mx-auto ${
           currentView === 'dashboard'
-            ? 'max-w-6xl h-[calc(100vh-56px)] lg:h-screen p-3 md:p-4 lg:p-5 flex flex-col overflow-hidden'
+            ? 'max-w-6xl h-[calc(100vh-76px)] lg:h-screen px-3 pb-2 pt-1 md:p-4 lg:p-5 flex flex-col overflow-hidden'
             : 'max-w-5xl p-5 md:p-8 lg:p-10'
         }`}>
 
@@ -3154,6 +3735,30 @@ export default function App() {
                     </select>
                   </div>
                 </div>
+
+                {adminSelectedTopic && (
+                  <div className="mb-6 rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-50/60 dark:bg-surface-900/40 p-3">
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                      <p className="text-xs text-surface-500 dark:text-surface-400">
+                        Secili konu: <span className="font-bold text-surface-700 dark:text-surface-200">{adminSelectedTopic.name}</span>
+                      </p>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={handleRenameTopic}
+                          className="px-3 py-2 rounded-lg border border-brand-200 dark:border-brand-800/40 bg-brand-50 dark:bg-brand-900/20 text-brand-700 dark:text-brand-300 text-xs font-bold hover:bg-brand-100 dark:hover:bg-brand-900/30 transition"
+                        >
+                          Adi Duzenle
+                        </button>
+                        <button
+                          onClick={() => { void handleDeleteTopic(); }}
+                          className="px-3 py-2 rounded-lg border border-red-200 dark:border-red-900/40 bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 text-xs font-bold hover:bg-red-100 dark:hover:bg-red-900/30 transition"
+                        >
+                          Konuyu Sil
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 <div className="mb-6 rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-50/60 dark:bg-surface-900/40 p-4">
                   <div className="flex items-center justify-between gap-2 mb-3">
@@ -3423,31 +4028,6 @@ export default function App() {
           {/* ===== DASHBOARD - HOME ===== */}
           {currentView === 'dashboard' && !activeCategory && (
             <div className="animate-fade-in h-full flex flex-col overflow-hidden">
-              <div className="mb-3 md:mb-4 shrink-0 rounded-2xl shadow-premium glass-card p-3 md:p-5 relative overflow-hidden">
-                {/* Decorative gradient blob */}
-                <div className="absolute top-0 right-0 w-64 h-64 bg-gradient-to-br from-brand-500/10 via-violet-500/5 to-transparent rounded-full blur-3xl"></div>
-
-                <div className="flex items-center justify-between gap-3 sm:items-start sm:gap-4 relative z-10">
-                  <div>
-                    <p className="hidden sm:block text-gradient-primary font-bold text-xs md:text-sm mb-1">{getGreeting()}</p>
-                    <h1 className="text-lg md:text-4xl font-black text-surface-800 dark:text-white mb-0.5 md:mb-1.5 tracking-tight">
-                      {user.username}
-                    </h1>
-                    <p className="text-surface-600 dark:text-surface-400 text-[11px] md:text-sm max-w-2xl leading-snug md:leading-relaxed font-medium">
-                      Bir ders seçerek devam et. Mobil görünüm tek ekrana optimize edildi.
-                    </p>
-                  </div>
-                  <button
-                    onClick={handleResetTopicProgressStats}
-                    disabled={!hasAnyProgressStats}
-                    className="h-8 md:h-10 px-3 md:px-4 rounded-xl border-2 border-red-200 dark:border-red-900/40 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-300 text-[10px] md:text-sm font-bold hover:bg-red-100 dark:hover:bg-red-900/30 hover:-translate-y-0.5 transition-all disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:translate-y-0 shadow-sm hover:shadow-md shrink-0"
-                    title="Tüm istatistikleri sıfırla"
-                  >
-                    İstatistikleri Sıfırla
-                  </button>
-                </div>
-              </div>
-
               <div className="hidden">
                 <div className="glass-card rounded-xl p-3 border border-sky-100 dark:border-sky-900/30 shadow-premium hover-lift">
                   <div className="flex items-center gap-2 mb-1.5">
@@ -3535,7 +4115,60 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-2 md:gap-4 flex-1 min-h-0 auto-rows-max content-start overflow-visible md:overflow-y-auto custom-scrollbar pr-0 md:pr-1.5 pb-0 md:pb-1">
+              <section className="mb-2.5 md:mb-3 rounded-2xl border border-surface-200/80 dark:border-surface-700/80 bg-white/95 dark:bg-surface-800/95 p-2.5 md:p-3 shadow-card dark:shadow-card-dark">
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-2.5">
+                  <h2 className="text-xs md:text-sm font-extrabold text-surface-800 dark:text-white">Istatistiklerim</h2>
+                  <div className="w-full sm:w-auto flex items-center justify-end gap-2">
+                    <span className="hidden sm:inline text-[11px] font-semibold text-surface-500 dark:text-surface-400">Kapsam</span>
+                    <select
+                      value={homeStatsCategoryFilter}
+                      onChange={(e) => setHomeStatsCategoryFilter(e.target.value)}
+                      className="h-8 min-w-[180px] sm:min-w-[210px] max-w-full shrink-0 px-2.5 rounded-xl border border-brand-200 dark:border-brand-800/60 bg-white/95 dark:bg-surface-800 text-[11px] font-semibold text-surface-700 dark:text-surface-200 outline-none focus:border-brand-500 shadow-sm"
+                    >
+                      <option value="all">Toplam (Tum Dersler)</option>
+                      {categories.map((cat) => (
+                        <option key={cat.id} value={cat.id}>{cat.name}</option>
+                      ))}
+                    </select>
+                    <span className="text-[11px] font-semibold text-surface-400 whitespace-nowrap">Canli takip</span>
+                  </div>
+                </div>
+                <p className="text-[10px] font-semibold text-surface-500 dark:text-surface-400 mb-2">
+                  {homeStatsCategoryFilter === 'all' ? 'Gorunum: Tum Dersler' : `Gorunum: ${selectedHomeStatsCategory?.name || 'Secili Ders'}`}
+                </p>
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-2 md:gap-2.5">
+                  <div className="rounded-xl border border-surface-200/80 dark:border-surface-700/80 bg-surface-50/80 dark:bg-surface-900/50 p-2 md:p-2.5">
+                    <p className="text-[10px] font-bold text-surface-400 uppercase tracking-wider">Farkli Cozulen</p>
+                    <p className="text-base md:text-xl font-black text-surface-800 dark:text-white">{homeStats.uniqueSolvedCount}</p>
+                  </div>
+                  <div className="rounded-xl border border-surface-200/80 dark:border-surface-700/80 bg-surface-50/80 dark:bg-surface-900/50 p-2 md:p-2.5">
+                    <p className="text-[10px] font-bold text-surface-400 uppercase tracking-wider">Toplam Cevap</p>
+                    <p className="text-base md:text-xl font-black text-surface-800 dark:text-white">{homeStats.totalAnsweredCount}</p>
+                  </div>
+                  <div className="rounded-xl border border-surface-200/80 dark:border-surface-700/80 bg-surface-50/80 dark:bg-surface-900/50 p-2 md:p-2.5">
+                    <p className="text-[10px] font-bold text-surface-400 uppercase tracking-wider">Favori Soru</p>
+                    <p className="text-base md:text-xl font-black text-surface-800 dark:text-white">{homeStats.filteredFavoriteCount}</p>
+                  </div>
+                  <div className="rounded-xl border border-surface-200/80 dark:border-surface-700/80 bg-surface-50/80 dark:bg-surface-900/50 p-2 md:p-2.5">
+                    <p className="text-[10px] font-bold text-surface-400 uppercase tracking-wider">Cozulen Test</p>
+                    <p className="text-base md:text-xl font-black text-surface-800 dark:text-white">{homeStats.progressStats.completedQuizCount}</p>
+                  </div>
+                  <div className="rounded-xl border border-surface-200/80 dark:border-surface-700/80 bg-surface-50/80 dark:bg-surface-900/50 p-2 md:p-2.5">
+                    <p className="text-[10px] font-bold text-surface-400 uppercase tracking-wider">Toplam Dogru</p>
+                    <p className="text-base md:text-xl font-black text-emerald-600 dark:text-emerald-300">{homeStats.progressStats.correctCount}</p>
+                  </div>
+                  <div className="rounded-xl border border-surface-200/80 dark:border-surface-700/80 bg-surface-50/80 dark:bg-surface-900/50 p-2 md:p-2.5">
+                    <p className="text-[10px] font-bold text-surface-400 uppercase tracking-wider">Basari Orani</p>
+                    <p className="text-base md:text-xl font-black text-brand-600 dark:text-brand-300">%{homeStats.accuracyPercent}</p>
+                  </div>
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[10px] text-surface-500 dark:text-surface-400 font-medium">
+                  <span className="px-1.5 py-0.5 rounded-md bg-surface-100 dark:bg-surface-700/60">Yanlis cevap: {homeStats.totalWrongAnswers}</span>
+                  <span className="px-1.5 py-0.5 rounded-md bg-surface-100 dark:bg-surface-700/60">Bos birakilan: {homeStats.totalBlankAnswers}</span>
+                </div>
+              </section>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-4 auto-rows-max gap-2 md:gap-4 flex-1 min-h-0 content-start overflow-y-auto custom-scrollbar pr-0.5 md:pr-1.5 pb-1">
                 {categories.map((cat, index) => {
                   const color = getCatColor(cat.id);
                   const questionCount = cat.subCategories.reduce((sum, sub) => sum + (allQuestions[sub.id]?.length || 0), 0);
@@ -3544,37 +4177,33 @@ export default function App() {
                     <button
                       key={cat.id}
                       onClick={() => setActiveCategory(cat)}
-                      className="group relative w-full min-h-[98px] md:min-h-[150px] glass-card rounded-2xl p-2.5 md:p-4 shadow-premium hover:shadow-premium-lg hover:-translate-y-1 transition-all duration-300 text-left overflow-hidden animate-fade-in-scale flex flex-col"
+                      className="group relative w-full max-w-[360px] md:max-w-none min-h-[96px] md:min-h-[150px] mx-auto rounded-2xl border border-surface-200/80 dark:border-surface-700/80 bg-white/95 dark:bg-surface-800/95 p-2.5 md:p-4 shadow-[0_6px_18px_rgba(15,23,42,0.06)] dark:shadow-[0_8px_20px_rgba(2,6,23,0.45)] hover:-translate-y-0.5 md:hover:-translate-y-1 transition-all duration-300 text-left overflow-hidden animate-fade-in-scale flex flex-col"
                       style={{ animationDelay: `${index * 60}ms` }}
                     >
                       {/* Animated gradient background blob */}
-                      <div className={`pointer-events-none absolute -right-10 -top-12 h-32 w-32 rounded-full bg-gradient-to-br ${color.gradient} opacity-[0.08] blur-3xl transition-all duration-500 group-hover:opacity-[0.15] group-hover:scale-110`} />
-
-                      {/* Shimmer effect on hover */}
-                      <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500">
-                        <div className="absolute inset-0 shimmer"></div>
-                      </div>
+                      <div className={`pointer-events-none absolute -right-10 -top-14 h-28 w-28 rounded-full bg-gradient-to-br ${color.gradient} opacity-[0.09] blur-3xl transition-all duration-500 group-hover:opacity-[0.14] group-hover:scale-105`} />
 
                       <div className="relative z-10 h-full flex flex-col">
-                        <div className="flex items-start justify-between mb-1.5 md:mb-3">
-                          <div className={`w-8 h-8 md:w-11 md:h-11 rounded-lg md:rounded-xl bg-gradient-to-br ${color.gradient} flex items-center justify-center shadow-lg transition-transform duration-300 group-hover:scale-110 group-hover:rotate-3`}>
-                            <Icon name={cat.iconName} className="w-4 h-4 md:w-5.5 md:h-5.5 text-white" />
+                        <div className="flex items-center justify-between gap-2 mb-2 md:mb-3">
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <div className={`w-8 h-8 md:w-11 md:h-11 rounded-xl bg-gradient-to-br ${color.gradient} flex items-center justify-center shadow-lg transition-transform duration-300 group-hover:scale-105`}>
+                              <Icon name={cat.iconName} className="w-3.5 h-3.5 md:w-5.5 md:h-5.5 text-white" />
+                            </div>
+                            <h3 className="text-[13px] md:text-base font-black text-surface-800 dark:text-white line-clamp-1 tracking-tight">{cat.name}</h3>
                           </div>
-                          <div className={`w-6 h-6 md:w-8 md:h-8 rounded-lg bg-surface-100 dark:bg-surface-700/50 flex items-center justify-center text-surface-400 transition-all duration-300 group-hover:bg-gradient-to-br group-hover:${color.gradient} group-hover:text-white group-hover:scale-110`}>
+                          <div className="w-6 h-6 md:w-8 md:h-8 rounded-lg bg-surface-100 dark:bg-surface-700/50 flex items-center justify-center text-surface-400 transition-all duration-300 group-hover:bg-surface-200 dark:group-hover:bg-surface-600 group-hover:text-surface-700 dark:group-hover:text-white group-hover:scale-110">
                             <Icon name="ChevronRight" className="w-3 md:w-4 md:h-4 transition-transform duration-300 group-hover:translate-x-0.5" />
                           </div>
                         </div>
 
-                        <h3 className="text-xs md:text-base font-black text-surface-800 dark:text-white mb-0.5 md:mb-1 line-clamp-1 tracking-tight">{cat.name}</h3>
                         <p className="hidden md:block text-surface-500 dark:text-surface-400 text-[11px] md:text-xs mb-auto leading-relaxed line-clamp-2 font-medium">{cat.description}</p>
-                        <p className="md:hidden text-[10px] text-surface-500 dark:text-surface-400 font-bold mt-auto">{cat.subCategories.length} konu - {questionCount} soru</p>
 
-                        <div className="hidden md:flex items-center gap-2 md:gap-3 text-[10px] md:text-xs text-surface-500 dark:text-surface-400 font-bold mt-3 pt-2.5 border-t border-surface-200/50 dark:border-surface-700/50">
-                          <span className="flex items-center gap-1.5 whitespace-nowrap">
+                        <div className="flex items-center gap-1.5 md:gap-3 text-[10px] md:text-xs text-surface-500 dark:text-surface-400 font-bold mt-auto pt-1.5 md:pt-2.5 border-t border-surface-200/60 dark:border-surface-700/60">
+                          <span className="inline-flex items-center gap-1.5 whitespace-nowrap px-1.5 py-1 rounded-md bg-surface-50 dark:bg-surface-900/50">
                             <Icon name="BookOpen" className="w-3.5 h-3.5" />
                             {cat.subCategories.length} konu
                           </span>
-                          <span className="flex items-center gap-1.5 whitespace-nowrap">
+                          <span className="inline-flex items-center gap-1.5 whitespace-nowrap px-1.5 py-1 rounded-md bg-surface-50 dark:bg-surface-900/50">
                             <Icon name="FileQuestion" className="w-3.5 h-3.5" />
                             {questionCount} soru
                           </span>
@@ -3590,164 +4219,230 @@ export default function App() {
           {/* ===== DASHBOARD - SUBCATEGORIES ===== */}
           {currentView === 'dashboard' && activeCategory && (
             <div className="animate-fade-in h-full flex flex-col overflow-hidden">
-              <button
-                onClick={() => setActiveCategory(null)}
-                className="inline-flex items-center gap-2 text-surface-400 hover:text-brand-500 transition-colors font-medium text-sm mb-3 shrink-0"
-              >
-                <Icon name="ArrowLeft" className="w-4 h-4" />
-                Tum Dersler
-              </button>
-
-              <div className="mb-2.5 rounded-xl border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800 p-2.5 md:p-3.5 shrink-0">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <div className={`w-8 h-8 md:w-9 md:h-9 rounded-lg ${getCatColor(activeCategory.id).bgLight} ${getCatColor(activeCategory.id).bgDark} flex items-center justify-center ${getCatColor(activeCategory.id).text} ${getCatColor(activeCategory.id).textDark}`}>
-                      <Icon name={activeCategory.iconName} className="w-4 h-4 md:w-4.5 md:h-4.5" />
-                    </div>
-                    <div className="min-w-0">
-                      <h1 className="text-base md:text-xl font-extrabold text-surface-800 dark:text-white truncate">
-                        {activeCategory.name}
-                      </h1>
-                    </div>
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-3 shrink-0">
+                <button
+                  onClick={() => setActiveCategory(null)}
+                  className="inline-flex items-center gap-2 text-surface-500 dark:text-surface-300 hover:text-brand-500 transition-colors font-semibold text-sm px-3 py-2 rounded-xl bg-white/80 dark:bg-surface-800/80 border border-surface-200/80 dark:border-surface-700/80"
+                >
+                  <Icon name="ArrowLeft" className="w-4 h-4" />
+                  Tum Dersler
+                </button>
+                <div className="w-full sm:w-auto flex items-center gap-2">
+                  <div className="relative flex-1 sm:w-64">
+                    <Icon name="Search" className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-surface-400" />
+                    <input
+                      value={topicSearchTerm}
+                      onChange={(e) => setTopicSearchTerm(e.target.value)}
+                      placeholder="Konu ara..."
+                      className="w-full h-10 pl-9 pr-3 rounded-xl border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800 text-sm text-surface-700 dark:text-surface-200 placeholder:text-surface-400 outline-none focus:border-brand-500"
+                    />
                   </div>
-                  <span className="px-1.5 md:px-2 py-0.5 md:py-1 rounded-md bg-surface-50 dark:bg-surface-700 text-[10px] md:text-[11px] font-bold text-surface-500 dark:text-surface-300 whitespace-nowrap">
-                    {activeCategory.subCategories.length} konu
-                  </span>
+                  <select
+                    value={topicCardFilter}
+                    onChange={(e) => setTopicCardFilter(e.target.value as 'all' | 'in_progress' | 'completed' | 'not_started')}
+                    className="h-10 px-3 rounded-xl border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800 text-sm text-surface-700 dark:text-surface-200 outline-none focus:border-brand-500"
+                  >
+                    <option value="all">Tum Konular</option>
+                    <option value="in_progress">Devam Edenler</option>
+                    <option value="completed">Tamamlananlar</option>
+                    <option value="not_started">Baslanmayanlar</option>
+                  </select>
                 </div>
               </div>
 
-              <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar pr-1 space-y-2">
-                {activeCategory.subCategories.map((sub) => {
+              {(() => {
+                const color = getCatColor(activeCategory.id);
+                const topicCards = activeCategory.subCategories.map((sub) => {
                   const questionCount = allQuestions[sub.id]?.length || 0;
-                  const color = getCatColor(activeCategory.id);
                   const topicProgress = getTopicProgress(sub.id);
-                  const seenCount = topicProgress.seenCount;
+                  const topicFavoriteCount = (favoriteQuestionIdsByTopic[sub.id] || []).length;
+                  const topicSeenStats = seenQuestionStatsByTopic[sub.id] || [];
+                  const uniqueSolvedCount = topicSeenStats.reduce((sum, stats) => (stats.answeredCount > 0 ? sum + 1 : sum), 0);
+                  const progressPercent = questionCount > 0 ? Math.min(100, Math.round((uniqueSolvedCount / questionCount) * 100)) : 0;
                   const attempted = topicProgress.correctCount + topicProgress.totalWrongAnswers;
                   const accuracy = attempted > 0 ? Math.round((topicProgress.correctCount / attempted) * 100) : 0;
-                  const hasTopicProgressStats = seenCount > 0 || topicProgress.completedQuizCount > 0 || topicProgress.wrongCount > 0 || topicProgress.blankCount > 0;
+                  const hasTopicProgressStats =
+                    uniqueSolvedCount > 0 ||
+                    topicProgress.completedQuizCount > 0 ||
+                    topicProgress.wrongCount > 0 ||
+                    topicProgress.blankCount > 0;
+                  const status: 'completed' | 'in_progress' | 'not_started' =
+                    progressPercent >= 100 && questionCount > 0
+                      ? 'completed'
+                      : uniqueSolvedCount > 0
+                        ? 'in_progress'
+                        : 'not_started';
+                  return {
+                    sub,
+                    questionCount,
+                    topicProgress,
+                    uniqueSolvedCount,
+                    progressPercent,
+                    accuracy,
+                    topicFavoriteCount,
+                    hasTopicProgressStats,
+                    status,
+                  };
+                });
+                const normalizedSearch = topicSearchTerm.trim().toLocaleLowerCase('tr');
+                const filteredTopicCards = topicCards.filter((topicCard) => {
+                  if (normalizedSearch && !topicCard.sub.name.toLocaleLowerCase('tr').includes(normalizedSearch)) {
+                    return false;
+                  }
+                  if (topicCardFilter === 'all') return true;
+                  return topicCard.status === topicCardFilter;
+                });
+                const totalQuestionCount = topicCards.reduce((sum, topicCard) => sum + topicCard.questionCount, 0);
+                const totalSolvedUniqueCount = topicCards.reduce((sum, topicCard) => sum + topicCard.uniqueSolvedCount, 0);
+                const categoryProgressPercent = totalQuestionCount > 0 ? Math.min(100, Math.round((totalSolvedUniqueCount / totalQuestionCount) * 100)) : 0;
 
-                  return (
-                    <button
-                      key={sub.id}
-                      onClick={() => openQuizSetup(activeCategory, sub)}
-                      className="w-full text-left group cursor-pointer bg-white dark:bg-surface-800 rounded-xl p-2 md:p-2.5 border border-surface-100 dark:border-surface-700 hover:border-surface-300 dark:hover:border-surface-600 transition-all duration-200 animate-fade-in"
-                    >
-                      <div className="flex items-center justify-between gap-2 mb-1.5">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <div className={`w-6 h-6 ${color.bgLight} ${color.bgDark} rounded-md flex items-center justify-center ${color.text} ${color.textDark}`}>
-                            <Icon name={activeCategory.iconName} className="w-3 h-3" />
+                return (
+                  <>
+                    <div className="mb-3 rounded-2xl border border-brand-200/50 dark:border-brand-900/40 bg-gradient-to-r from-surface-900 via-surface-800 to-surface-900 p-4 md:p-5 shadow-card shrink-0 overflow-hidden relative">
+                      <div className="absolute inset-y-0 right-0 w-40 bg-gradient-to-l from-brand-500/15 to-transparent pointer-events-none" />
+                      <div className="relative z-10">
+                        <div className="flex items-center justify-between gap-3 mb-2">
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <div className={`w-9 h-9 rounded-xl bg-gradient-to-br ${color.gradient} flex items-center justify-center text-white shadow-lg`}>
+                              <Icon name={activeCategory.iconName} className="w-4.5 h-4.5" />
+                            </div>
+                            <div className="min-w-0">
+                              <h1 className="text-base md:text-lg font-black text-white truncate">{activeCategory.name}</h1>
+                              <p className="text-[11px] md:text-xs text-surface-300">
+                                {activeCategory.subCategories.length} konu • {totalQuestionCount} soru
+                              </p>
+                            </div>
                           </div>
-                          <div className="min-w-0 flex items-baseline gap-1.5">
-                            <h3 className="text-[12px] md:text-[13px] font-bold text-surface-800 dark:text-surface-100 truncate">
-                              {sub.name}
-                            </h3>
-                            <span className="text-[10px] md:text-[11px] text-surface-400 dark:text-surface-500 font-semibold whitespace-nowrap">
-                              ({questionCount})
-                            </span>
-                          </div>
+                          <span className="px-2 py-1 rounded-lg text-[11px] font-bold bg-brand-500/20 text-brand-200 border border-brand-400/30 whitespace-nowrap">
+                            %{categoryProgressPercent} tamamlandi
+                          </span>
                         </div>
-                        <div className="flex items-center gap-1.5">
-                          <span className={`px-1.5 py-0.5 rounded-md text-[10px] font-bold ${color.bgLight} ${color.bgDark} ${color.text} ${color.textDark}`}>
-                            %{accuracy}
-                          </span>
-                          <span
-                            role="button"
-                            tabIndex={hasTopicProgressStats ? 0 : -1}
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              if (!hasTopicProgressStats) return;
-                              handleResetSingleTopicProgressStats(sub.id, sub.name);
-                            }}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter' || e.key === ' ') {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                if (!hasTopicProgressStats) return;
-                                handleResetSingleTopicProgressStats(sub.id, sub.name);
-                              }
-                            }}
-                            className={`w-5 h-5 rounded-md flex items-center justify-center transition-colors ${
-                              hasTopicProgressStats
-                                ? 'bg-red-50 text-red-500 hover:bg-red-100 dark:bg-red-900/20 dark:text-red-300 dark:hover:bg-red-900/30 cursor-pointer'
-                                : 'bg-surface-100 dark:bg-surface-700 text-surface-300 dark:text-surface-500 cursor-not-allowed'
-                            }`}
-                            title={hasTopicProgressStats ? 'Bu konunun istatistiklerini sifirla' : 'Bu konuda sifirlanacak istatistik yok'}
-                          >
-                            <Icon name="RotateCcw" className="w-2.5 h-2.5" />
-                          </span>
-                          <div className={`w-5 h-5 rounded-md bg-surface-50 dark:bg-surface-700 flex items-center justify-center group-hover:bg-gradient-to-r group-hover:${color.gradient} group-hover:text-white transition-all`}>
-                            <Icon name="Play" className="w-2.5 h-2.5 text-surface-300 group-hover:text-white transition-colors" />
-                          </div>
+                        <div className="w-full h-2 rounded-full bg-surface-700/90 overflow-hidden">
+                          <div className="h-full bg-gradient-to-r from-brand-400 to-emerald-400 rounded-full transition-all duration-500" style={{ width: `${categoryProgressPercent}%` }} />
                         </div>
                       </div>
+                    </div>
 
-                      <div className="rounded-md border border-surface-200 dark:border-surface-700 overflow-hidden bg-surface-50/70 dark:bg-surface-900/50">
-                        <div className="grid grid-cols-4 divide-x divide-surface-200 dark:divide-surface-700 text-[9px] md:text-[11px]">
-                          <div className="px-1.5 md:px-2 py-1">
-                            <p className="font-semibold leading-none whitespace-nowrap">
-                              <span className="text-surface-400 dark:text-surface-500">Gorulen:</span>{' '}
-                              <span className="text-brand-600 dark:text-brand-300 font-bold">{seenCount}</span>
-                            </p>
+                    <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar pr-0.5 pb-1">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3 md:gap-4">
+                        {filteredTopicCards.map(({ sub, questionCount, topicProgress, uniqueSolvedCount, progressPercent, accuracy, topicFavoriteCount, hasTopicProgressStats, status }) => {
+                          const statusLabel =
+                            status === 'completed'
+                              ? 'Tamamlandi'
+                              : status === 'in_progress'
+                                ? 'Devam Ediyor'
+                                : 'Baslanmadi';
+                          const statusClass =
+                            status === 'completed'
+                              ? 'bg-emerald-50 text-emerald-600 border-emerald-200 dark:bg-emerald-900/20 dark:text-emerald-300 dark:border-emerald-800/40'
+                              : status === 'in_progress'
+                                ? 'bg-amber-50 text-amber-600 border-amber-200 dark:bg-amber-900/20 dark:text-amber-300 dark:border-amber-800/40'
+                                : 'bg-surface-100 text-surface-500 border-surface-200 dark:bg-surface-700/60 dark:text-surface-300 dark:border-surface-600';
+                          const actionLabel =
+                            status === 'completed'
+                              ? 'Tekrar Coz'
+                              : status === 'in_progress'
+                                ? 'Devam Et'
+                                : 'Basla';
+
+                          return (
+                            <article
+                              key={sub.id}
+                              className="group bg-white dark:bg-surface-800 rounded-2xl border border-surface-200 dark:border-surface-700 p-4 md:p-5 hover:border-brand-300 dark:hover:border-brand-700/60 transition-all duration-200 shadow-card dark:shadow-card-dark flex flex-col"
+                            >
+                              <div className="flex items-start justify-between gap-2 mb-3">
+                                <div className={`w-10 h-10 rounded-xl bg-gradient-to-br ${color.gradient} text-white flex items-center justify-center shadow-md`}>
+                                  <Icon name={activeCategory.iconName} className="w-4.5 h-4.5" />
+                                </div>
+                                <div className="flex items-center gap-1.5">
+                                  <span className={`px-2 py-1 rounded-md text-[10px] font-bold border whitespace-nowrap ${statusClass}`}>
+                                    {statusLabel}
+                                  </span>
+                                  <button
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      if (!hasTopicProgressStats) return;
+                                      handleResetSingleTopicProgressStats(sub.id, sub.name);
+                                    }}
+                                    className={`w-7 h-7 rounded-lg border flex items-center justify-center transition ${
+                                      hasTopicProgressStats
+                                        ? 'border-red-200 text-red-500 hover:bg-red-50 dark:border-red-900/40 dark:text-red-300 dark:hover:bg-red-900/20'
+                                        : 'border-surface-200 text-surface-300 dark:border-surface-700 dark:text-surface-500 cursor-not-allowed'
+                                    }`}
+                                    title={hasTopicProgressStats ? 'Bu konunun istatistiklerini sifirla' : 'Bu konuda sifirlanacak istatistik yok'}
+                                  >
+                                    <Icon name="RotateCcw" className="w-3 h-3" />
+                                  </button>
+                                </div>
+                              </div>
+
+                              <h3 className="text-base font-extrabold text-surface-800 dark:text-white mb-2 line-clamp-2">{sub.name}</h3>
+
+                              <div className="space-y-2 mb-4">
+                                <div className="flex items-center justify-between text-[11px] text-surface-500 dark:text-surface-400">
+                                  <span>{uniqueSolvedCount} / {questionCount} soru</span>
+                                  <span className="font-bold">%{progressPercent}</span>
+                                </div>
+                                <div className="w-full h-1.5 rounded-full bg-surface-100 dark:bg-surface-700 overflow-hidden">
+                                  <div className={`h-full bg-gradient-to-r ${color.gradient} rounded-full transition-all duration-500`} style={{ width: `${progressPercent}%` }} />
+                                </div>
+                                <div className="flex items-center justify-between text-[11px]">
+                                  <span className="text-surface-500 dark:text-surface-400">Basari: <span className="font-bold text-surface-700 dark:text-surface-200">%{accuracy}</span></span>
+                                  <span className="text-surface-500 dark:text-surface-400">Yanlis: <span className="font-bold text-red-600 dark:text-red-300">{topicProgress.wrongCount}</span></span>
+                                  <span className="text-surface-500 dark:text-surface-400">Fav: <span className="font-bold text-amber-600 dark:text-amber-300">{topicFavoriteCount}</span></span>
+                                </div>
+                              </div>
+
+                              <div className="mt-auto flex items-center gap-2">
+                                <button
+                                  onClick={() => openQuizSetup(activeCategory, sub)}
+                                  className={`flex-1 h-9 rounded-lg bg-gradient-to-r ${color.gradient} text-white text-sm font-bold hover:opacity-90 transition flex items-center justify-center gap-1.5`}
+                                >
+                                  <Icon name="Play" className="w-3.5 h-3.5" />
+                                  {actionLabel}
+                                </button>
+                                <button
+                                  onClick={() => openQuizSetup(activeCategory, sub, 'wrong')}
+                                  className="h-9 px-2 rounded-lg border border-red-200 dark:border-red-900/40 text-red-600 dark:text-red-300 text-xs font-bold hover:bg-red-50 dark:hover:bg-red-900/20 transition"
+                                  title="Yanlis sorulardan basla"
+                                >
+                                  Y
+                                </button>
+                                <button
+                                  onClick={() => openQuizSetup(activeCategory, sub, 'blank')}
+                                  className="h-9 px-2 rounded-lg border border-surface-200 dark:border-surface-700 text-surface-500 dark:text-surface-300 text-xs font-bold hover:bg-surface-100 dark:hover:bg-surface-700 transition"
+                                  title="Bos sorulardan basla"
+                                >
+                                  B
+                                </button>
+                                <button
+                                  onClick={() => openQuizSetup(activeCategory, sub, 'favorite')}
+                                  disabled={topicFavoriteCount === 0}
+                                  className={`h-9 px-2 rounded-lg border text-xs font-bold transition ${
+                                    topicFavoriteCount > 0
+                                      ? 'border-amber-200 dark:border-amber-900/40 text-amber-600 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-900/20'
+                                      : 'border-surface-200 dark:border-surface-700 text-surface-300 dark:text-surface-500 cursor-not-allowed'
+                                  }`}
+                                  title={topicFavoriteCount > 0 ? 'Favori sorulardan basla' : 'Bu konuda favori soru yok'}
+                                >
+                                  F
+                                </button>
+                              </div>
+                            </article>
+                          );
+                        })}
+
+                        {filteredTopicCards.length === 0 && (
+                          <div className="col-span-full rounded-2xl border border-dashed border-surface-300 dark:border-surface-700 p-8 text-center text-sm text-surface-500 dark:text-surface-400">
+                            Filtreye uygun konu bulunamadi.
                           </div>
-                          <div className="px-1.5 md:px-2 py-1">
-                            <p className="font-semibold leading-none whitespace-nowrap">
-                              <span className="text-surface-400 dark:text-surface-500">Dogru:</span>{' '}
-                              <span className="text-emerald-700 dark:text-emerald-300 font-bold">{topicProgress.correctCount}</span>
-                            </p>
-                          </div>
-                          <span
-                            role="button"
-                            tabIndex={0}
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              openQuizSetup(activeCategory, sub, 'wrong');
-                            }}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter' || e.key === ' ') {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                openQuizSetup(activeCategory, sub, 'wrong');
-                              }
-                            }}
-                            className="block px-1.5 md:px-2 py-1 hover:bg-red-50 dark:hover:bg-red-900/20 transition cursor-pointer"
-                            title="Yanlis sorulardan sinav olustur"
-                          >
-                            <p className="font-semibold leading-none whitespace-nowrap">
-                              <span className="text-surface-400 dark:text-surface-500">Yanlis:</span>{' '}
-                              <span className="text-red-700 dark:text-red-300 font-bold">{topicProgress.wrongCount}</span>
-                            </p>
-                          </span>
-                          <span
-                            role="button"
-                            tabIndex={0}
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              openQuizSetup(activeCategory, sub, 'blank');
-                            }}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter' || e.key === ' ') {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                openQuizSetup(activeCategory, sub, 'blank');
-                              }
-                            }}
-                            className="block px-1.5 md:px-2 py-1 hover:bg-slate-100 dark:hover:bg-slate-700/50 transition cursor-pointer"
-                            title="Bos sorulardan sinav olustur"
-                          >
-                            <p className="font-semibold leading-none whitespace-nowrap">
-                              <span className="text-surface-400 dark:text-surface-500">Bos:</span>{' '}
-                              <span className="text-slate-600 dark:text-slate-200 font-bold">{topicProgress.blankCount}</span>
-                            </p>
-                          </span>
-                        </div>
+                        )}
                       </div>
-                    </button>
-                  );
-                })}
-              </div>
+                    </div>
+                  </>
+                );
+              })()}
             </div>
           )}
         </div>
@@ -3772,12 +4467,10 @@ export default function App() {
                 <Icon name="CircleX" className="w-6 h-6" />
               </div>
               <h3 className="text-xl font-extrabold text-surface-900 dark:text-white mb-2">
-                {resetStatsTargetTopic ? 'Konu istatistiklerini sifirla' : 'Istatistikleri sifirla'}
+                Konu istatistiklerini sifirla
               </h3>
               <p className="text-sm text-surface-500 dark:text-surface-400 leading-relaxed mb-4">
-                {resetStatsTargetTopic
-                  ? `"${resetStatsTargetTopic.name}" konusu icin kayitli istatistikler silinecek. Bu islem geri alinamaz.`
-                  : 'Tum istatistik kayitlariniz silinecek. Bu islem geri alinamaz.'}
+                {`"${resetStatsTargetTopic?.name ?? 'Secili konu'}" konusu icin kayitli istatistikler silinecek. Bu islem geri alinamaz.`}
               </p>
 
               <div className="grid grid-cols-2 gap-2 mb-6 text-[11px]">
@@ -3810,7 +4503,7 @@ export default function App() {
                   onClick={handleConfirmResetTopicProgressStats}
                   className="flex-[1.2] h-11 rounded-xl bg-gradient-to-r from-red-500 to-rose-500 text-white text-sm font-bold shadow-lg shadow-red-500/20 hover:shadow-red-500/30 transition"
                 >
-                  {resetStatsTargetTopic ? 'Konuyu Sifirla' : 'Tumunu Sifirla'}
+                  Konuyu Sifirla
                 </button>
               </div>
             </div>
@@ -4157,6 +4850,26 @@ export default function App() {
               </button>
             </div>
 
+            <div className="px-5 pt-4 pb-1 shrink-0">
+              <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">
+                Kaynak Etiketi <span className="normal-case text-red-500">*</span>
+              </label>
+              <input
+                type="text"
+                value={bulkSourceTagInput}
+                onChange={(e) => setBulkSourceTagInput(e.target.value)}
+                className={`w-full px-4 py-2.5 rounded-xl bg-surface-50 dark:bg-surface-900 border outline-none focus:border-brand-500 dark:text-white text-sm ${
+                  isBulkSourceTagValid
+                    ? 'border-surface-200 dark:border-surface-700'
+                    : 'border-red-300 dark:border-red-500'
+                }`}
+                placeholder="Etiket girin (bos gecmek icin sadece 1 adet bosluk)"
+              />
+              <p className={`mt-1 text-[11px] ${isBulkSourceTagValid ? 'text-surface-400' : 'text-red-500'}`}>
+                Etiket zorunlu. Bos gecmek icin sadece 1 kez Space tusuna basin.
+              </p>
+            </div>
+
             {bulkStep === 'paste' ? (
               /* Paste Step */
               <div className="flex flex-col flex-1 overflow-hidden p-5 gap-4">
@@ -4174,7 +4887,7 @@ export default function App() {
                 />
                 <button
                   onClick={handleBulkParse}
-                  disabled={!bulkText.trim()}
+                  disabled={!bulkText.trim() || !isBulkSourceTagValid}
                   className="w-full py-3.5 bg-gradient-to-r from-brand-600 to-brand-500 text-white font-bold text-sm rounded-xl hover:shadow-lg hover:shadow-brand-600/20 transition disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 >
                   <Icon name="Sparkles" className="w-4 h-4" />
@@ -4258,7 +4971,7 @@ export default function App() {
                   </button>
                   <button
                     onClick={handleBulkSave}
-                    disabled={bulkParsed.length === 0 || !adminSelectedTopicId}
+                    disabled={bulkParsed.length === 0 || !adminSelectedTopicId || !isBulkSourceTagValid}
                     className="flex-[2] py-3 bg-gradient-to-r from-emerald-600 to-emerald-500 text-white font-bold text-sm rounded-xl hover:shadow-lg hover:shadow-emerald-600/20 transition disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                   >
                     <Icon name="CircleCheck" className="w-4 h-4" />
@@ -4271,44 +4984,103 @@ export default function App() {
         </div>
       )}
 
+      {/* Dashboard Rules Help */}
+      {currentView === 'dashboard' && (
+        <button
+          onClick={() => setIsRulesHelpModalOpen(true)}
+          className="fixed right-3 md:right-4 lg:right-6 bottom-20 lg:bottom-6 z-[56] w-11 h-11 rounded-full bg-brand-600 text-white shadow-lg shadow-brand-600/30 hover:bg-brand-700 transition flex items-center justify-center"
+          title="Puanlama ve sayac kurallarini goster"
+          aria-label="Puanlama ve sayac kurallarini goster"
+        >
+          <Icon name="Info" className="w-5 h-5" />
+        </button>
+      )}
+
+      {isRulesHelpModalOpen && (
+        <div className="fixed inset-0 z-[58] bg-black/55 backdrop-blur-sm flex items-center justify-center p-4 modal-backdrop">
+          <div className="w-full max-w-2xl bg-white dark:bg-surface-800 rounded-2xl shadow-2xl border border-surface-100 dark:border-surface-700 overflow-hidden modal-content">
+            <div className="flex items-center justify-between p-4 border-b border-surface-100 dark:border-surface-700">
+              <div>
+                <h3 className="text-base md:text-lg font-extrabold text-surface-800 dark:text-white">Puanlama ve Sayac Kurallari</h3>
+                <p className="text-xs text-surface-400">Istatistiklerin nasil hesaplandigi</p>
+              </div>
+              <button
+                onClick={() => setIsRulesHelpModalOpen(false)}
+                className="w-9 h-9 rounded-xl bg-surface-100 dark:bg-surface-700 flex items-center justify-center hover:bg-surface-200 dark:hover:bg-surface-600 transition"
+                aria-label="Kapat"
+              >
+                <Icon name="X" className="w-4 h-4 text-surface-500" />
+              </button>
+            </div>
+            <div className="p-4 md:p-5 space-y-3 md:space-y-4 text-[12px] text-surface-600 dark:text-surface-300 max-h-[72vh] overflow-y-auto custom-scrollbar">
+              <div className="rounded-xl border border-surface-200/80 dark:border-surface-700/80 bg-surface-50/80 dark:bg-surface-900/50 p-3">
+                <p className="text-[11px] font-bold uppercase tracking-wider text-surface-500 dark:text-surface-400 mb-1.5">Istatistik formulleri</p>
+                <ul className="space-y-1.5">
+                  <li><span className="font-bold text-surface-700 dark:text-surface-200">Basari Orani</span> = Toplam Dogru / (Toplam Dogru + Yanlis Deneme) x 100. Boslar bu orana dahil edilmez.</li>
+                  <li><span className="font-bold text-surface-700 dark:text-surface-200">Farkli Cozulen</span> = En az bir kez cevapladigin tekil soru sayisi. Ayni soruyu tekrar cozersen bu sayi artmaz.</li>
+                  <li><span className="font-bold text-surface-700 dark:text-surface-200">Toplam Cevap</span> = Tum cevaplama denemelerin. Ayni soruyu her cevaplayisinda bu sayi artar.</li>
+                  <li><span className="font-bold text-surface-700 dark:text-surface-200">Karsina Cikan</span> = Testte gosterilen toplam soru adedi. Tekrar gelen sorular ve boslar dahildir.</li>
+                  <li><span className="font-bold text-surface-700 dark:text-surface-200">Cozulen Test</span> = Bitirdigin test sayisi; her test bitisinde +1 artar.</li>
+                </ul>
+              </div>
+              <div className="rounded-xl border border-surface-200/80 dark:border-surface-700/80 bg-surface-50/80 dark:bg-surface-900/50 p-3">
+                <p className="text-[11px] font-bold uppercase tracking-wider text-surface-500 dark:text-surface-400 mb-1.5">Yanlis / Bos havuzu</p>
+                <ul className="space-y-1.5">
+                  <li>Soru yanlis cevaplanirsa <span className="font-bold text-red-600 dark:text-red-300">Yanlislarim</span> havuzuna, bos birakilirsa <span className="font-bold text-slate-600 dark:text-slate-200">Boslarim</span> havuzuna eklenir.</li>
+                  <li>Ayni soru art arda dogru yapildikca toparlanma sayaci artar.</li>
+                  <li>Toparlanma sayaci <span className="font-bold text-surface-800 dark:text-white">3</span> olunca soru havuzdan cikar (cozulmus olur).</li>
+                  <li>Soru tekrar yanlis ya da bos olursa sayac sifirlanir ve soru yeniden aktif olur.</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Mobile Bottom Nav */}
-      <div className="lg:hidden fixed bottom-0 left-0 right-0 bg-white/90 dark:bg-surface-800/90 backdrop-blur-xl border-t border-surface-200 dark:border-surface-700 z-50 mobile-safe-bottom">
-        <div className="flex items-center justify-around h-14">
+      <div className="lg:hidden fixed bottom-2 left-2 right-2 rounded-2xl bg-white/92 dark:bg-surface-800/92 backdrop-blur-2xl border border-white/70 dark:border-surface-700/90 shadow-premium-lg z-50 mobile-safe-bottom">
+        <div className="flex items-center justify-around h-14 px-1">
           <button
             onClick={() => { setCurrentView('dashboard'); setActiveCategory(null); }}
-            className={`flex flex-col items-center gap-0.5 px-4 py-1 transition-colors ${
-              currentView === 'dashboard' && !activeCategory ? 'text-brand-600 dark:text-brand-400' : 'text-surface-400'
+            className={`flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-xl transition-all ${
+              currentView === 'dashboard' && !activeCategory
+                ? 'bg-brand-50 dark:bg-brand-900/30 text-brand-600 dark:text-brand-400 shadow-sm'
+                : 'text-surface-400 hover:text-surface-600 dark:hover:text-surface-200'
             }`}
           >
             <Icon name="Home" className="w-5 h-5" />
-            <span className="text-[10px] font-semibold">Ana Sayfa</span>
+            <span className="mobile-nav-label text-[10px] font-semibold">Ana Sayfa</span>
           </button>
           <button
             onClick={() => { setCurrentView('dashboard'); if (!activeCategory && categories.length > 0) setActiveCategory(categories[0]); }}
-            className={`flex flex-col items-center gap-0.5 px-4 py-1 transition-colors ${
-              currentView === 'dashboard' && activeCategory ? 'text-brand-600 dark:text-brand-400' : 'text-surface-400'
+            className={`flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-xl transition-all ${
+              currentView === 'dashboard' && activeCategory
+                ? 'bg-brand-50 dark:bg-brand-900/30 text-brand-600 dark:text-brand-400 shadow-sm'
+                : 'text-surface-400 hover:text-surface-600 dark:hover:text-surface-200'
             }`}
           >
             <Icon name="GraduationCap" className="w-5 h-5" />
-            <span className="text-[10px] font-semibold">Dersler</span>
+            <span className="mobile-nav-label text-[10px] font-semibold">Dersler</span>
           </button>
           {user.role === 'admin' && (
             <button
               onClick={() => setCurrentView('admin')}
-              className={`flex flex-col items-center gap-0.5 px-4 py-1 transition-colors ${
-                currentView === 'admin' ? 'text-brand-600 dark:text-brand-400' : 'text-surface-400'
+              className={`flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-xl transition-all ${
+                currentView === 'admin'
+                  ? 'bg-brand-50 dark:bg-brand-900/30 text-brand-600 dark:text-brand-400 shadow-sm'
+                  : 'text-surface-400 hover:text-surface-600 dark:hover:text-surface-200'
               }`}
             >
               <Icon name="Settings" className="w-5 h-5" />
-              <span className="text-[10px] font-semibold">Yonetim</span>
+              <span className="mobile-nav-label text-[10px] font-semibold">Yonetim</span>
             </button>
           )}
           <button
             onClick={handleLogout}
-            className="flex flex-col items-center gap-0.5 px-4 py-1 text-surface-400 hover:text-red-500 transition-colors"
+            className="flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-xl text-surface-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-all"
           >
             <Icon name="LogOut" className="w-5 h-5" />
-            <span className="text-[10px] font-semibold">Cikis</span>
+            <span className="mobile-nav-label text-[10px] font-semibold">Cikis</span>
           </button>
         </div>
       </div>
