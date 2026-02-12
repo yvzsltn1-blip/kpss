@@ -22,6 +22,16 @@ service cloud.firestore {
       allow update, delete: if isAdmin();
     }
 
+    // Kullaniciya ait konu bazli ozet istatistikler
+    match /users/{userId}/topicStats/{topicId} {
+      allow read, create, update, delete: if isSignedIn() && request.auth.uid == userId;
+    }
+
+    // Kullaniciya ait aktif/cozulmus yanlis havuzu
+    match /users/{userId}/wrongQuestions/{questionTrackingId} {
+      allow read, create, update, delete: if isSignedIn() && request.auth.uid == userId;
+    }
+
     function isValidReportCreate() {
       return request.resource.data.keys().hasOnly([
           'questionId',

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { INITIAL_CATEGORIES } from './constants';
 import { Category, User, SubCategory, Question, QuizState, QuestionReport } from './types';
 import { Icon } from './components/Icon';
@@ -11,6 +11,8 @@ import {
   addDoc,
   collection, 
   deleteDoc, 
+  type DocumentReference,
+  setDoc,
   updateDoc, 
   doc, 
   onSnapshot, 
@@ -23,6 +25,16 @@ import {
 type ViewState = 'dashboard' | 'quiz-setup' | 'quiz' | 'admin';
 type QuizConfirmAction = 'exit' | 'finish';
 type TopicProgressStats = {
+  seenCount: number;
+  correctCount: number;
+  wrongCount: number;
+  blankCount: number;
+  totalWrongAnswers: number;
+  totalBlankAnswers: number;
+  completedQuizCount: number;
+  lastPlayedAt: number;
+};
+type LegacyTopicProgressStats = {
   seenQuestionIds: string[];
   correctQuestionIds: string[];
   wrongQuestionIds: string[];
@@ -33,6 +45,17 @@ type TopicProgressStats = {
   blankCount: number;
   completedQuizCount: number;
   lastPlayedAt: number;
+};
+type WrongQuestionStatus = 'active_wrong' | 'active_blank' | 'resolved';
+type WrongQuestionStats = {
+  questionTrackingId: string;
+  topicId: string;
+  status: WrongQuestionStatus;
+  recoveryStreak: number;
+  wrongCount: number;
+  blankCount: number;
+  lastWrongAt: number;
+  resolvedAt: number;
 };
 
 // Kategori Renk Tanımları
@@ -72,7 +95,10 @@ const DEFAULT_COLOR = {
 
 const getCatColor = (id: string) => CATEGORY_COLORS[id] || DEFAULT_COLOR;
 const ADMIN_QUESTIONS_PER_PAGE = 5;
-const WRONG_RECOVERY_STREAK_TARGET = 5;
+const WRONG_RECOVERY_STREAK_TARGET = 3;
+const RESOLVED_RETENTION_DAYS = 45;
+const RESOLVED_RETENTION_MS = RESOLVED_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+const TOPIC_STATS_MIGRATION_KEY_PREFIX = 'kpsspro_topic_stats_migrated_v2_';
 
 const STORAGE_KEYS = {
   theme: 'kpsspro_theme',
@@ -81,6 +107,26 @@ const STORAGE_KEYS = {
   topicProgressStats: 'kpsspro_topic_progress_stats',
 } as const;
 const UNTAGGED_SOURCE_KEY = '__untagged__';
+
+const EMPTY_TOPIC_PROGRESS: TopicProgressStats = {
+  seenCount: 0,
+  correctCount: 0,
+  wrongCount: 0,
+  blankCount: 0,
+  totalWrongAnswers: 0,
+  totalBlankAnswers: 0,
+  completedQuizCount: 0,
+  lastPlayedAt: 0,
+};
+
+const getWrongQuestionDocId = (questionTrackingId: string): string => encodeURIComponent(questionTrackingId);
+const getQuestionTrackingIdFromWrongDocId = (docId: string): string => {
+  try {
+    return decodeURIComponent(docId);
+  } catch {
+    return docId;
+  }
+};
 
 const getStoredCategories = (): Category[] => {
   if (typeof window === 'undefined') return INITIAL_CATEGORIES;
@@ -136,7 +182,7 @@ const getStoredQuizSize = (): 0 | 1 | 2 => {
   return 0;
 };
 
-const getStoredTopicProgressStats = (): Record<string, TopicProgressStats> => {
+const getStoredLegacyTopicProgressStats = (): Record<string, LegacyTopicProgressStats> => {
   if (typeof window === 'undefined') return {};
   try {
     const rawStats = window.localStorage.getItem(STORAGE_KEYS.topicProgressStats);
@@ -144,9 +190,9 @@ const getStoredTopicProgressStats = (): Record<string, TopicProgressStats> => {
     const parsed = JSON.parse(rawStats);
     if (!parsed || typeof parsed !== 'object') return {};
 
-    const statsRecord: Record<string, TopicProgressStats> = {};
+    const statsRecord: Record<string, LegacyTopicProgressStats> = {};
     Object.entries(parsed).forEach(([topicId, value]) => {
-      const typedValue = value as Partial<TopicProgressStats>;
+      const typedValue = value as Partial<LegacyTopicProgressStats>;
       if (!typedValue || typeof topicId !== 'string') return;
       const seenQuestionIds = Array.isArray(typedValue.seenQuestionIds)
         ? Array.from(new Set(typedValue.seenQuestionIds.filter((id): id is string => typeof id === 'string')))
@@ -201,6 +247,31 @@ const getStoredTopicProgressStats = (): Record<string, TopicProgressStats> => {
   } catch {
     return {};
   }
+};
+
+const normalizeTopicProgressStats = (value: Partial<TopicProgressStats>): TopicProgressStats => {
+  const seenCount = Number.isFinite(value.seenCount) ? Math.max(0, Number(value.seenCount)) : 0;
+  const correctCount = Number.isFinite(value.correctCount) ? Math.max(0, Number(value.correctCount)) : 0;
+  const wrongCount = Number.isFinite(value.wrongCount) ? Math.max(0, Number(value.wrongCount)) : 0;
+  const blankCount = Number.isFinite(value.blankCount) ? Math.max(0, Number(value.blankCount)) : 0;
+  const totalWrongAnswers = Number.isFinite(value.totalWrongAnswers) ? Math.max(0, Number(value.totalWrongAnswers)) : wrongCount;
+  const totalBlankAnswers = Number.isFinite(value.totalBlankAnswers) ? Math.max(0, Number(value.totalBlankAnswers)) : blankCount;
+
+  return {
+    seenCount,
+    correctCount,
+    wrongCount,
+    blankCount,
+    totalWrongAnswers,
+    totalBlankAnswers,
+    completedQuizCount: Number.isFinite(value.completedQuizCount) ? Math.max(0, Number(value.completedQuizCount)) : 0,
+    lastPlayedAt: Number.isFinite(value.lastPlayedAt) ? Number(value.lastPlayedAt) : 0,
+  };
+};
+
+const normalizeWrongQuestionStatus = (value: unknown): WrongQuestionStatus => {
+  if (value === 'active_wrong' || value === 'active_blank' || value === 'resolved') return value;
+  return 'active_wrong';
 };
 
 const getTimestampMillis = (value: unknown): number => {
@@ -297,7 +368,8 @@ export default function App() {
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
 
   const [categories, setCategories] = useState<Category[]>(() => getStoredCategories());
-  const [topicProgressStats, setTopicProgressStats] = useState<Record<string, TopicProgressStats>>(() => getStoredTopicProgressStats());
+  const [topicProgressStats, setTopicProgressStats] = useState<Record<string, TopicProgressStats>>({});
+  const [wrongQuestionStatsById, setWrongQuestionStatsById] = useState<Record<string, WrongQuestionStats>>({});
   const [activeCategory, setActiveCategory] = useState<Category | null>(null);
   const [activeTopic, setActiveTopic] = useState<{ cat: Category, sub: SubCategory } | null>(null);
   const [isDarkMode, setIsDarkMode] = useState<boolean>(() => getStoredTheme());
@@ -385,6 +457,24 @@ export default function App() {
   const timerRef = useRef<number | null>(null);
   // Auto-advance ref
   const autoAdvanceRef = useRef<number | null>(null);
+  const wrongQuestionIdsByTopic = useMemo<Record<string, string[]>>(() => {
+    const next: Record<string, string[]> = {};
+    (Object.values(wrongQuestionStatsById) as WrongQuestionStats[]).forEach((stats) => {
+      if (stats.status !== 'active_wrong') return;
+      if (!next[stats.topicId]) next[stats.topicId] = [];
+      next[stats.topicId].push(stats.questionTrackingId);
+    });
+    return next;
+  }, [wrongQuestionStatsById]);
+  const blankQuestionIdsByTopic = useMemo<Record<string, string[]>>(() => {
+    const next: Record<string, string[]> = {};
+    (Object.values(wrongQuestionStatsById) as WrongQuestionStats[]).forEach((stats) => {
+      if (stats.status !== 'active_blank') return;
+      if (!next[stats.topicId]) next[stats.topicId] = [];
+      next[stats.topicId].push(stats.questionTrackingId);
+    });
+    return next;
+  }, [wrongQuestionStatsById]);
 
   // -- Effects --
   useEffect(() => {
@@ -415,14 +505,6 @@ export default function App() {
       // Ignore storage errors
     }
   }, [quizSize]);
-
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(STORAGE_KEYS.topicProgressStats, JSON.stringify(topicProgressStats));
-    } catch {
-      // Ignore storage errors
-    }
-  }, [topicProgressStats]);
 
   // --- FIREBASE VERİ ÇEKME EFFECT'İ ---
   useEffect(() => {
@@ -499,7 +581,7 @@ export default function App() {
         const fallbackName = firebaseUser.email ? firebaseUser.email.split('@')[0] : 'Kullanici';
         const username = firebaseUser.displayName?.trim() || fallbackName;
 
-        setUser({ username, role });
+        setUser({ uid: firebaseUser.uid, username, role });
         if (role !== 'admin') {
           setCurrentView(prev => (prev === 'admin' ? 'dashboard' : prev));
         }
@@ -513,6 +595,209 @@ export default function App() {
 
     return () => unsubscribe();
   }, []);
+
+  const cleanupExpiredResolvedWrongQuestions = async (uid: string, wrongDocIds: string[]) => {
+    if (wrongDocIds.length === 0) return;
+    for (let i = 0; i < wrongDocIds.length; i += 400) {
+      const batch = writeBatch(db);
+      wrongDocIds.slice(i, i + 400).forEach((docId) => {
+        batch.delete(doc(db, 'users', uid, 'wrongQuestions', docId));
+      });
+      await batch.commit();
+    }
+  };
+
+  useEffect(() => {
+    if (!user?.uid || typeof window === 'undefined') return;
+
+    const migrationKey = `${TOPIC_STATS_MIGRATION_KEY_PREFIX}${user.uid}`;
+    try {
+      if (window.localStorage.getItem(migrationKey) === '1') return;
+    } catch {
+      return;
+    }
+
+    const legacyStats = getStoredLegacyTopicProgressStats();
+    const entries = Object.entries(legacyStats);
+    if (entries.length === 0) {
+      try {
+        window.localStorage.setItem(migrationKey, '1');
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    const migrate = async () => {
+      try {
+        let batch = writeBatch(db);
+        let opCount = 0;
+        const commitCurrentBatch = async () => {
+          if (opCount === 0) return;
+          await batch.commit();
+          batch = writeBatch(db);
+          opCount = 0;
+        };
+
+        for (const [topicId, legacyValue] of entries) {
+          const migratedTopicStats = normalizeTopicProgressStats({
+            seenCount: legacyValue.seenQuestionIds.length,
+            correctCount: legacyValue.correctCount,
+            wrongCount: legacyValue.wrongQuestionIds.length,
+            blankCount: legacyValue.blankQuestionIds.length,
+            totalWrongAnswers: legacyValue.wrongCount,
+            totalBlankAnswers: legacyValue.blankCount,
+            completedQuizCount: legacyValue.completedQuizCount,
+            lastPlayedAt: legacyValue.lastPlayedAt,
+          });
+          batch.set(doc(db, 'users', user.uid, 'topicStats', topicId), migratedTopicStats, { merge: true });
+          opCount += 1;
+          if (opCount >= 450) await commitCurrentBatch();
+
+          const wrongSet = new Set(legacyValue.wrongQuestionIds);
+          const blankSet = new Set(legacyValue.blankQuestionIds.filter((questionTrackingId) => !wrongSet.has(questionTrackingId)));
+          const baseTimestamp = legacyValue.lastPlayedAt || Date.now();
+
+          for (const questionTrackingId of wrongSet) {
+            batch.set(
+              doc(db, 'users', user.uid, 'wrongQuestions', getWrongQuestionDocId(questionTrackingId)),
+              {
+                questionTrackingId,
+                topicId,
+                status: 'active_wrong',
+                recoveryStreak: legacyValue.wrongRecoveryStreakByQuestionId[questionTrackingId] || 0,
+                wrongCount: 1,
+                blankCount: 0,
+                lastWrongAt: baseTimestamp,
+                resolvedAt: 0,
+              } satisfies WrongQuestionStats,
+              { merge: true }
+            );
+            opCount += 1;
+            if (opCount >= 450) await commitCurrentBatch();
+          }
+
+          for (const questionTrackingId of blankSet) {
+            batch.set(
+              doc(db, 'users', user.uid, 'wrongQuestions', getWrongQuestionDocId(questionTrackingId)),
+              {
+                questionTrackingId,
+                topicId,
+                status: 'active_blank',
+                recoveryStreak: 0,
+                wrongCount: 0,
+                blankCount: 1,
+                lastWrongAt: baseTimestamp,
+                resolvedAt: 0,
+              } satisfies WrongQuestionStats,
+              { merge: true }
+            );
+            opCount += 1;
+            if (opCount >= 450) await commitCurrentBatch();
+          }
+        }
+
+        await commitCurrentBatch();
+        try {
+          window.localStorage.setItem(migrationKey, '1');
+        } catch {
+          // ignore
+        }
+      } catch (error) {
+        console.error('Yerel istatistik migration hatasi:', error);
+      }
+    };
+
+    void migrate();
+  }, [user?.uid]);
+
+  useEffect(() => {
+    if (!user?.uid) {
+      setTopicProgressStats({});
+      setWrongQuestionStatsById({});
+      return;
+    }
+
+    const topicStatsQuery = query(collection(db, 'users', user.uid, 'topicStats'));
+    const wrongQuestionsQuery = query(collection(db, 'users', user.uid, 'wrongQuestions'));
+
+    const unsubscribeTopicStats = onSnapshot(
+      topicStatsQuery,
+      (snapshot) => {
+        const nextStats: Record<string, TopicProgressStats> = {};
+        snapshot.forEach((topicDoc) => {
+          const data = topicDoc.data() as Partial<TopicProgressStats> & { lastPlayedAt?: unknown };
+          nextStats[topicDoc.id] = normalizeTopicProgressStats({
+            seenCount: data.seenCount,
+            correctCount: data.correctCount,
+            wrongCount: data.wrongCount,
+            blankCount: data.blankCount,
+            totalWrongAnswers: data.totalWrongAnswers,
+            totalBlankAnswers: data.totalBlankAnswers,
+            completedQuizCount: data.completedQuizCount,
+            lastPlayedAt: getTimestampMillis(data.lastPlayedAt),
+          });
+        });
+        setTopicProgressStats(nextStats);
+      },
+      (error) => {
+        console.error('Topic istatistikleri okunamadi:', error);
+        setTopicProgressStats({});
+      }
+    );
+
+    const unsubscribeWrongQuestions = onSnapshot(
+      wrongQuestionsQuery,
+      (snapshot) => {
+        const now = Date.now();
+        const nextWrongStats: Record<string, WrongQuestionStats> = {};
+        const expiredResolvedDocIds: string[] = [];
+
+        snapshot.forEach((wrongDoc) => {
+          const data = wrongDoc.data() as Record<string, unknown>;
+          const questionTrackingId =
+            (typeof data.questionTrackingId === 'string' && data.questionTrackingId.length > 0)
+              ? data.questionTrackingId
+              : getQuestionTrackingIdFromWrongDocId(wrongDoc.id);
+          const topicId = typeof data.topicId === 'string' ? data.topicId : '';
+          if (!questionTrackingId || !topicId) return;
+
+          const status = normalizeWrongQuestionStatus(data.status);
+          const resolvedAt = getTimestampMillis(data.resolvedAt);
+          if (status === 'resolved' && resolvedAt > 0 && now - resolvedAt >= RESOLVED_RETENTION_MS) {
+            expiredResolvedDocIds.push(wrongDoc.id);
+            return;
+          }
+
+          nextWrongStats[questionTrackingId] = {
+            questionTrackingId,
+            topicId,
+            status,
+            recoveryStreak: Number.isFinite(data.recoveryStreak) ? Math.max(0, Math.floor(Number(data.recoveryStreak))) : 0,
+            wrongCount: Number.isFinite(data.wrongCount) ? Math.max(0, Math.floor(Number(data.wrongCount))) : 0,
+            blankCount: Number.isFinite(data.blankCount) ? Math.max(0, Math.floor(Number(data.blankCount))) : 0,
+            lastWrongAt: getTimestampMillis(data.lastWrongAt),
+            resolvedAt,
+          };
+        });
+
+        setWrongQuestionStatsById(nextWrongStats);
+
+        if (expiredResolvedDocIds.length > 0) {
+          void cleanupExpiredResolvedWrongQuestions(user.uid, expiredResolvedDocIds);
+        }
+      },
+      (error) => {
+        console.error('Yanlis soru havuzu okunamadi:', error);
+        setWrongQuestionStatsById({});
+      }
+    );
+
+    return () => {
+      unsubscribeTopicStats();
+      unsubscribeWrongQuestions();
+    };
+  }, [user?.uid]);
 
   // Timer Logic
   useEffect(() => {
@@ -645,9 +930,8 @@ export default function App() {
 
   const openQuizSetup = (category: Category, sub: SubCategory, preset: 'all' | 'wrong' | 'blank' | 'both' = 'all') => {
     const topicQuestions = allQuestions[sub.id] || [];
-    const topicStats = topicProgressStats[sub.id];
-    const wrongSet = new Set(topicStats?.wrongQuestionIds || []);
-    const blankSet = new Set(topicStats?.blankQuestionIds || []);
+    const wrongSet = new Set(wrongQuestionIdsByTopic[sub.id] || []);
+    const blankSet = new Set(blankQuestionIdsByTopic[sub.id] || []);
     const nextStatusFilter =
       preset === 'wrong'
         ? { wrong: true, blank: false }
@@ -681,9 +965,8 @@ export default function App() {
     if (!activeTopic) return;
 
     const topicId = activeTopic.sub.id;
-    const topicStats = getTopicProgress(topicId);
-    const wrongSet = new Set(topicStats.wrongQuestionIds);
-    const blankSet = new Set(topicStats.blankQuestionIds);
+    const wrongSet = new Set(wrongQuestionIdsByTopic[topicId] || []);
+    const blankSet = new Set(blankQuestionIdsByTopic[topicId] || []);
     const isStatusFilterActive = quizStatusFilter.wrong || quizStatusFilter.blank;
     const topicQuestionsPool = (allQuestions[topicId] || []).filter((question, index) => {
       if (!isStatusFilterActive) return true;
@@ -832,76 +1115,113 @@ export default function App() {
     if (timerRef.current) clearInterval(timerRef.current);
     if (autoAdvanceRef.current) clearTimeout(autoAdvanceRef.current);
 
-    if (activeTopic && quizState.questions.length > 0) {
+    if (activeTopic && quizState.questions.length > 0 && user?.uid) {
       const topicId = activeTopic.sub.id;
       const currentAnswers = quizState.userAnswers;
       const currentQuestions = quizState.questions;
+      const now = Date.now();
+      const nextWrongQuestionStatsById = { ...wrongQuestionStatsById };
+      const changedQuestionIds = new Set<string>();
+      const prevTopicStats = topicProgressStats[topicId] || EMPTY_TOPIC_PROGRESS;
+      const nextTopicStats: TopicProgressStats = {
+        ...prevTopicStats,
+        seenCount: prevTopicStats.seenCount + currentQuestions.length,
+        correctCount: prevTopicStats.correctCount,
+        wrongCount: prevTopicStats.wrongCount,
+        blankCount: prevTopicStats.blankCount,
+        totalWrongAnswers: prevTopicStats.totalWrongAnswers,
+        totalBlankAnswers: prevTopicStats.totalBlankAnswers,
+        completedQuizCount: prevTopicStats.completedQuizCount + 1,
+        lastPlayedAt: now,
+      };
 
-      setTopicProgressStats((prev) => {
-        const prevStats = prev[topicId] || {
-          seenQuestionIds: [],
-          correctQuestionIds: [],
-          wrongQuestionIds: [],
-          blankQuestionIds: [],
-          wrongRecoveryStreakByQuestionId: {},
-          correctCount: 0,
-          wrongCount: 0,
-          blankCount: 0,
-          completedQuizCount: 0,
-          lastPlayedAt: 0,
-        };
-        const seenIds = new Set(prevStats.seenQuestionIds);
-        const correctIds = new Set(prevStats.correctQuestionIds);
-        const wrongIds = new Set(prevStats.wrongQuestionIds);
-        const blankIds = new Set(prevStats.blankQuestionIds);
-        const wrongRecoveryStreakByQuestionId = { ...prevStats.wrongRecoveryStreakByQuestionId };
-        currentQuestions.forEach((question, index) => {
-          const questionTrackingId = getQuestionTrackingId(question, topicId, index);
-          seenIds.add(questionTrackingId);
-          const answer = currentAnswers[index];
-          if (answer === null || answer === undefined) {
-            blankIds.add(questionTrackingId);
-            if (wrongIds.has(questionTrackingId)) {
-              wrongRecoveryStreakByQuestionId[questionTrackingId] = 0;
-            }
-          } else if (answer === question.correctOptionIndex) {
-            correctIds.add(questionTrackingId);
-            if (wrongIds.has(questionTrackingId)) {
-              const nextStreak = (wrongRecoveryStreakByQuestionId[questionTrackingId] || 0) + 1;
-              if (nextStreak >= WRONG_RECOVERY_STREAK_TARGET) {
-                wrongIds.delete(questionTrackingId);
-                delete wrongRecoveryStreakByQuestionId[questionTrackingId];
-              } else {
-                wrongRecoveryStreakByQuestionId[questionTrackingId] = nextStreak;
-              }
-            }
-          } else if (answer !== question.correctOptionIndex) {
-            wrongIds.add(questionTrackingId);
-            wrongRecoveryStreakByQuestionId[questionTrackingId] = 0;
-          }
-        });
-        Object.keys(wrongRecoveryStreakByQuestionId).forEach((questionId) => {
-          if (!wrongIds.has(questionId)) {
-            delete wrongRecoveryStreakByQuestionId[questionId];
-          }
-        });
+      currentQuestions.forEach((question, index) => {
+        const questionTrackingId = getQuestionTrackingId(question, topicId, index);
+        const prevWrongStats = nextWrongQuestionStatsById[questionTrackingId];
+        const answer = currentAnswers[index];
 
-        return {
-          ...prev,
-          [topicId]: {
-            seenQuestionIds: Array.from(seenIds),
-            correctQuestionIds: Array.from(correctIds),
-            wrongQuestionIds: Array.from(wrongIds),
-            blankQuestionIds: Array.from(blankIds),
-            wrongRecoveryStreakByQuestionId,
-            correctCount: correctIds.size,
-            wrongCount: wrongIds.size,
-            blankCount: blankIds.size,
-            completedQuizCount: prevStats.completedQuizCount + 1,
-            lastPlayedAt: Date.now(),
-          },
+        if (answer === null || answer === undefined) {
+          nextTopicStats.totalBlankAnswers += 1;
+          nextWrongQuestionStatsById[questionTrackingId] = {
+            questionTrackingId,
+            topicId,
+            status: 'active_blank',
+            recoveryStreak: 0,
+            wrongCount: prevWrongStats?.wrongCount || 0,
+            blankCount: (prevWrongStats?.blankCount || 0) + 1,
+            lastWrongAt: now,
+            resolvedAt: 0,
+          };
+          changedQuestionIds.add(questionTrackingId);
+          return;
+        }
+
+        if (answer === question.correctOptionIndex) {
+          nextTopicStats.correctCount += 1;
+          if (prevWrongStats && (prevWrongStats.status === 'active_wrong' || prevWrongStats.status === 'active_blank')) {
+            const nextRecoveryStreak = prevWrongStats.recoveryStreak + 1;
+            nextWrongQuestionStatsById[questionTrackingId] = {
+              ...prevWrongStats,
+              recoveryStreak: nextRecoveryStreak,
+              status: nextRecoveryStreak >= WRONG_RECOVERY_STREAK_TARGET ? 'resolved' : prevWrongStats.status,
+              resolvedAt: nextRecoveryStreak >= WRONG_RECOVERY_STREAK_TARGET ? now : 0,
+            };
+            changedQuestionIds.add(questionTrackingId);
+          }
+          return;
+        }
+
+        nextTopicStats.totalWrongAnswers += 1;
+        nextWrongQuestionStatsById[questionTrackingId] = {
+          questionTrackingId,
+          topicId,
+          status: 'active_wrong',
+          recoveryStreak: 0,
+          wrongCount: (prevWrongStats?.wrongCount || 0) + 1,
+          blankCount: prevWrongStats?.blankCount || 0,
+          lastWrongAt: now,
+          resolvedAt: 0,
         };
+        changedQuestionIds.add(questionTrackingId);
       });
+
+      const activeWrongCount = (Object.values(nextWrongQuestionStatsById) as WrongQuestionStats[]).reduce<number>((sum, stats) => {
+        return stats.topicId === topicId && stats.status === 'active_wrong' ? sum + 1 : sum;
+      }, 0);
+      const activeBlankCount = (Object.values(nextWrongQuestionStatsById) as WrongQuestionStats[]).reduce<number>((sum, stats) => {
+        return stats.topicId === topicId && stats.status === 'active_blank' ? sum + 1 : sum;
+      }, 0);
+      nextTopicStats.wrongCount = activeWrongCount;
+      nextTopicStats.blankCount = activeBlankCount;
+
+      setTopicProgressStats((prev) => ({
+        ...prev,
+        [topicId]: nextTopicStats,
+      }));
+      setWrongQuestionStatsById(nextWrongQuestionStatsById);
+
+      const persistTopicAndWrongStats = async () => {
+        try {
+          const batch = writeBatch(db);
+          batch.set(doc(db, 'users', user.uid, 'topicStats', topicId), nextTopicStats, { merge: true });
+
+          changedQuestionIds.forEach((questionTrackingId) => {
+            const wrongStats = nextWrongQuestionStatsById[questionTrackingId];
+            if (!wrongStats) return;
+            batch.set(
+              doc(db, 'users', user.uid, 'wrongQuestions', getWrongQuestionDocId(questionTrackingId)),
+              wrongStats,
+              { merge: true }
+            );
+          });
+
+          await batch.commit();
+        } catch (error) {
+          console.error('Quiz istatistikleri kaydedilemedi:', error);
+        }
+      };
+
+      void persistTopicAndWrongStats();
     }
 
     setQuizState(prev => ({
@@ -1412,18 +1732,7 @@ export default function App() {
   };
 
   const getTopicProgress = (topicId: string): TopicProgressStats => {
-    return topicProgressStats[topicId] || {
-      seenQuestionIds: [],
-      correctQuestionIds: [],
-      wrongQuestionIds: [],
-      blankQuestionIds: [],
-      wrongRecoveryStreakByQuestionId: {},
-      correctCount: 0,
-      wrongCount: 0,
-      blankCount: 0,
-      completedQuizCount: 0,
-      lastPlayedAt: 0,
-    };
+    return topicProgressStats[topicId] || EMPTY_TOPIC_PROGRESS;
   };
 
   const allTopicProgressStats = Object.values(topicProgressStats) as TopicProgressStats[];
@@ -1435,7 +1744,7 @@ export default function App() {
     completedQuizCount: number;
   }>(
     (acc, stats) => {
-      acc.seenCount += stats.seenQuestionIds.length;
+      acc.seenCount += stats.seenCount;
       acc.correctCount += stats.correctCount;
       acc.wrongCount += stats.wrongCount;
       acc.blankCount += stats.blankCount;
@@ -1444,16 +1753,18 @@ export default function App() {
     },
     { seenCount: 0, correctCount: 0, wrongCount: 0, blankCount: 0, completedQuizCount: 0 }
   );
-  const hasAnyProgressStats = overallProgressStats.seenCount > 0 || overallProgressStats.completedQuizCount > 0;
+  const hasAnyProgressStats = overallProgressStats.seenCount > 0 || overallProgressStats.completedQuizCount > 0 || overallProgressStats.wrongCount > 0 || overallProgressStats.blankCount > 0 || Object.keys(wrongQuestionStatsById).length > 0;
   const hasProgressForTopic = (topicId: string): boolean => {
     const stats = getTopicProgress(topicId);
-    return stats.seenQuestionIds.length > 0 || stats.completedQuizCount > 0;
+    const activeWrongCount = (wrongQuestionIdsByTopic[topicId] || []).length;
+    const activeBlankCount = (blankQuestionIdsByTopic[topicId] || []).length;
+    return stats.seenCount > 0 || stats.completedQuizCount > 0 || stats.wrongCount > 0 || stats.blankCount > 0 || activeWrongCount > 0 || activeBlankCount > 0;
   };
   const resetStatsPreview = resetStatsTargetTopic
     ? (() => {
         const topicStats = getTopicProgress(resetStatsTargetTopic.id);
         return {
-          seenCount: topicStats.seenQuestionIds.length,
+          seenCount: topicStats.seenCount,
           correctCount: topicStats.correctCount,
           wrongCount: topicStats.wrongCount,
           blankCount: topicStats.blankCount,
@@ -1475,19 +1786,66 @@ export default function App() {
     setIsResetStatsModalOpen(false);
     setResetStatsTargetTopic(null);
   };
-  const handleConfirmResetTopicProgressStats = () => {
-    if (resetStatsTargetTopic) {
-      setTopicProgressStats((prev) => {
-        if (!prev[resetStatsTargetTopic.id]) return prev;
-        const next = { ...prev };
-        delete next[resetStatsTargetTopic.id];
-        return next;
-      });
-    } else {
-      setTopicProgressStats({});
+  const handleConfirmResetTopicProgressStats = async () => {
+    if (!user?.uid) {
+      setIsResetStatsModalOpen(false);
+      setResetStatsTargetTopic(null);
+      return;
     }
-    setIsResetStatsModalOpen(false);
-    setResetStatsTargetTopic(null);
+
+    try {
+      const commitDeleteRefsInChunks = async (refs: Array<DocumentReference>) => {
+        for (let i = 0; i < refs.length; i += 400) {
+          const batch = writeBatch(db);
+          refs.slice(i, i + 400).forEach((ref) => {
+            batch.delete(ref);
+          });
+          await batch.commit();
+        }
+      };
+
+      if (resetStatsTargetTopic) {
+        const topicId = resetStatsTargetTopic.id;
+        const wrongQuestionsForTopic = await getDocs(query(collection(db, 'users', user.uid, 'wrongQuestions'), where('topicId', '==', topicId)));
+        const refsToDelete = wrongQuestionsForTopic.docs.map((wrongDoc) => wrongDoc.ref);
+        refsToDelete.push(doc(db, 'users', user.uid, 'topicStats', topicId));
+        await commitDeleteRefsInChunks(refsToDelete);
+
+        setTopicProgressStats((prev) => {
+          if (!prev[topicId]) return prev;
+          const next = { ...prev };
+          delete next[topicId];
+          return next;
+        });
+        setWrongQuestionStatsById((prev) => {
+          const next = { ...prev };
+          Object.keys(next).forEach((questionTrackingId) => {
+            if (next[questionTrackingId].topicId === topicId) {
+              delete next[questionTrackingId];
+            }
+          });
+          return next;
+        });
+      } else {
+        const [topicStatsSnapshot, wrongQuestionsSnapshot] = await Promise.all([
+          getDocs(query(collection(db, 'users', user.uid, 'topicStats'))),
+          getDocs(query(collection(db, 'users', user.uid, 'wrongQuestions'))),
+        ]);
+        const refsToDelete = [
+          ...topicStatsSnapshot.docs.map((topicDoc) => topicDoc.ref),
+          ...wrongQuestionsSnapshot.docs.map((wrongDoc) => wrongDoc.ref),
+        ];
+        await commitDeleteRefsInChunks(refsToDelete);
+        setTopicProgressStats({});
+        setWrongQuestionStatsById({});
+      }
+    } catch (error) {
+      console.error('Istatistik sifirlama hatasi:', error);
+      alert('Istatistikler sifirlanamadi. Lutfen tekrar deneyin.');
+    } finally {
+      setIsResetStatsModalOpen(false);
+      setResetStatsTargetTopic(null);
+    }
   };
 
   // Greeting based on time of day
@@ -1652,9 +2010,8 @@ export default function App() {
   // 2. QUIZ SETUP VIEW
   if (currentView === 'quiz-setup' && activeTopic) {
     const allSetupTopicQuestions = allQuestions[activeTopic.sub.id] || [];
-    const setupTopicProgress = getTopicProgress(activeTopic.sub.id);
-    const wrongQuestionIdSet = new Set(setupTopicProgress.wrongQuestionIds);
-    const blankQuestionIdSet = new Set(setupTopicProgress.blankQuestionIds);
+    const wrongQuestionIdSet = new Set(wrongQuestionIdsByTopic[activeTopic.sub.id] || []);
+    const blankQuestionIdSet = new Set(blankQuestionIdsByTopic[activeTopic.sub.id] || []);
     const statusFilterActive = quizStatusFilter.wrong || quizStatusFilter.blank;
     const getFilteredQuestionsByStatus = (status: { wrong: boolean; blank: boolean }) => {
       const isActive = status.wrong || status.blank;
@@ -3264,10 +3621,10 @@ export default function App() {
                   const questionCount = allQuestions[sub.id]?.length || 0;
                   const color = getCatColor(activeCategory.id);
                   const topicProgress = getTopicProgress(sub.id);
-                  const seenCount = topicProgress.seenQuestionIds.length;
-                  const attempted = topicProgress.correctCount + topicProgress.wrongCount;
+                  const seenCount = topicProgress.seenCount;
+                  const attempted = topicProgress.correctCount + topicProgress.totalWrongAnswers;
                   const accuracy = attempted > 0 ? Math.round((topicProgress.correctCount / attempted) * 100) : 0;
-                  const hasTopicProgressStats = seenCount > 0 || topicProgress.completedQuizCount > 0;
+                  const hasTopicProgressStats = seenCount > 0 || topicProgress.completedQuizCount > 0 || topicProgress.wrongCount > 0 || topicProgress.blankCount > 0;
 
                   return (
                     <button
