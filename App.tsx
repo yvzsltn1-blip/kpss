@@ -12,6 +12,7 @@ import {
   collection, 
   deleteDoc, 
   type DocumentReference,
+  deleteField,
   setDoc,
   updateDoc, 
   doc, 
@@ -28,9 +29,7 @@ type TopicProgressStats = {
   seenCount: number;
   correctCount: number;
   wrongCount: number;
-  blankCount: number;
   totalWrongAnswers: number;
-  totalBlankAnswers: number;
   completedQuizCount: number;
   lastPlayedAt: number;
 };
@@ -38,22 +37,19 @@ type LegacyTopicProgressStats = {
   seenQuestionIds: string[];
   correctQuestionIds: string[];
   wrongQuestionIds: string[];
-  blankQuestionIds: string[];
   wrongRecoveryStreakByQuestionId: Record<string, number>;
   correctCount: number;
   wrongCount: number;
-  blankCount: number;
   completedQuizCount: number;
   lastPlayedAt: number;
 };
-type WrongQuestionStatus = 'active_wrong' | 'active_blank' | 'resolved';
+type WrongQuestionStatus = 'active_wrong' | 'resolved';
 type WrongQuestionStats = {
   questionTrackingId: string;
   topicId: string;
   status: WrongQuestionStatus;
   recoveryStreak: number;
   wrongCount: number;
-  blankCount: number;
   lastWrongAt: number;
   resolvedAt: number;
 };
@@ -78,11 +74,9 @@ type SeenQuestionStats = {
   answeredCount: number;
   correctCount: number;
   wrongCount: number;
-  blankCount: number;
 };
 type QuizStatusFilter = {
   wrong: boolean;
-  blank: boolean;
   favorite: boolean;
 };
 
@@ -127,6 +121,7 @@ const WRONG_RECOVERY_STREAK_TARGET = 3;
 const RESOLVED_RETENTION_DAYS = 45;
 const RESOLVED_RETENTION_MS = RESOLVED_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 const TOPIC_STATS_MIGRATION_KEY_PREFIX = 'kpsspro_topic_stats_migrated_v2_';
+const BLANK_STATS_CLEANUP_KEY_PREFIX = 'kpsspro_blank_stats_cleanup_v1_';
 
 const STORAGE_KEYS = {
   theme: 'kpsspro_theme',
@@ -155,9 +150,7 @@ const EMPTY_TOPIC_PROGRESS: TopicProgressStats = {
   seenCount: 0,
   correctCount: 0,
   wrongCount: 0,
-  blankCount: 0,
   totalWrongAnswers: 0,
-  totalBlankAnswers: 0,
   completedQuizCount: 0,
   lastPlayedAt: 0,
 };
@@ -701,9 +694,6 @@ const getStoredLegacyTopicProgressStats = (): Record<string, LegacyTopicProgress
       const wrongQuestionIds = Array.isArray(typedValue.wrongQuestionIds)
         ? Array.from(new Set(typedValue.wrongQuestionIds.filter((id): id is string => typeof id === 'string')))
         : [];
-      const blankQuestionIds = Array.isArray(typedValue.blankQuestionIds)
-        ? Array.from(new Set(typedValue.blankQuestionIds.filter((id): id is string => typeof id === 'string')))
-        : [];
       const rawWrongRecoveryStreak = typedValue.wrongRecoveryStreakByQuestionId;
       const wrongRecoveryStreakByQuestionId: Record<string, number> = {};
       if (rawWrongRecoveryStreak && typeof rawWrongRecoveryStreak === 'object' && !Array.isArray(rawWrongRecoveryStreak)) {
@@ -725,7 +715,6 @@ const getStoredLegacyTopicProgressStats = (): Record<string, LegacyTopicProgress
         seenQuestionIds,
         correctQuestionIds,
         wrongQuestionIds,
-        blankQuestionIds,
         wrongRecoveryStreakByQuestionId,
         correctCount: correctQuestionIds.length > 0
           ? correctQuestionIds.length
@@ -733,9 +722,6 @@ const getStoredLegacyTopicProgressStats = (): Record<string, LegacyTopicProgress
         wrongCount: wrongQuestionIds.length > 0
           ? wrongQuestionIds.length
           : (Number.isFinite(typedValue.wrongCount) ? Number(typedValue.wrongCount) : 0),
-        blankCount: blankQuestionIds.length > 0
-          ? blankQuestionIds.length
-          : (Number.isFinite(typedValue.blankCount) ? Number(typedValue.blankCount) : 0),
         completedQuizCount: Number.isFinite(typedValue.completedQuizCount) ? Number(typedValue.completedQuizCount) : 0,
         lastPlayedAt: Number.isFinite(typedValue.lastPlayedAt) ? Number(typedValue.lastPlayedAt) : 0,
       };
@@ -751,24 +737,21 @@ const normalizeTopicProgressStats = (value: Partial<TopicProgressStats>): TopicP
   const seenCount = Number.isFinite(value.seenCount) ? Math.max(0, Number(value.seenCount)) : 0;
   const correctCount = Number.isFinite(value.correctCount) ? Math.max(0, Number(value.correctCount)) : 0;
   const wrongCount = Number.isFinite(value.wrongCount) ? Math.max(0, Number(value.wrongCount)) : 0;
-  const blankCount = Number.isFinite(value.blankCount) ? Math.max(0, Number(value.blankCount)) : 0;
   const totalWrongAnswers = Number.isFinite(value.totalWrongAnswers) ? Math.max(0, Number(value.totalWrongAnswers)) : wrongCount;
-  const totalBlankAnswers = Number.isFinite(value.totalBlankAnswers) ? Math.max(0, Number(value.totalBlankAnswers)) : blankCount;
 
   return {
     seenCount,
     correctCount,
     wrongCount,
-    blankCount,
     totalWrongAnswers,
-    totalBlankAnswers,
     completedQuizCount: Number.isFinite(value.completedQuizCount) ? Math.max(0, Number(value.completedQuizCount)) : 0,
     lastPlayedAt: Number.isFinite(value.lastPlayedAt) ? Number(value.lastPlayedAt) : 0,
   };
 };
 
 const normalizeWrongQuestionStatus = (value: unknown): WrongQuestionStatus => {
-  if (value === 'active_wrong' || value === 'active_blank' || value === 'resolved') return value;
+  if (value === 'resolved') return 'resolved';
+  if (value === 'active_wrong' || value === 'active_blank') return 'active_wrong';
   return 'active_wrong';
 };
 
@@ -961,7 +944,7 @@ export default function App() {
   const [quizConfirmAction, setQuizConfirmAction] = useState<QuizConfirmAction | null>(null);
   const [isResetStatsModalOpen, setIsResetStatsModalOpen] = useState(false);
   const [resetStatsTargetTopic, setResetStatsTargetTopic] = useState<{ id: string; name: string } | null>(null);
-  const [quizStatusFilter, setQuizStatusFilter] = useState<QuizStatusFilter>({ wrong: false, blank: false, favorite: false });
+  const [quizStatusFilter, setQuizStatusFilter] = useState<QuizStatusFilter>({ wrong: false, favorite: false });
   const [topicSearchTerm, setTopicSearchTerm] = useState('');
   const [topicCardFilter, setTopicCardFilter] = useState<'all' | 'in_progress' | 'completed' | 'not_started'>('all');
   const [homeStatsCategoryFilter, setHomeStatsCategoryFilter] = useState<string>('all');
@@ -1096,9 +1079,6 @@ export default function App() {
 
   const wrongQuestionIdsByTopic = useMemo<Record<string, string[]>>(() => {
     return buildQuestionIdsByTopic('active_wrong');
-  }, [wrongQuestionStatsById, allQuestions]);
-  const blankQuestionIdsByTopic = useMemo<Record<string, string[]>>(() => {
-    return buildQuestionIdsByTopic('active_blank');
   }, [wrongQuestionStatsById, allQuestions]);
   const favoriteQuestionIdsByTopic = useMemo<Record<string, string[]>>(() => {
     const trackingIdsByTopic: Record<string, Set<string>> = {};
@@ -1580,9 +1560,7 @@ export default function App() {
             seenCount: legacyValue.seenQuestionIds.length,
             correctCount: legacyValue.correctCount,
             wrongCount: legacyValue.wrongQuestionIds.length,
-            blankCount: legacyValue.blankQuestionIds.length,
             totalWrongAnswers: legacyValue.wrongCount,
-            totalBlankAnswers: legacyValue.blankCount,
             completedQuizCount: legacyValue.completedQuizCount,
             lastPlayedAt: legacyValue.lastPlayedAt,
           });
@@ -1591,7 +1569,6 @@ export default function App() {
           if (opCount >= 450) await commitCurrentBatch();
 
           const wrongSet = new Set(legacyValue.wrongQuestionIds);
-          const blankSet = new Set(legacyValue.blankQuestionIds.filter((questionTrackingId) => !wrongSet.has(questionTrackingId)));
           const baseTimestamp = legacyValue.lastPlayedAt || Date.now();
 
           for (const questionTrackingId of wrongSet) {
@@ -1603,26 +1580,6 @@ export default function App() {
                 status: 'active_wrong',
                 recoveryStreak: legacyValue.wrongRecoveryStreakByQuestionId[questionTrackingId] || 0,
                 wrongCount: 1,
-                blankCount: 0,
-                lastWrongAt: baseTimestamp,
-                resolvedAt: 0,
-              } satisfies WrongQuestionStats,
-              { merge: true }
-            );
-            opCount += 1;
-            if (opCount >= 450) await commitCurrentBatch();
-          }
-
-          for (const questionTrackingId of blankSet) {
-            batch.set(
-              doc(db, 'users', user.uid, 'wrongQuestions', getWrongQuestionDocId(questionTrackingId)),
-              {
-                questionTrackingId,
-                topicId,
-                status: 'active_blank',
-                recoveryStreak: 0,
-                wrongCount: 0,
-                blankCount: 1,
                 lastWrongAt: baseTimestamp,
                 resolvedAt: 0,
               } satisfies WrongQuestionStats,
@@ -1648,6 +1605,80 @@ export default function App() {
   }, [user?.uid, persistSeenQuestionsToFirestore]);
 
   useEffect(() => {
+    if (!user?.uid || typeof window === 'undefined') return;
+
+    const cleanupKey = `${BLANK_STATS_CLEANUP_KEY_PREFIX}${user.uid}`;
+    try {
+      if (window.localStorage.getItem(cleanupKey) === '1') return;
+    } catch {
+      return;
+    }
+
+    const cleanupLegacyBlankStats = async () => {
+      try {
+        const [topicStatsSnapshot, seenQuestionsSnapshot, wrongQuestionsSnapshot] = await Promise.all([
+          getDocs(query(collection(db, 'users', user.uid, 'topicStats'))),
+          getDocs(query(collection(db, 'users', user.uid, 'seenQuestions'))),
+          getDocs(query(collection(db, 'users', user.uid, 'wrongQuestions'))),
+        ]);
+
+        let batch = writeBatch(db);
+        let opCount = 0;
+        const commitCurrentBatch = async () => {
+          if (opCount === 0) return;
+          await batch.commit();
+          batch = writeBatch(db);
+          opCount = 0;
+        };
+
+        for (const topicStatsDoc of topicStatsSnapshot.docs) {
+          const data = topicStatsDoc.data() as Record<string, unknown>;
+          if (!('blankCount' in data) && !('totalBlankAnswers' in data)) continue;
+          batch.set(topicStatsDoc.ref, {
+            blankCount: deleteField(),
+            totalBlankAnswers: deleteField(),
+          }, { merge: true });
+          opCount += 1;
+          if (opCount >= 400) await commitCurrentBatch();
+        }
+
+        for (const seenDoc of seenQuestionsSnapshot.docs) {
+          const data = seenDoc.data() as Record<string, unknown>;
+          if (!('blankCount' in data)) continue;
+          batch.set(seenDoc.ref, { blankCount: deleteField() }, { merge: true });
+          opCount += 1;
+          if (opCount >= 400) await commitCurrentBatch();
+        }
+
+        for (const wrongDoc of wrongQuestionsSnapshot.docs) {
+          const data = wrongDoc.data() as Record<string, unknown>;
+          if (data.status === 'active_blank') {
+            batch.delete(wrongDoc.ref);
+            opCount += 1;
+            if (opCount >= 400) await commitCurrentBatch();
+            continue;
+          }
+          if (!('blankCount' in data)) continue;
+          batch.set(wrongDoc.ref, { blankCount: deleteField() }, { merge: true });
+          opCount += 1;
+          if (opCount >= 400) await commitCurrentBatch();
+        }
+
+        await commitCurrentBatch();
+        try {
+          window.localStorage.setItem(cleanupKey, '1');
+        } catch {
+          // ignore
+        }
+      } catch (error) {
+        console.error('Blank istatistik temizligi basarisiz:', error);
+      }
+    };
+
+    void cleanupLegacyBlankStats();
+  }, [user?.uid]);
+
+  useEffect(() => {
     if (!user?.uid) {
       setTopicProgressStats({});
       setWrongQuestionStatsById({});
@@ -1670,9 +1701,7 @@ export default function App() {
             seenCount: data.seenCount,
             correctCount: data.correctCount,
             wrongCount: data.wrongCount,
-            blankCount: data.blankCount,
             totalWrongAnswers: data.totalWrongAnswers,
-            totalBlankAnswers: data.totalBlankAnswers,
             completedQuizCount: data.completedQuizCount,
             lastPlayedAt: getTimestampMillis(data.lastPlayedAt),
           });
@@ -1691,6 +1720,7 @@ export default function App() {
         const now = Date.now();
         const nextWrongStats: Record<string, WrongQuestionStats> = {};
         const expiredResolvedDocIds: string[] = [];
+        const legacyBlankDocIds: string[] = [];
 
         snapshot.forEach((wrongDoc) => {
           const data = wrongDoc.data() as Record<string, unknown>;
@@ -1700,6 +1730,11 @@ export default function App() {
               : getQuestionTrackingIdFromWrongDocId(wrongDoc.id);
           const topicId = typeof data.topicId === 'string' ? data.topicId : '';
           if (!questionTrackingId || !topicId) return;
+
+          if (data.status === 'active_blank') {
+            legacyBlankDocIds.push(wrongDoc.id);
+            return;
+          }
 
           const status = normalizeWrongQuestionStatus(data.status);
           const resolvedAt = getTimestampMillis(data.resolvedAt);
@@ -1714,7 +1749,6 @@ export default function App() {
             status,
             recoveryStreak: Number.isFinite(data.recoveryStreak) ? Math.max(0, Math.floor(Number(data.recoveryStreak))) : 0,
             wrongCount: Number.isFinite(data.wrongCount) ? Math.max(0, Math.floor(Number(data.wrongCount))) : 0,
-            blankCount: Number.isFinite(data.blankCount) ? Math.max(0, Math.floor(Number(data.blankCount))) : 0,
             lastWrongAt: getTimestampMillis(data.lastWrongAt),
             resolvedAt,
           };
@@ -1722,8 +1756,9 @@ export default function App() {
 
         setWrongQuestionStatsById(nextWrongStats);
 
-        if (expiredResolvedDocIds.length > 0) {
-          void cleanupExpiredResolvedWrongQuestions(user.uid, expiredResolvedDocIds);
+        const wrongDocIdsToDelete = [...expiredResolvedDocIds, ...legacyBlankDocIds];
+        if (wrongDocIdsToDelete.length > 0) {
+          void cleanupExpiredResolvedWrongQuestions(user.uid, wrongDocIdsToDelete);
         }
       },
       (error) => {
@@ -1791,7 +1826,6 @@ export default function App() {
               answeredCount: Number.isFinite(data.answeredCount) ? Math.max(0, Math.floor(Number(data.answeredCount))) : 0,
               correctCount: Number.isFinite(data.correctCount) ? Math.max(0, Math.floor(Number(data.correctCount))) : 0,
               wrongCount: Number.isFinite(data.wrongCount) ? Math.max(0, Math.floor(Number(data.wrongCount))) : 0,
-              blankCount: Number.isFinite(data.blankCount) ? Math.max(0, Math.floor(Number(data.blankCount))) : 0,
             };
           });
           setSeenQuestionsById(nextSeenQuestions);
@@ -1961,29 +1995,25 @@ export default function App() {
     });
   };
 
-  const openQuizSetup = (category: Category, sub: SubCategory, preset: 'all' | 'wrong' | 'blank' | 'favorite' | 'both' = 'all') => {
+  const openQuizSetup = (category: Category, sub: SubCategory, preset: 'all' | 'wrong' | 'favorite' | 'wrong_favorite' = 'all') => {
     const topicQuestions = allQuestions[sub.id] || [];
     const wrongSet = new Set(wrongQuestionIdsByTopic[sub.id] || []);
-    const blankSet = new Set(blankQuestionIdsByTopic[sub.id] || []);
     const favoriteSet = new Set(favoriteQuestionIdsByTopic[sub.id] || []);
     const nextStatusFilter =
       preset === 'wrong'
-        ? { wrong: true, blank: false, favorite: false }
-        : preset === 'blank'
-          ? { wrong: false, blank: true, favorite: false }
-          : preset === 'favorite'
-            ? { wrong: false, blank: false, favorite: true }
-          : preset === 'both'
-            ? { wrong: true, blank: true, favorite: false }
-            : { wrong: false, blank: false, favorite: false };
-    const statusActive = nextStatusFilter.wrong || nextStatusFilter.blank || nextStatusFilter.favorite;
+        ? { wrong: true, favorite: false }
+        : preset === 'favorite'
+          ? { wrong: false, favorite: true }
+          : preset === 'wrong_favorite'
+            ? { wrong: true, favorite: true }
+            : { wrong: false, favorite: false };
+    const statusActive = nextStatusFilter.wrong || nextStatusFilter.favorite;
     const filteredCount = statusActive
       ? topicQuestions.filter((question, index) => {
           const questionTrackingId = getQuestionTrackingId(question, sub.id, index);
           const includeWrong = nextStatusFilter.wrong && wrongSet.has(questionTrackingId);
-          const includeBlank = nextStatusFilter.blank && blankSet.has(questionTrackingId);
           const includeFavorite = nextStatusFilter.favorite && favoriteSet.has(questionTrackingId);
-          return includeWrong || includeBlank || includeFavorite;
+          return includeWrong || includeFavorite;
         }).length
       : topicQuestions.length;
 
@@ -2003,16 +2033,14 @@ export default function App() {
 
     const topicId = activeTopic.sub.id;
     const wrongSet = new Set(wrongQuestionIdsByTopic[topicId] || []);
-    const blankSet = new Set(blankQuestionIdsByTopic[topicId] || []);
     const favoriteSet = new Set(favoriteQuestionIdsByTopic[topicId] || []);
-    const isStatusFilterActive = quizStatusFilter.wrong || quizStatusFilter.blank || quizStatusFilter.favorite;
+    const isStatusFilterActive = quizStatusFilter.wrong || quizStatusFilter.favorite;
     const topicQuestionsPool = (allQuestions[topicId] || []).filter((question, index) => {
       if (!isStatusFilterActive) return true;
       const questionTrackingId = getQuestionTrackingId(question, topicId, index);
       const includeWrong = quizStatusFilter.wrong && wrongSet.has(questionTrackingId);
-      const includeBlank = quizStatusFilter.blank && blankSet.has(questionTrackingId);
       const includeFavorite = quizStatusFilter.favorite && favoriteSet.has(questionTrackingId);
-      return includeWrong || includeBlank || includeFavorite;
+      return includeWrong || includeFavorite;
     });
     const selectedTagEntries = Object.keys(quizTagQuestionCounts)
       .map((sourceKey) => ({
@@ -2211,9 +2239,7 @@ export default function App() {
         seenCount: prevTopicStats.seenCount + currentQuestions.length,
         correctCount: prevTopicStats.correctCount,
         wrongCount: prevTopicStats.wrongCount,
-        blankCount: prevTopicStats.blankCount,
         totalWrongAnswers: prevTopicStats.totalWrongAnswers,
-        totalBlankAnswers: prevTopicStats.totalBlankAnswers,
         completedQuizCount: prevTopicStats.completedQuizCount + 1,
         lastPlayedAt: now,
       };
@@ -2237,30 +2263,17 @@ export default function App() {
             answeredCount: (prevSeenStats?.answeredCount || 0) + (answer === null || answer === undefined ? 0 : 1),
             correctCount: (prevSeenStats?.correctCount || 0) + (answer === question.correctOptionIndex ? 1 : 0),
             wrongCount: (prevSeenStats?.wrongCount || 0) + (answer !== null && answer !== undefined && answer !== question.correctOptionIndex ? 1 : 0),
-            blankCount: (prevSeenStats?.blankCount || 0) + (answer === null || answer === undefined ? 1 : 0),
           };
           changedSeenQuestionIds.add(questionTrackingId);
         }
 
         if (answer === null || answer === undefined) {
-          nextTopicStats.totalBlankAnswers += 1;
-          nextWrongQuestionStatsById[questionTrackingId] = {
-            questionTrackingId,
-            topicId,
-            status: 'active_blank',
-            recoveryStreak: 0,
-            wrongCount: prevWrongStats?.wrongCount || 0,
-            blankCount: (prevWrongStats?.blankCount || 0) + 1,
-            lastWrongAt: now,
-            resolvedAt: 0,
-          };
-          changedQuestionIds.add(questionTrackingId);
           return;
         }
 
         if (answer === question.correctOptionIndex) {
           nextTopicStats.correctCount += 1;
-          if (prevWrongStats && (prevWrongStats.status === 'active_wrong' || prevWrongStats.status === 'active_blank')) {
+          if (prevWrongStats && prevWrongStats.status === 'active_wrong') {
             const nextRecoveryStreak = prevWrongStats.recoveryStreak + 1;
             nextWrongQuestionStatsById[questionTrackingId] = {
               ...prevWrongStats,
@@ -2280,7 +2293,6 @@ export default function App() {
           status: 'active_wrong',
           recoveryStreak: 0,
           wrongCount: (prevWrongStats?.wrongCount || 0) + 1,
-          blankCount: prevWrongStats?.blankCount || 0,
           lastWrongAt: now,
           resolvedAt: 0,
         };
@@ -2290,11 +2302,7 @@ export default function App() {
       const activeWrongCount = (Object.values(nextWrongQuestionStatsById) as WrongQuestionStats[]).reduce<number>((sum, stats) => {
         return stats.topicId === topicId && stats.status === 'active_wrong' ? sum + 1 : sum;
       }, 0);
-      const activeBlankCount = (Object.values(nextWrongQuestionStatsById) as WrongQuestionStats[]).reduce<number>((sum, stats) => {
-        return stats.topicId === topicId && stats.status === 'active_blank' ? sum + 1 : sum;
-      }, 0);
       nextTopicStats.wrongCount = activeWrongCount;
-      nextTopicStats.blankCount = activeBlankCount;
 
       setTopicProgressStats((prev) => ({
         ...prev,
@@ -2308,14 +2316,25 @@ export default function App() {
       const persistTopicAndWrongStats = async () => {
         try {
           const batch = writeBatch(db);
-          batch.set(doc(db, 'users', user.uid, 'topicStats', topicId), nextTopicStats, { merge: true });
+          batch.set(
+            doc(db, 'users', user.uid, 'topicStats', topicId),
+            {
+              ...nextTopicStats,
+              blankCount: deleteField(),
+              totalBlankAnswers: deleteField(),
+            },
+            { merge: true }
+          );
 
           changedQuestionIds.forEach((questionTrackingId) => {
             const wrongStats = nextWrongQuestionStatsById[questionTrackingId];
             if (!wrongStats) return;
             batch.set(
               doc(db, 'users', user.uid, 'wrongQuestions', getWrongQuestionDocId(questionTrackingId)),
-              wrongStats,
+              {
+                ...wrongStats,
+                blankCount: deleteField(),
+              },
               { merge: true }
             );
           });
@@ -2326,7 +2345,10 @@ export default function App() {
               if (!seenStats) return;
               batch.set(
                 doc(db, 'users', user.uid, 'seenQuestions', getSeenQuestionDocId(questionTrackingId)),
-                seenStats,
+                {
+                  ...seenStats,
+                  blankCount: deleteField(),
+                },
                 { merge: true }
               );
             });
@@ -3200,18 +3222,16 @@ export default function App() {
     seenCount: number;
     correctCount: number;
     wrongCount: number;
-    blankCount: number;
     completedQuizCount: number;
   }>(
     (acc, stats) => {
       acc.seenCount += stats.seenCount;
       acc.correctCount += stats.correctCount;
       acc.wrongCount += stats.wrongCount;
-      acc.blankCount += stats.blankCount;
       acc.completedQuizCount += stats.completedQuizCount;
       return acc;
     },
-    { seenCount: 0, correctCount: 0, wrongCount: 0, blankCount: 0, completedQuizCount: 0 }
+    { seenCount: 0, correctCount: 0, wrongCount: 0, completedQuizCount: 0 }
   );
   const allSeenQuestionStats = persistSeenQuestionsToFirestore
     ? (Object.values(seenQuestionsById) as SeenQuestionStats[])
@@ -3235,21 +3255,18 @@ export default function App() {
       seenCount: number;
       correctCount: number;
       wrongCount: number;
-      blankCount: number;
       completedQuizCount: number;
     }>((acc, [topicId, stats]) => {
       if (!includeTopic(topicId)) return acc;
       acc.seenCount += stats.seenCount;
       acc.correctCount += stats.correctCount;
       acc.wrongCount += stats.wrongCount;
-      acc.blankCount += stats.blankCount;
       acc.completedQuizCount += stats.completedQuizCount;
       return acc;
-    }, { seenCount: 0, correctCount: 0, wrongCount: 0, blankCount: 0, completedQuizCount: 0 });
+    }, { seenCount: 0, correctCount: 0, wrongCount: 0, completedQuizCount: 0 });
 
     const filteredTopicProgressStats = topicProgressEntries.filter(([topicId]) => includeTopic(topicId));
     const totalWrongAnswers = filteredTopicProgressStats.reduce((sum, [, stats]) => sum + stats.totalWrongAnswers, 0);
-    const totalBlankAnswers = filteredTopicProgressStats.reduce((sum, [, stats]) => sum + stats.totalBlankAnswers, 0);
 
     const filteredSeenQuestionStats = allSeenQuestionStats.filter((stats) => includeTopic(stats.topicId));
     const uniqueSolvedCount = persistSeenQuestionsToFirestore
@@ -3274,7 +3291,6 @@ export default function App() {
       totalAnsweredCount,
       filteredFavoriteCount,
       totalWrongAnswers,
-      totalBlankAnswers,
       accuracyPercent,
     };
   }, [allSeenQuestionStats, favoriteQuestionsById, homeStatsTopicIds, topicProgressStats]);
@@ -3289,8 +3305,7 @@ export default function App() {
   const hasProgressForTopic = (topicId: string): boolean => {
     const stats = getTopicProgress(topicId);
     const activeWrongCount = (wrongQuestionIdsByTopic[topicId] || []).length;
-    const activeBlankCount = (blankQuestionIdsByTopic[topicId] || []).length;
-    return stats.seenCount > 0 || stats.completedQuizCount > 0 || stats.wrongCount > 0 || stats.blankCount > 0 || activeWrongCount > 0 || activeBlankCount > 0;
+    return stats.seenCount > 0 || stats.completedQuizCount > 0 || stats.wrongCount > 0 || activeWrongCount > 0;
   };
   const resetStatsPreview = resetStatsTargetTopic
     ? (() => {
@@ -3299,7 +3314,6 @@ export default function App() {
           seenCount: topicStats.seenCount,
           correctCount: topicStats.correctCount,
           wrongCount: topicStats.wrongCount,
-          blankCount: topicStats.blankCount,
           completedQuizCount: topicStats.completedQuizCount,
         };
       })()
@@ -3530,28 +3544,24 @@ export default function App() {
   if (currentView === 'quiz-setup' && activeTopic) {
     const allSetupTopicQuestions = allQuestions[activeTopic.sub.id] || [];
     const wrongQuestionIdSet = new Set(wrongQuestionIdsByTopic[activeTopic.sub.id] || []);
-    const blankQuestionIdSet = new Set(blankQuestionIdsByTopic[activeTopic.sub.id] || []);
     const favoriteQuestionIdSet = new Set(favoriteQuestionIdsByTopic[activeTopic.sub.id] || []);
-    const statusFilterActive = quizStatusFilter.wrong || quizStatusFilter.blank || quizStatusFilter.favorite;
+    const statusFilterActive = quizStatusFilter.wrong || quizStatusFilter.favorite;
     const getFilteredQuestionsByStatus = (status: QuizStatusFilter) => {
-      const isActive = status.wrong || status.blank || status.favorite;
+      const isActive = status.wrong || status.favorite;
       if (!isActive) return allSetupTopicQuestions;
       return allSetupTopicQuestions.filter((question, index) => {
         const questionTrackingId = getQuestionTrackingId(question, activeTopic.sub.id, index);
         const includeWrong = status.wrong && wrongQuestionIdSet.has(questionTrackingId);
-        const includeBlank = status.blank && blankQuestionIdSet.has(questionTrackingId);
         const includeFavorite = status.favorite && favoriteQuestionIdSet.has(questionTrackingId);
-        return includeWrong || includeBlank || includeFavorite;
+        return includeWrong || includeFavorite;
       });
     };
     const setupTopicQuestions = getFilteredQuestionsByStatus(quizStatusFilter);
-    const wrongOnlyQuestionCount = getFilteredQuestionsByStatus({ wrong: true, blank: false, favorite: false }).length;
-    const blankOnlyQuestionCount = getFilteredQuestionsByStatus({ wrong: false, blank: true, favorite: false }).length;
-    const favoriteOnlyQuestionCount = getFilteredQuestionsByStatus({ wrong: false, blank: false, favorite: true }).length;
+    const wrongOnlyQuestionCount = getFilteredQuestionsByStatus({ wrong: true, favorite: false }).length;
+    const favoriteOnlyQuestionCount = getFilteredQuestionsByStatus({ wrong: false, favorite: true }).length;
     const maxQuestions = setupTopicQuestions.length;
     const activeSourceLabels = [
       quizStatusFilter.wrong ? 'yanlis' : '',
-      quizStatusFilter.blank ? 'bos' : '',
       quizStatusFilter.favorite ? 'favori' : '',
     ].filter((label) => label.length > 0);
     const catColor = getCatColor(activeTopic.cat.id);
@@ -3682,7 +3692,7 @@ export default function App() {
             {/* Settings */}
             <div className="space-y-4 md:space-y-6">
               {/* Status Filter */}
-              {(wrongOnlyQuestionCount > 0 || blankOnlyQuestionCount > 0 || favoriteOnlyQuestionCount > 0) && (
+              {(wrongOnlyQuestionCount > 0 || favoriteOnlyQuestionCount > 0) && (
                 <div className="bg-surface-50 dark:bg-surface-900/50 p-3.5 md:p-5 rounded-xl md:rounded-2xl border border-surface-100 dark:border-surface-700/50">
                   <div className="flex items-center justify-between mb-3">
                     <label className="font-bold text-surface-700 dark:text-surface-200 text-sm flex items-center gap-2">
@@ -3694,9 +3704,9 @@ export default function App() {
                     </span>
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     <button
-                      onClick={() => updateQuizStatusFilter({ wrong: !quizStatusFilter.wrong, blank: quizStatusFilter.blank, favorite: quizStatusFilter.favorite })}
+                      onClick={() => updateQuizStatusFilter({ wrong: !quizStatusFilter.wrong, favorite: quizStatusFilter.favorite })}
                       disabled={wrongOnlyQuestionCount === 0}
                       className={`text-left rounded-xl border px-2.5 md:px-3 py-2 md:py-2.5 transition ${
                         quizStatusFilter.wrong
@@ -3708,19 +3718,7 @@ export default function App() {
                       <p className="text-[11px] text-red-600 dark:text-red-300 mt-0.5">{wrongOnlyQuestionCount} soru</p>
                     </button>
                     <button
-                      onClick={() => updateQuizStatusFilter({ wrong: quizStatusFilter.wrong, blank: !quizStatusFilter.blank, favorite: quizStatusFilter.favorite })}
-                      disabled={blankOnlyQuestionCount === 0}
-                      className={`text-left rounded-xl border px-2.5 md:px-3 py-2 md:py-2.5 transition ${
-                        quizStatusFilter.blank
-                          ? 'border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/70'
-                          : 'border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800'
-                      } disabled:opacity-40 disabled:cursor-not-allowed`}
-                    >
-                      <p className="text-[11px] md:text-xs font-bold text-surface-700 dark:text-surface-200">Boslarim</p>
-                      <p className="text-[11px] text-slate-600 dark:text-slate-300 mt-0.5">{blankOnlyQuestionCount} soru</p>
-                    </button>
-                    <button
-                      onClick={() => updateQuizStatusFilter({ wrong: quizStatusFilter.wrong, blank: quizStatusFilter.blank, favorite: !quizStatusFilter.favorite })}
+                      onClick={() => updateQuizStatusFilter({ wrong: quizStatusFilter.wrong, favorite: !quizStatusFilter.favorite })}
                       disabled={favoriteOnlyQuestionCount === 0}
                       className={`text-left rounded-xl border px-2.5 md:px-3 py-2 md:py-2.5 transition ${
                         quizStatusFilter.favorite
@@ -3739,7 +3737,7 @@ export default function App() {
                         {`Sadece ${activeSourceLabels.join(' + ')} sorulardan secilecek.`}
                       </p>
                       <button
-                        onClick={() => updateQuizStatusFilter({ wrong: false, blank: false, favorite: false })}
+                        onClick={() => updateQuizStatusFilter({ wrong: false, favorite: false })}
                         className="text-[11px] font-bold text-surface-500 hover:text-surface-700 dark:text-surface-300 dark:hover:text-white"
                       >
                         Temizle
@@ -4377,7 +4375,7 @@ export default function App() {
                     {quizState.questions.length} sorudan {score} tanesini dogru yanitladin.
                   </p>
 
-                  <div className="grid grid-cols-3 gap-3 mb-6">
+                  <div className="grid grid-cols-2 gap-3 mb-6">
                     <div className="bg-emerald-50 dark:bg-emerald-900/20 p-3 rounded-xl">
                       <span className="block text-[10px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider mb-1">Dogru</span>
                       <span className="text-2xl font-black text-emerald-500">{score}</span>
@@ -4386,12 +4384,6 @@ export default function App() {
                       <span className="block text-[10px] font-bold text-red-600 dark:text-red-400 uppercase tracking-wider mb-1">Yanlis</span>
                       <span className="text-2xl font-black text-red-400">
                         {quizState.userAnswers.filter((a, i) => a !== null && a !== quizState.questions[i].correctOptionIndex).length}
-                      </span>
-                    </div>
-                    <div className="bg-surface-50 dark:bg-surface-900/50 p-3 rounded-xl">
-                      <span className="block text-[10px] font-bold text-surface-500 uppercase tracking-wider mb-1">Bos</span>
-                      <span className="text-2xl font-black text-surface-400">
-                        {quizState.userAnswers.filter(a => a === null).length}
                       </span>
                     </div>
                   </div>
@@ -4747,7 +4739,7 @@ export default function App() {
                   <div>
                     <h3 className="text-sm font-bold text-surface-800 dark:text-white">SeenQuestions Kalici Yazim</h3>
                     <p className="text-xs text-surface-500 dark:text-surface-400 mt-0.5">
-                      Kapaliysa sadece yanlis/bos soru havuzu ve konu ozet istatistikleri yazilir (write maliyeti dusurur).
+                      Kapaliysa sadece yanlis soru havuzu ve konu ozet istatistikleri yazilir (write maliyeti dusurur).
                     </p>
                   </div>
                   <button
@@ -5191,8 +5183,8 @@ export default function App() {
                       <Icon name="Minus" className="w-3.5 h-3.5 text-white" />
                     </div>
                   </div>
-                  <p className="text-xl font-black text-surface-800 dark:text-white leading-none mb-1">{overallProgressStats.blankCount}</p>
-                  <p className="text-[10px] text-surface-500 dark:text-surface-400 font-bold uppercase tracking-wide">Boş</p>
+                  <p className="text-xl font-black text-surface-800 dark:text-white leading-none mb-1">{overallProgressStats.wrongCount}</p>
+                  <p className="text-[10px] text-surface-500 dark:text-surface-400 font-bold uppercase tracking-wide">Yanlış (Aktif)</p>
                 </div>
               </div>
 
@@ -5308,7 +5300,6 @@ export default function App() {
                     </div>
                     <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[10px] text-surface-500 dark:text-surface-400 font-medium">
                       <span className="px-1.5 py-0.5 rounded-md bg-surface-100 dark:bg-surface-700/60">Yanlis cevap: {homeStats.totalWrongAnswers}</span>
-                      <span className="px-1.5 py-0.5 rounded-md bg-surface-100 dark:bg-surface-700/60">Bos birakilan: {homeStats.totalBlankAnswers}</span>
                     </div>
                   </>
                 )}
@@ -5413,8 +5404,11 @@ export default function App() {
                   const hasTopicProgressStats =
                     uniqueSolvedCount > 0 ||
                     topicProgress.completedQuizCount > 0 ||
-                    topicProgress.wrongCount > 0 ||
-                    topicProgress.blankCount > 0;
+                    topicProgress.wrongCount > 0;
+                  const wrongOrFavoriteCount = new Set([
+                    ...(wrongQuestionIdsByTopic[sub.id] || []),
+                    ...(favoriteQuestionIdsByTopic[sub.id] || []),
+                  ]).size;
                   const status: 'completed' | 'in_progress' | 'not_started' =
                     progressPercent >= 100 && questionCount > 0
                       ? 'completed'
@@ -5429,6 +5423,7 @@ export default function App() {
                     progressPercent,
                     accuracy,
                     topicFavoriteCount,
+                    wrongOrFavoriteCount,
                     hasTopicProgressStats,
                     hasExternalSource,
                     status,
@@ -5475,7 +5470,7 @@ export default function App() {
 
                     <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar pr-0.5 pb-1">
                       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3 md:gap-4">
-                        {filteredTopicCards.map(({ sub, questionCount, topicProgress, uniqueSolvedCount, progressPercent, accuracy, topicFavoriteCount, hasTopicProgressStats, hasExternalSource, status }) => {
+                        {filteredTopicCards.map(({ sub, questionCount, topicProgress, uniqueSolvedCount, progressPercent, accuracy, topicFavoriteCount, wrongOrFavoriteCount, hasTopicProgressStats, hasExternalSource, status }) => {
                           const statusLabel =
                             status === 'completed'
                               ? 'Tamamlandi'
@@ -5565,13 +5560,6 @@ export default function App() {
                                   Y
                                 </button>
                                 <button
-                                  onClick={() => openQuizSetup(activeCategory, sub, 'blank')}
-                                  className="h-9 px-2 rounded-lg border border-surface-200 dark:border-surface-700 text-surface-500 dark:text-surface-300 text-xs font-bold hover:bg-surface-100 dark:hover:bg-surface-700 transition"
-                                  title="Bos sorulardan basla"
-                                >
-                                  B
-                                </button>
-                                <button
                                   onClick={() => openQuizSetup(activeCategory, sub, 'favorite')}
                                   disabled={topicFavoriteCount === 0}
                                   className={`h-9 px-2 rounded-lg border text-xs font-bold transition ${
@@ -5582,6 +5570,18 @@ export default function App() {
                                   title={topicFavoriteCount > 0 ? 'Favori sorulardan basla' : 'Bu konuda favori soru yok'}
                                 >
                                   F
+                                </button>
+                                <button
+                                  onClick={() => openQuizSetup(activeCategory, sub, 'wrong_favorite')}
+                                  disabled={wrongOrFavoriteCount === 0}
+                                  className={`h-9 px-2 rounded-lg border text-xs font-bold transition ${
+                                    wrongOrFavoriteCount > 0
+                                      ? 'border-violet-200 dark:border-violet-900/40 text-violet-600 dark:text-violet-300 hover:bg-violet-50 dark:hover:bg-violet-900/20'
+                                      : 'border-surface-200 dark:border-surface-700 text-surface-300 dark:text-surface-500 cursor-not-allowed'
+                                  }`}
+                                  title={wrongOrFavoriteCount > 0 ? 'Yanlis + favori sorulardan basla' : 'Bu konuda yanlis veya favori soru yok'}
+                                >
+                                  Y+F
                                 </button>
                               </div>
                             </article>
@@ -5628,7 +5628,7 @@ export default function App() {
                 {`"${resetStatsTargetTopic?.name ?? 'Secili konu'}" konusu icin kayitli istatistikler silinecek. Bu islem geri alinamaz.`}
               </p>
 
-              <div className="grid grid-cols-2 gap-2 mb-6 text-[11px]">
+              <div className="grid grid-cols-3 gap-2 mb-6 text-[11px]">
                 <div className="rounded-lg border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900/50 px-3 py-2">
                   <p className="text-surface-400 mb-0.5">Karsina Cikan</p>
                   <p className="font-extrabold text-surface-700 dark:text-surface-100">{resetStatsPreview.seenCount}</p>
@@ -5640,10 +5640,6 @@ export default function App() {
                 <div className="rounded-lg border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900/50 px-3 py-2">
                   <p className="text-surface-400 mb-0.5">Yanlis</p>
                   <p className="font-extrabold text-surface-700 dark:text-surface-100">{resetStatsPreview.wrongCount}</p>
-                </div>
-                <div className="rounded-lg border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900/50 px-3 py-2">
-                  <p className="text-surface-400 mb-0.5">Bos</p>
-                  <p className="font-extrabold text-surface-700 dark:text-surface-100">{resetStatsPreview.blankCount}</p>
                 </div>
               </div>
 
@@ -6171,20 +6167,20 @@ export default function App() {
               <div className="rounded-xl border border-surface-200/80 dark:border-surface-700/80 bg-surface-50/80 dark:bg-surface-900/50 p-3">
                 <p className="text-[11px] font-bold uppercase tracking-wider text-surface-500 dark:text-surface-400 mb-1.5">Istatistik formulleri</p>
                 <ul className="space-y-1.5">
-                  <li><span className="font-bold text-surface-700 dark:text-surface-200">Basari Orani</span> = Toplam Dogru / (Toplam Dogru + Yanlis Deneme) x 100. Boslar bu orana dahil edilmez.</li>
+                  <li><span className="font-bold text-surface-700 dark:text-surface-200">Basari Orani</span> = Toplam Dogru / (Toplam Dogru + Yanlis Deneme) x 100.</li>
                   <li><span className="font-bold text-surface-700 dark:text-surface-200">Farkli Cozulen</span> = En az bir kez cevapladigin tekil soru sayisi. Ayni soruyu tekrar cozersen bu sayi artmaz.</li>
                   <li><span className="font-bold text-surface-700 dark:text-surface-200">Toplam Cevap</span> = Tum cevaplama denemelerin. Ayni soruyu her cevaplayisinda bu sayi artar.</li>
-                  <li><span className="font-bold text-surface-700 dark:text-surface-200">Karsina Cikan</span> = Testte gosterilen toplam soru adedi. Tekrar gelen sorular ve boslar dahildir.</li>
+                  <li><span className="font-bold text-surface-700 dark:text-surface-200">Karsina Cikan</span> = Testte gosterilen toplam soru adedi. Tekrar gelen sorular dahildir.</li>
                   <li><span className="font-bold text-surface-700 dark:text-surface-200">Cozulen Test</span> = Bitirdigin test sayisi; her test bitisinde +1 artar.</li>
                 </ul>
               </div>
               <div className="rounded-xl border border-surface-200/80 dark:border-surface-700/80 bg-surface-50/80 dark:bg-surface-900/50 p-3">
-                <p className="text-[11px] font-bold uppercase tracking-wider text-surface-500 dark:text-surface-400 mb-1.5">Yanlis / Bos havuzu</p>
+                <p className="text-[11px] font-bold uppercase tracking-wider text-surface-500 dark:text-surface-400 mb-1.5">Yanlis havuzu</p>
                 <ul className="space-y-1.5">
-                  <li>Soru yanlis cevaplanirsa <span className="font-bold text-red-600 dark:text-red-300">Yanlislarim</span> havuzuna, bos birakilirsa <span className="font-bold text-slate-600 dark:text-slate-200">Boslarim</span> havuzuna eklenir.</li>
+                  <li>Soru yanlis cevaplanirsa <span className="font-bold text-red-600 dark:text-red-300">Yanlislarim</span> havuzuna eklenir.</li>
                   <li>Ayni soru art arda dogru yapildikca toparlanma sayaci artar.</li>
                   <li>Toparlanma sayaci <span className="font-bold text-surface-800 dark:text-white">3</span> olunca soru havuzdan cikar (cozulmus olur).</li>
-                  <li>Soru tekrar yanlis ya da bos olursa sayac sifirlanir ve soru yeniden aktif olur.</li>
+                  <li>Soru tekrar yanlis olursa sayac sifirlanir ve soru yeniden aktif olur.</li>
                 </ul>
               </div>
             </div>
