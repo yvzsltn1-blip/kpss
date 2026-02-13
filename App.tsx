@@ -6485,11 +6485,16 @@ export default function App() {
                               key={sub.id}
                               className="group bg-white dark:bg-surface-800 rounded-2xl border border-surface-200 dark:border-surface-700 p-4 md:p-5 hover:border-brand-300 dark:hover:border-brand-700/60 transition-all duration-200 shadow-card dark:shadow-card-dark flex flex-col"
                             >
-                              <div className="flex items-start justify-between gap-2 mb-3">
-                                <div className={`w-10 h-10 rounded-xl bg-gradient-to-br ${color.gradient} text-white flex items-center justify-center shadow-md`}>
-                                  <Icon name={topicCardIconName} className="w-4.5 h-4.5" />
+                              <div className="flex items-start justify-between gap-3 mb-3">
+                                <div className="flex items-start gap-2.5 min-w-0 flex-1">
+                                  <div className={`w-10 h-10 rounded-xl bg-gradient-to-br ${color.gradient} text-white flex items-center justify-center shadow-md shrink-0`}>
+                                    <Icon name={topicCardIconName} className="w-4.5 h-4.5" />
+                                  </div>
+                                  <div className="min-w-0">
+                                    <h3 className="text-[15px] font-extrabold text-surface-800 dark:text-white line-clamp-2">{sub.name}</h3>
+                                  </div>
                                 </div>
-                                <div className="rounded-lg border border-surface-200 dark:border-surface-700 bg-surface-50/80 dark:bg-surface-900/45 overflow-hidden flex items-stretch">
+                                <div className="shrink-0 rounded-lg border border-surface-200 dark:border-surface-700 bg-surface-50/80 dark:bg-surface-900/45 overflow-hidden flex items-stretch">
                                   {hasExternalSource && (
                                     <>
                                       <div
@@ -6535,8 +6540,6 @@ export default function App() {
                                   </button>
                                 </div>
                               </div>
-
-                              <h3 className="text-base font-extrabold text-surface-800 dark:text-white mb-2 line-clamp-2">{sub.name}</h3>
 
                               <div className="mb-4 space-y-2">
                                 <div className="rounded-lg border border-surface-200 dark:border-surface-700 bg-surface-50/80 dark:bg-surface-900/45 overflow-hidden">
