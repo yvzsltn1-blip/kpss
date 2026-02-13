@@ -990,6 +990,7 @@ export default function App() {
 
   // Mobile Menu
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [mobileDashboardTab, setMobileDashboardTab] = useState<'stats' | 'categories'>('stats');
 
   // Timer Ref
   const timerRef = useRef<number | null>(null);
@@ -2831,6 +2832,45 @@ export default function App() {
     }
   };
 
+  const handleMoveTopicOrder = async (direction: 'up' | 'down') => {
+    if (!adminSelectedCatId || !adminSelectedTopicId) return;
+    const selectedCategory = categories.find((cat) => cat.id === adminSelectedCatId);
+    if (!selectedCategory) return;
+
+    const currentIndex = selectedCategory.subCategories.findIndex((sub) => sub.id === adminSelectedTopicId);
+    if (currentIndex < 0) return;
+
+    const targetIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1;
+    if (targetIndex < 0 || targetIndex >= selectedCategory.subCategories.length) return;
+
+    const previousCategories = categories;
+    const previousActiveCategory = activeCategory;
+    const nextCategories = previousCategories.map((cat) => {
+      if (cat.id !== adminSelectedCatId) return cat;
+      const nextSubCategories = [...cat.subCategories];
+      const [moved] = nextSubCategories.splice(currentIndex, 1);
+      nextSubCategories.splice(targetIndex, 0, moved);
+      return {
+        ...cat,
+        subCategories: nextSubCategories,
+      };
+    });
+
+    setCategories(nextCategories);
+    if (previousActiveCategory && previousActiveCategory.id === adminSelectedCatId) {
+      setActiveCategory(nextCategories.find((cat) => cat.id === adminSelectedCatId) || null);
+    }
+
+    try {
+      await saveCategoriesToFirestore(nextCategories);
+    } catch (error) {
+      console.error('Konu siralamasi kaydedilemedi:', error);
+      setCategories(previousCategories);
+      setActiveCategory(previousActiveCategory);
+      alert('Konu siralamasi kaydedilemedi. Lutfen tekrar deneyin.');
+    }
+  };
+
   const handleSetTopicBloggerPage = async () => {
     if (!adminSelectedTopicId) return;
     const currentUrl = topicBloggerPages[adminSelectedTopicId] || '';
@@ -3161,6 +3201,15 @@ export default function App() {
   const adminVisibleReports = questionReports.slice(0, 50);
   const adminSelectedCategory = categories.find((cat) => cat.id === adminSelectedCatId);
   const adminSelectedTopic = adminSelectedCategory?.subCategories.find((sub) => sub.id === adminSelectedTopicId);
+  const adminSelectedTopicIndex = adminSelectedCategory
+    ? adminSelectedCategory.subCategories.findIndex((sub) => sub.id === adminSelectedTopicId)
+    : -1;
+  const canMoveAdminTopicUp = adminSelectedTopicIndex > 0;
+  const canMoveAdminTopicDown = Boolean(
+    adminSelectedCategory &&
+    adminSelectedTopicIndex >= 0 &&
+    adminSelectedTopicIndex < adminSelectedCategory.subCategories.length - 1
+  );
   const adminSelectedTopicBloggerPage = adminSelectedTopicId ? (topicBloggerPages[adminSelectedTopicId] || '') : '';
   const isAdminTopicExternallySourced = Boolean(adminSelectedTopicBloggerPage);
 
@@ -4642,7 +4691,7 @@ export default function App() {
           {/* Nav */}
           <nav className="space-y-1 flex-1 overflow-y-auto custom-scrollbar">
             <button
-              onClick={() => { setCurrentView('dashboard'); setActiveCategory(null); setIsMobileMenuOpen(false); }}
+              onClick={() => { setCurrentView('dashboard'); setActiveCategory(null); setMobileDashboardTab('stats'); setIsMobileMenuOpen(false); }}
               className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 font-semibold text-sm
                 ${currentView === 'dashboard' && !activeCategory
                   ? 'bg-brand-50 dark:bg-brand-900/15 text-brand-600 dark:text-brand-400'
@@ -4662,7 +4711,7 @@ export default function App() {
               return (
                 <button
                   key={cat.id}
-                  onClick={() => { setCurrentView('dashboard'); setActiveCategory(cat); setIsMobileMenuOpen(false); }}
+                  onClick={() => { setCurrentView('dashboard'); setActiveCategory(cat); setMobileDashboardTab('categories'); setIsMobileMenuOpen(false); }}
                   className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium transition-all
                     ${activeCategory?.id === cat.id && currentView === 'dashboard'
                       ? `${color.bgLight} ${color.bgDark} ${color.text} ${color.textDark} font-semibold`
@@ -4820,6 +4869,22 @@ export default function App() {
                           Secili konu: <span className="font-bold text-surface-700 dark:text-surface-200">{adminSelectedTopic.name}</span>
                         </p>
                         <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => { void handleMoveTopicOrder('up'); }}
+                            disabled={!canMoveAdminTopicUp}
+                            className="px-3 py-2 rounded-lg border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800 text-surface-600 dark:text-surface-300 text-xs font-bold hover:bg-surface-100 dark:hover:bg-surface-700 transition disabled:opacity-40 disabled:cursor-not-allowed"
+                            title="Konuyu bir sira yukari tasir"
+                          >
+                            Yukari
+                          </button>
+                          <button
+                            onClick={() => { void handleMoveTopicOrder('down'); }}
+                            disabled={!canMoveAdminTopicDown}
+                            className="px-3 py-2 rounded-lg border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800 text-surface-600 dark:text-surface-300 text-xs font-bold hover:bg-surface-100 dark:hover:bg-surface-700 transition disabled:opacity-40 disabled:cursor-not-allowed"
+                            title="Konuyu bir sira asagi tasir"
+                          >
+                            Asagi
+                          </button>
                           <button
                             onClick={handleSetTopicBloggerPage}
                             className="px-3 py-2 rounded-lg border border-sky-200 dark:border-sky-800/40 bg-sky-50 dark:bg-sky-900/20 text-sky-700 dark:text-sky-300 text-xs font-bold hover:bg-sky-100 dark:hover:bg-sky-900/30 transition"
@@ -5148,7 +5213,7 @@ export default function App() {
 
           {/* ===== DASHBOARD - HOME ===== */}
           {currentView === 'dashboard' && !activeCategory && (
-            <div className="animate-fade-in h-full flex flex-col overflow-hidden">
+            <div className="animate-fade-in h-full w-full flex flex-col overflow-hidden">
               <div className="hidden">
                 <div className="glass-card rounded-xl p-3 border border-sky-100 dark:border-sky-900/30 shadow-premium hover-lift">
                   <div className="flex items-center gap-2 mb-1.5">
@@ -5236,15 +5301,58 @@ export default function App() {
                 </div>
               </div>
 
-              <section className="mb-2.5 md:mb-3 rounded-2xl border border-surface-200/80 dark:border-surface-700/80 bg-white/95 dark:bg-surface-800/95 p-2.5 md:p-3 shadow-card dark:shadow-card-dark">
-                <div className="flex flex-wrap items-center justify-between gap-2 mb-2.5">
-                  <h2 className="text-xs md:text-sm font-extrabold text-surface-800 dark:text-white">Istatistiklerim</h2>
-                  <div className="w-full sm:w-auto flex items-center justify-end gap-2">
-                    <span className="hidden sm:inline text-[11px] font-semibold text-surface-500 dark:text-surface-400">Kapsam</span>
+              {mobileDashboardTab === 'stats' && (
+                <div className="lg:hidden flex-1 min-h-0 overflow-y-auto custom-scrollbar pr-0.5 pb-1">
+                <section className="mb-3 rounded-2xl border border-surface-200/80 dark:border-surface-700/80 bg-white/95 dark:bg-surface-800/95 p-3 shadow-card dark:shadow-card-dark">
+                  <div className="flex items-center justify-between gap-2 mb-2.5">
+                    <h2 className="text-sm font-extrabold text-surface-800 dark:text-white">Ana Istatistikler</h2>
+                    <span className="px-2 py-1 rounded-lg bg-surface-100 dark:bg-surface-700 text-[10px] font-bold text-surface-500 dark:text-surface-300">
+                      Bugun
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="rounded-xl border border-surface-200/80 dark:border-surface-700/80 bg-surface-50/80 dark:bg-surface-900/50 p-2.5">
+                      <p className="text-[10px] font-bold text-surface-400 uppercase tracking-wider">Farkli Cozulen</p>
+                      <p className="text-lg font-black text-surface-800 dark:text-white">{homeStats.uniqueSolvedCount}</p>
+                    </div>
+                    <div className="rounded-xl border border-surface-200/80 dark:border-surface-700/80 bg-surface-50/80 dark:bg-surface-900/50 p-2.5">
+                      <p className="text-[10px] font-bold text-surface-400 uppercase tracking-wider">Toplam Cevap</p>
+                      <p className="text-lg font-black text-surface-800 dark:text-white">{homeStats.totalAnsweredCount}</p>
+                    </div>
+                    <div className="rounded-xl border border-red-200/70 dark:border-red-900/40 bg-red-50/80 dark:bg-red-900/20 p-2.5">
+                      <p className="text-[10px] font-bold text-red-500 uppercase tracking-wider">Yanlis Havuzu</p>
+                      <p className="text-lg font-black text-red-600 dark:text-red-300">{overallProgressStats.wrongCount}</p>
+                    </div>
+                    <div className="rounded-xl border border-amber-200/70 dark:border-amber-900/40 bg-amber-50/80 dark:bg-amber-900/20 p-2.5">
+                      <p className="text-[10px] font-bold text-amber-500 uppercase tracking-wider">Favori Soru</p>
+                      <p className="text-lg font-black text-amber-600 dark:text-amber-300">{homeStats.filteredFavoriteCount}</p>
+                    </div>
+                    <div className="rounded-xl border border-surface-200/80 dark:border-surface-700/80 bg-surface-50/80 dark:bg-surface-900/50 p-2.5">
+                      <p className="text-[10px] font-bold text-surface-400 uppercase tracking-wider">Cozulen Test</p>
+                      <p className="text-lg font-black text-surface-800 dark:text-white">{homeStats.progressStats.completedQuizCount}</p>
+                    </div>
+                    <div className="rounded-xl border border-brand-200/70 dark:border-brand-900/40 bg-brand-50/80 dark:bg-brand-900/20 p-2.5">
+                      <p className="text-[10px] font-bold text-brand-500 uppercase tracking-wider">Basari Orani</p>
+                      <p className="text-lg font-black text-brand-600 dark:text-brand-300">%{homeStats.accuracyPercent}</p>
+                    </div>
+                  </div>
+                  <div className="mt-2 flex items-center justify-between text-[10px] font-semibold text-surface-500 dark:text-surface-400">
+                    <span>Yanlis cevap: {homeStats.totalWrongAnswers}</span>
+                    <span>Canli takip</span>
+                  </div>
+                </section>
+                </div>
+              )}
+
+              <section className="hidden lg:block mb-3 md:mb-4 rounded-2xl border border-surface-200/80 dark:border-surface-700/80 bg-white/95 dark:bg-surface-800/95 p-3 sm:p-4 shadow-card dark:shadow-card-dark">
+                <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2.5 mb-2.5 sm:items-center">
+                  <h2 className="text-sm font-extrabold text-surface-800 dark:text-white">Istatistiklerim</h2>
+                  <div className="flex flex-wrap sm:flex-nowrap items-center justify-start sm:justify-end gap-2">
+                    <span className="hidden md:inline text-[11px] font-semibold text-surface-500 dark:text-surface-400">Kapsam</span>
                     <select
                       value={homeStatsCategoryFilter}
                       onChange={(e) => setHomeStatsCategoryFilter(e.target.value)}
-                      className="h-8 min-w-[180px] sm:min-w-[210px] max-w-full shrink-0 px-2.5 rounded-xl border border-brand-200 dark:border-brand-800/60 bg-white/95 dark:bg-surface-800 text-[11px] font-semibold text-surface-700 dark:text-surface-200 outline-none focus:border-brand-500 shadow-sm"
+                      className="h-9 min-w-0 flex-1 sm:flex-none sm:w-[220px] max-w-full px-2.5 rounded-xl border border-brand-200 dark:border-brand-800/60 bg-white/95 dark:bg-surface-800 text-[11px] font-semibold text-surface-700 dark:text-surface-200 outline-none focus:border-brand-500 shadow-sm"
                     >
                       <option value="all">Toplam (Tum Dersler)</option>
                       {categories.map((cat) => (
@@ -5254,7 +5362,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => setIsHomeStatsExpanded((prev) => !prev)}
-                      className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900/50 text-[11px] font-semibold text-surface-600 dark:text-surface-300 hover:text-surface-800 dark:hover:text-white hover:border-surface-300 dark:hover:border-surface-600 transition-colors"
+                      className="inline-flex items-center gap-1.5 h-9 px-3 rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900/50 text-[11px] font-semibold text-surface-600 dark:text-surface-300 hover:text-surface-800 dark:hover:text-white hover:border-surface-300 dark:hover:border-surface-600 transition-colors"
                       aria-expanded={isHomeStatsExpanded}
                       aria-label={isHomeStatsExpanded ? 'Istatistikler bolumunu kapat' : 'Istatistikler bolumunu ac'}
                     >
@@ -5264,7 +5372,10 @@ export default function App() {
                       />
                       {isHomeStatsExpanded ? 'Kapat' : 'Ac'}
                     </button>
-                    <span className="text-[11px] font-semibold text-surface-400 whitespace-nowrap">Canli takip</span>
+                    <span className="inline-flex items-center gap-1.5 h-9 px-3 rounded-xl bg-emerald-50 dark:bg-emerald-900/20 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300 whitespace-nowrap border border-emerald-200 dark:border-emerald-800/40">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                      Canli takip
+                    </span>
                   </div>
                 </div>
                 {isHomeStatsExpanded && (
@@ -5272,7 +5383,7 @@ export default function App() {
                     <p className="text-[10px] font-semibold text-surface-500 dark:text-surface-400 mb-2">
                       {homeStatsCategoryFilter === 'all' ? 'Gorunum: Tum Dersler' : `Gorunum: ${selectedHomeStatsCategory?.name || 'Secili Ders'}`}
                     </p>
-                    <div className="grid grid-cols-2 md:grid-cols-3 gap-2 md:gap-2.5">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2 md:gap-2.5">
                       <div className="rounded-xl border border-surface-200/80 dark:border-surface-700/80 bg-surface-50/80 dark:bg-surface-900/50 p-2 md:p-2.5">
                         <p className="text-[10px] font-bold text-surface-400 uppercase tracking-wider">Farkli Cozulen</p>
                         <p className="text-base md:text-xl font-black text-surface-800 dark:text-white">{homeStats.uniqueSolvedCount}</p>
@@ -5305,7 +5416,14 @@ export default function App() {
                 )}
               </section>
 
-              <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-4 auto-rows-max gap-2 md:gap-4 flex-1 min-h-0 content-start overflow-y-auto custom-scrollbar pr-0.5 md:pr-1.5 pb-1">
+              {mobileDashboardTab === 'categories' && (
+                <div className="lg:hidden mb-2.5 flex items-center justify-between rounded-xl border border-surface-200/80 dark:border-surface-700/80 bg-white/95 dark:bg-surface-800/95 px-3 py-2.5">
+                  <p className="text-[12px] font-extrabold text-surface-800 dark:text-white">Dersler</p>
+                  <span className="text-[10px] font-bold text-surface-500 dark:text-surface-300">{categories.length} ders</span>
+                </div>
+              )}
+
+              <div className={`${mobileDashboardTab === 'categories' ? 'grid' : 'hidden'} lg:grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 auto-rows-max gap-2.5 md:gap-4 flex-1 min-h-0 content-start overflow-y-auto custom-scrollbar pr-0.5 md:pr-1.5 pb-1`}>
                 {categories.map((cat, index) => {
                   const color = getCatColor(cat.id);
                   const questionCount = cat.subCategories.reduce((sum, sub) => sum + (allQuestions[sub.id]?.length || 0), 0);
@@ -5314,7 +5432,7 @@ export default function App() {
                     <button
                       key={cat.id}
                       onClick={() => setActiveCategory(cat)}
-                      className="group relative w-full max-w-[360px] md:max-w-none min-h-[96px] md:min-h-[150px] mx-auto rounded-2xl border border-surface-200/80 dark:border-surface-700/80 bg-white/95 dark:bg-surface-800/95 p-2.5 md:p-4 shadow-[0_6px_18px_rgba(15,23,42,0.06)] dark:shadow-[0_8px_20px_rgba(2,6,23,0.45)] hover:-translate-y-0.5 md:hover:-translate-y-1 transition-all duration-300 text-left overflow-hidden animate-fade-in-scale flex flex-col"
+                      className="group relative w-full min-h-[104px] md:min-h-[150px] rounded-2xl border border-surface-200/80 dark:border-surface-700/80 bg-white/95 dark:bg-surface-800/95 p-2.5 md:p-4 shadow-[0_6px_18px_rgba(15,23,42,0.06)] dark:shadow-[0_8px_20px_rgba(2,6,23,0.45)] hover:-translate-y-0.5 md:hover:-translate-y-1 transition-all duration-300 text-left overflow-hidden animate-fade-in-scale flex flex-col"
                       style={{ animationDelay: `${index * 60}ms` }}
                     >
                       {/* Animated gradient background blob */}
@@ -5358,7 +5476,7 @@ export default function App() {
             <div className="animate-fade-in h-full flex flex-col overflow-hidden">
               <div className="flex flex-wrap items-center justify-between gap-2 mb-3 shrink-0">
                 <button
-                  onClick={() => setActiveCategory(null)}
+                  onClick={() => { setActiveCategory(null); setMobileDashboardTab('categories'); }}
                   className="inline-flex items-center gap-2 text-surface-500 dark:text-surface-300 hover:text-brand-500 transition-colors font-semibold text-sm px-3 py-2 rounded-xl bg-white/80 dark:bg-surface-800/80 border border-surface-200/80 dark:border-surface-700/80"
                 >
                   <Icon name="ArrowLeft" className="w-4 h-4" />
@@ -6192,9 +6310,9 @@ export default function App() {
       <div className="lg:hidden fixed bottom-2 left-2 right-2 rounded-2xl bg-white/92 dark:bg-surface-800/92 backdrop-blur-2xl border border-white/70 dark:border-surface-700/90 shadow-premium-lg z-50 mobile-safe-bottom">
         <div className="flex items-center justify-around h-14 px-1">
           <button
-            onClick={() => { setCurrentView('dashboard'); setActiveCategory(null); }}
+            onClick={() => { setCurrentView('dashboard'); setActiveCategory(null); setMobileDashboardTab('stats'); }}
             className={`flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-xl transition-all ${
-              currentView === 'dashboard' && !activeCategory
+              currentView === 'dashboard' && !activeCategory && mobileDashboardTab === 'stats'
                 ? 'bg-brand-50 dark:bg-brand-900/30 text-brand-600 dark:text-brand-400 shadow-sm'
                 : 'text-surface-400 hover:text-surface-600 dark:hover:text-surface-200'
             }`}
@@ -6203,9 +6321,9 @@ export default function App() {
             <span className="mobile-nav-label text-[10px] font-semibold">Ana Sayfa</span>
           </button>
           <button
-            onClick={() => { setCurrentView('dashboard'); if (!activeCategory && categories.length > 0) setActiveCategory(categories[0]); }}
+            onClick={() => { setCurrentView('dashboard'); setActiveCategory(null); setMobileDashboardTab('categories'); }}
             className={`flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-xl transition-all ${
-              currentView === 'dashboard' && activeCategory
+              currentView === 'dashboard' && (mobileDashboardTab === 'categories' || Boolean(activeCategory))
                 ? 'bg-brand-50 dark:bg-brand-900/30 text-brand-600 dark:text-brand-400 shadow-sm'
                 : 'text-surface-400 hover:text-surface-600 dark:hover:text-surface-200'
             }`}
