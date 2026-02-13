@@ -4335,70 +4335,114 @@ export default function App() {
         </div>
 
         {/* Header */}
-        <header className={`flex-shrink-0 bg-white/85 dark:bg-surface-800/85 backdrop-blur-2xl border-b border-surface-200/80 dark:border-surface-700/70 flex items-center justify-between px-3 sm:px-4 md:px-8 z-40 ${
-          quizSize === 0 ? 'h-12' : 'h-14'
+        <header className={`flex-shrink-0 bg-white/85 dark:bg-surface-800/85 backdrop-blur-2xl border-b border-surface-200/80 dark:border-surface-700/70 px-2.5 sm:px-4 md:px-8 z-40 ${
+          quizSize === 0 ? 'py-1.5' : 'py-2'
         }`}>
-          <div className="flex items-center gap-2.5 min-w-0">
-            <button
-              onClick={() => setQuizConfirmAction('exit')}
-              className={`flex items-center justify-center rounded-xl bg-surface-100 dark:bg-surface-700 text-surface-500 dark:text-surface-300 hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-900/20 dark:hover:text-red-400 transition-colors border border-surface-200 dark:border-surface-600 ${
-                quizSize === 0 ? 'w-9 h-9' : 'w-10 h-10'
-              }`}
-            >
-              <Icon name="X" className="w-4 h-4" />
-            </button>
+          <div className="md:hidden w-full rounded-2xl border border-surface-200/90 dark:border-surface-700/70 bg-white/90 dark:bg-surface-800/85 overflow-hidden">
+            <div className="grid grid-cols-[52px_minmax(0,1fr)_62px_96px_52px] items-stretch">
+              <button
+                onClick={() => setQuizConfirmAction('exit')}
+                className="h-12 flex items-center justify-center text-surface-500 dark:text-surface-300 hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-900/20 dark:hover:text-red-400 transition-colors"
+                aria-label="Sinavdan cik"
+              >
+                <Icon name="X" className="w-4 h-4" />
+              </button>
 
-            <div className="min-w-0">
-              <h2 className={`font-bold text-surface-800 dark:text-white leading-tight truncate ${quizSize === 0 ? 'text-[13px]' : 'text-sm sm:text-base'}`}>{activeTopic.sub.name}</h2>
-              <span className="text-[11px] sm:text-xs text-surface-500 dark:text-surface-400 truncate block">{activeTopic.cat.name}</span>
-            </div>
-          </div>
+              <div className="h-12 min-w-0 px-3 border-l border-surface-200/80 dark:border-surface-700/70 flex items-center">
+                <h2 className="text-[10px] font-semibold text-surface-800 dark:text-white leading-[1.05] overflow-hidden [display:-webkit-box] [-webkit-line-clamp:2] [-webkit-box-orient:vertical]">
+                  {activeTopic.sub.name}
+                </h2>
+              </div>
 
-          {/* Question Counter */}
-          {!quizState.showResults && quizState.questions.length > 0 && (
-            <div className="text-xs font-bold text-surface-500 dark:text-surface-300 px-2.5 py-1 rounded-full border border-surface-200 dark:border-surface-600 bg-white/70 dark:bg-surface-700/60">
-              <span className={`${catColor.text} ${catColor.textDark}`}>{quizState.currentQuestionIndex + 1}</span>
-              <span className="mx-1">/</span>
-              <span>{quizState.questions.length}</span>
-            </div>
-          )}
+              <div className="h-12 border-l border-surface-200/80 dark:border-surface-700/70 flex items-center justify-center">
+                <span className={`text-xs font-black ${catColor.text} ${catColor.textDark}`}>
+                  {quizState.questions.length > 0 ? `${quizState.currentQuestionIndex + 1}/${quizState.questions.length}` : '--'}
+                </span>
+              </div>
 
-          {/* Timer + Size Control */}
-          {!quizState.showResults && (
-            <div className="flex items-center gap-1.5 sm:gap-2">
+              <div className={`h-12 border-l border-surface-200/80 dark:border-surface-700/70 flex items-center justify-center gap-1.5 text-[12px] font-mono font-bold ${
+                quizState.showResults
+                  ? 'text-surface-500 dark:text-surface-300'
+                  : quizState.timeLeft < 30
+                    ? 'text-red-500 dark:text-red-300'
+                    : quizState.timeLeft < 60
+                      ? 'text-amber-600 dark:text-amber-300'
+                      : 'text-surface-700 dark:text-surface-200'
+              }`}>
+                {!quizState.showResults && <Icon name="Clock" className="w-3.5 h-3.5 opacity-75" />}
+                {!quizState.showResults ? formatTime(quizState.timeLeft) : 'Sonuc'}
+              </div>
+
               <button
                 onClick={() => setIsDarkMode((prev) => !prev)}
-                className={`flex items-center justify-center rounded-xl bg-surface-100 dark:bg-surface-700 text-surface-500 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-600 transition-colors border border-surface-200 dark:border-surface-600 ${
-                  quizSize === 0 ? 'w-9 h-9' : 'w-10 h-10'
-                }`}
-                title={isDarkMode ? 'Açık tema' : 'Koyu tema'}
-                aria-label={isDarkMode ? 'Açık temaya geç' : 'Koyu temaya geç'}
+                className="h-12 border-l border-surface-200/80 dark:border-surface-700/70 flex items-center justify-center text-surface-600 dark:text-surface-300 hover:bg-surface-100 dark:hover:bg-surface-700 transition-colors"
+                title={isDarkMode ? 'Acik tema' : 'Koyu tema'}
+                aria-label={isDarkMode ? 'Acik temaya gec' : 'Koyu temaya gec'}
               >
                 <Icon name={isDarkMode ? 'Sun' : 'Moon'} className="w-4 h-4" />
               </button>
-              {/* Size Toggle */}
+            </div>
+          </div>
+
+          <div className={`hidden md:flex items-center justify-between ${quizSize === 0 ? 'h-12' : 'h-14'}`}>
+            <div className="flex items-center gap-2.5 min-w-0">
               <button
-                onClick={() => setQuizSize(prev => ((prev + 1) % 3) as 0 | 1 | 2)}
-                className="hidden sm:flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-surface-100 dark:bg-surface-700 text-surface-500 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-600 transition-colors border border-surface-200 dark:border-surface-600"
-                title="Yazi boyutunu degistir"
+                onClick={() => setQuizConfirmAction('exit')}
+                className={`flex items-center justify-center rounded-xl bg-surface-100 dark:bg-surface-700 text-surface-500 dark:text-surface-300 hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-900/20 dark:hover:text-red-400 transition-colors border border-surface-200 dark:border-surface-600 ${
+                  quizSize === 0 ? 'w-9 h-9' : 'w-10 h-10'
+                }`}
               >
-                <span className={`font-bold transition-all ${quizSize === 0 ? 'text-[10px]' : quizSize === 1 ? 'text-xs' : 'text-sm'}`}>A</span>
-                <span className={`font-bold transition-all ${quizSize === 0 ? 'text-xs' : quizSize === 1 ? 'text-sm' : 'text-base'}`}>A</span>
+                <Icon name="X" className="w-4 h-4" />
               </button>
 
-              {/* Timer */}
-              <div className={`flex items-center gap-2 px-2.5 sm:px-3.5 py-1.5 rounded-xl text-[13px] sm:text-sm font-mono font-bold border
-                ${quizState.timeLeft < 30
-                  ? 'bg-red-50 dark:bg-red-900/20 text-red-500 border-red-200 dark:border-red-800/50 animate-pulse'
-                  : quizState.timeLeft < 60
-                    ? 'bg-amber-50 dark:bg-amber-900/20 text-amber-600 border-amber-200 dark:border-amber-800/50'
-                    : 'bg-surface-50 dark:bg-surface-700 text-surface-700 dark:text-surface-200 border-surface-200 dark:border-surface-600'}
-              `}>
-                <Icon name="Clock" className="w-3.5 h-3.5 opacity-70" />
-                {formatTime(quizState.timeLeft)}
+              <div className="min-w-0">
+                <h2 className={`font-bold text-surface-800 dark:text-white leading-tight truncate ${quizSize === 0 ? 'text-[13px]' : 'text-sm sm:text-base'}`}>{activeTopic.sub.name}</h2>
+                <span className="text-[11px] sm:text-xs text-surface-500 dark:text-surface-400 truncate block">{activeTopic.cat.name}</span>
               </div>
             </div>
-          )}
+
+            {!quizState.showResults && quizState.questions.length > 0 && (
+              <div className="text-xs font-bold text-surface-500 dark:text-surface-300 px-2.5 py-1 rounded-full border border-surface-200 dark:border-surface-600 bg-white/70 dark:bg-surface-700/60">
+                <span className={`${catColor.text} ${catColor.textDark}`}>{quizState.currentQuestionIndex + 1}</span>
+                <span className="mx-1">/</span>
+                <span>{quizState.questions.length}</span>
+              </div>
+            )}
+
+            {!quizState.showResults && (
+              <div className="flex items-center gap-1.5 sm:gap-2">
+                <button
+                  onClick={() => setIsDarkMode((prev) => !prev)}
+                  className={`flex items-center justify-center rounded-xl bg-surface-100 dark:bg-surface-700 text-surface-500 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-600 transition-colors border border-surface-200 dark:border-surface-600 ${
+                    quizSize === 0 ? 'w-9 h-9' : 'w-10 h-10'
+                  }`}
+                  title={isDarkMode ? 'Acik tema' : 'Koyu tema'}
+                  aria-label={isDarkMode ? 'Acik temaya gec' : 'Koyu temaya gec'}
+                >
+                  <Icon name={isDarkMode ? 'Sun' : 'Moon'} className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={() => setQuizSize(prev => ((prev + 1) % 3) as 0 | 1 | 2)}
+                  className="hidden sm:flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-surface-100 dark:bg-surface-700 text-surface-500 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-600 transition-colors border border-surface-200 dark:border-surface-600"
+                  title="Yazi boyutunu degistir"
+                >
+                  <span className={`font-bold transition-all ${quizSize === 0 ? 'text-[10px]' : quizSize === 1 ? 'text-xs' : 'text-sm'}`}>A</span>
+                  <span className={`font-bold transition-all ${quizSize === 0 ? 'text-xs' : quizSize === 1 ? 'text-sm' : 'text-base'}`}>A</span>
+                </button>
+
+                <div className={`flex items-center gap-2 px-2.5 sm:px-3.5 py-1.5 rounded-xl text-[13px] sm:text-sm font-mono font-bold border
+                  ${quizState.timeLeft < 30
+                    ? 'bg-red-50 dark:bg-red-900/20 text-red-500 border-red-200 dark:border-red-800/50 animate-pulse'
+                    : quizState.timeLeft < 60
+                      ? 'bg-amber-50 dark:bg-amber-900/20 text-amber-600 border-amber-200 dark:border-amber-800/50'
+                      : 'bg-surface-50 dark:bg-surface-700 text-surface-700 dark:text-surface-200 border-surface-200 dark:border-surface-600'}
+                `}>
+                  <Icon name="Clock" className="w-3.5 h-3.5 opacity-70" />
+                  {formatTime(quizState.timeLeft)}
+                </div>
+              </div>
+            )}
+          </div>
         </header>
 
         {/* Main Content */}
@@ -4439,11 +4483,49 @@ export default function App() {
                 <div className={`bg-white/95 dark:bg-surface-800/95 rounded-2xl shadow-card dark:shadow-card-dark border border-surface-100 dark:border-surface-700 animate-fade-in backdrop-blur-sm ${
                   quizSize === 0 ? 'p-3 mb-2.5 rounded-xl' : quizSize === 1 ? 'p-4 md:p-5 mb-3.5' : 'p-5 md:p-6 mb-4'
                 }`}>
-                  <div className={`flex justify-between items-center gap-2 ${quizSize === 0 ? 'mb-3' : quizSize === 1 ? 'mb-4' : 'mb-5'}`}>
+                  <div className={`md:hidden rounded-xl border border-surface-200/85 dark:border-surface-700/70 bg-surface-50/80 dark:bg-surface-900/55 overflow-hidden ${
+                    quizSize === 0 ? 'mb-3' : quizSize === 1 ? 'mb-4' : 'mb-5'
+                  }`}>
+                    <div className="grid grid-cols-[58px_minmax(0,1fr)_52px_52px] items-stretch">
+                      <div className={`h-11 flex items-center justify-center font-black ${catColor.text} ${catColor.textDark} ${
+                        quizSize === 0 ? 'text-sm' : 'text-base'
+                      }`}>
+                        {quizState.currentQuestionIndex + 1}
+                      </div>
+                      <div className="h-11 min-w-0 px-3 border-l border-surface-200/85 dark:border-surface-700/70 flex items-center">
+                        <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-200 leading-[1.05] overflow-hidden [display:-webkit-box] [-webkit-line-clamp:2] [-webkit-box-orient:vertical]">
+                          {currentQuestion.sourceTag || 'Kaynak yok'}
+                        </span>
+                      </div>
+                      <button
+                        onClick={() => void toggleFavoriteQuestion(currentQuestion, quizState.currentQuestionIndex)}
+                        className={`h-11 border-l border-surface-200/85 dark:border-surface-700/70 flex items-center justify-center transition ${
+                          isCurrentQuestionFavorite
+                            ? 'bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-300'
+                            : 'text-surface-500 dark:text-surface-300 hover:bg-surface-100 dark:hover:bg-surface-800'
+                        }`}
+                        title={isCurrentQuestionFavorite ? 'Favoriden cikar' : 'Favorilere ekle'}
+                        aria-label={isCurrentQuestionFavorite ? 'Favoriden cikar' : 'Favorilere ekle'}
+                      >
+                        <Icon name="Star" className={`w-4 h-4 ${isCurrentQuestionFavorite ? 'fill-current' : ''}`} />
+                      </button>
+                      <button
+                        onClick={() => handleReportQuestion(currentQuestion)}
+                        disabled={!currentQuestion.id || isSubmittingReport}
+                        className="h-11 border-l border-surface-200/85 dark:border-surface-700/70 flex items-center justify-center text-red-600 dark:text-red-300 hover:bg-red-100/60 dark:hover:bg-red-900/30 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                        title="Hatali soruyu bildir"
+                        aria-label="Hatali soruyu bildir"
+                      >
+                        <Icon name="Flag" className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className={`hidden md:flex justify-between items-center gap-2 ${quizSize === 0 ? 'mb-3' : quizSize === 1 ? 'mb-4' : 'mb-5'}`}>
                     <span className={`${catColor.bgLight} ${catColor.bgDark} ${catColor.text} ${catColor.textDark} font-black rounded-lg uppercase tracking-wider ${
                       quizSize === 0 ? 'px-2.5 py-1 text-[10px]' : 'px-3 py-1 text-xs'
                     }`}>
-                      Soru {quizState.currentQuestionIndex + 1}
+                      {quizState.currentQuestionIndex + 1}. Soru
                     </span>
                     <div className="flex items-center gap-1.5">
                       {currentQuestion.sourceTag && (
