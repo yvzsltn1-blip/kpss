@@ -46,22 +46,28 @@ service cloud.firestore {
       return request.resource.data.keys().hasOnly([
           'questionId',
           'topicId',
+          'topicName',
           'categoryId',
+          'categoryName',
           'reporterUsername',
           'reporterRole',
           'note',
           'questionTextSnapshot',
+          'sourceTag',
           'createdAt'
         ]) &&
         request.resource.data.questionId is string &&
         request.resource.data.questionId.size() > 0 &&
         request.resource.data.createdAt is timestamp &&
         (!('topicId' in request.resource.data) || request.resource.data.topicId == null || request.resource.data.topicId is string) &&
+        (!('topicName' in request.resource.data) || request.resource.data.topicName == null || request.resource.data.topicName is string) &&
         (!('categoryId' in request.resource.data) || request.resource.data.categoryId == null || request.resource.data.categoryId is string) &&
+        (!('categoryName' in request.resource.data) || request.resource.data.categoryName == null || request.resource.data.categoryName is string) &&
         (!('reporterUsername' in request.resource.data) || request.resource.data.reporterUsername == null || request.resource.data.reporterUsername is string) &&
         (!('reporterRole' in request.resource.data) || request.resource.data.reporterRole == null || request.resource.data.reporterRole is string) &&
         (!('note' in request.resource.data) || request.resource.data.note == null || request.resource.data.note is string) &&
-        (!('questionTextSnapshot' in request.resource.data) || request.resource.data.questionTextSnapshot == null || request.resource.data.questionTextSnapshot is string);
+        (!('questionTextSnapshot' in request.resource.data) || request.resource.data.questionTextSnapshot == null || request.resource.data.questionTextSnapshot is string) &&
+        (!('sourceTag' in request.resource.data) || request.resource.data.sourceTag == null || request.resource.data.sourceTag is string);
     }
   }
 }

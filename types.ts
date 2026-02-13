@@ -22,6 +22,7 @@ export interface Category {
 
 export interface Question {
   id?: string;
+  questionId?: string;
   imageUrl?: string; // Optional image link
   contextText?: string; // Optional intro/context text above items
   contentItems?: string[]; // Optional list items (I., II., III. etc.)
@@ -36,11 +37,14 @@ export interface QuestionReport {
   id?: string;
   questionId: string;
   topicId?: string | null;
+  topicName?: string | null;
   categoryId?: string | null;
+  categoryName?: string | null;
   reporterUsername?: string | null;
   reporterRole?: Role | null;
   note?: string | null;
   questionTextSnapshot?: string | null;
+  sourceTag?: string | null;
   createdAt?: unknown;
 }
 

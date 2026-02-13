@@ -1,0 +1,824 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Soru ID Araci</title>
+  <style>
+    :root {
+      --bg: #f3f6fb;
+      --card: #ffffff;
+      --text: #0f172a;
+      --muted: #475569;
+      --line: #cbd5e1;
+      --ok: #166534;
+      --ok-bg: #dcfce7;
+      --warn: #854d0e;
+      --warn-bg: #fef9c3;
+      --err: #991b1b;
+      --err-bg: #fee2e2;
+      --brand: #1d4ed8;
+      --brand-2: #1e40af;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      background: radial-gradient(1200px 700px at 10% -20%, #dbeafe, transparent), var(--bg);
+      color: var(--text);
+    }
+    .wrap {
+      max-width: 1200px;
+      margin: 24px auto;
+      padding: 0 16px 24px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: 0 6px 20px rgba(15, 23, 42, 0.06);
+      padding: 14px;
+    }
+    h1 {
+      margin: 0 0 6px;
+      font-size: 22px;
+      line-height: 1.2;
+    }
+    p { margin: 0 0 10px; color: var(--muted); }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+    @media (max-width: 960px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+    .label {
+      font-size: 12px;
+      font-weight: 700;
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+      color: var(--muted);
+    }
+    textarea {
+      width: 100%;
+      min-height: 380px;
+      resize: vertical;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color: var(--text);
+      background: #fff;
+    }
+    input[type="text"] {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 13px;
+      color: var(--text);
+      background: #fff;
+    }
+    select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 13px;
+      color: var(--text);
+      background: #fff;
+    }
+    .toolbar {
+      margin-top: 10px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    button {
+      border: 0;
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .primary { background: var(--brand); color: #fff; }
+    .primary:hover { background: var(--brand-2); }
+    .ghost {
+      background: #fff;
+      color: var(--text);
+      border: 1px solid var(--line);
+    }
+    .ghost:hover { background: #f8fafc; }
+    .bad {
+      background: #fff;
+      border: 1px solid #fecaca;
+      color: #b91c1c;
+    }
+    .status {
+      margin-top: 10px;
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 13px;
+      line-height: 1.45;
+      border: 1px solid var(--line);
+      background: #f8fafc;
+    }
+    .ok { color: var(--ok); background: var(--ok-bg); border-color: #86efac; }
+    .warn { color: var(--warn); background: var(--warn-bg); border-color: #fde047; }
+    .err { color: var(--err); background: var(--err-bg); border-color: #fca5a5; }
+    ul {
+      margin: 8px 0 0;
+      padding-left: 18px;
+    }
+    li { margin: 2px 0; }
+    .foot {
+      margin-top: 10px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .pill {
+      display: inline-block;
+      font-size: 12px;
+      font-weight: 700;
+      border-radius: 999px;
+      padding: 4px 8px;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--text);
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card" style="margin-bottom: 14px;">
+      <h1>Soru ID Araci (Veritabani Yok)</h1>
+      <p>JSON'u dogrular, bozuk alanlari raporlar, <code>questionId</code> cakismalarini engeller ve export verir.</p>
+      <span class="pill" id="registryCountPill">Kayitli ID: 0</span>
+    </div>
+
+    <div class="grid">
+      <section class="card">
+        <div class="label">Giris JSON</div>
+        <textarea id="inputJson" spellcheck="false" placeholder='[
+  {
+    "questionId": "0fPNrPGEuJu1xXiLDZuN",
+    "questionText": "...",
+    "contextText": null,
+    "contentItems": [],
+    "options": ["A", "B", "C", "D", "E"],
+    "correctOptionIndex": 3,
+    "answer": "D",
+    "explanation": "",
+    "sourceTag": "2026 - Deneme",
+    "imageUrl": null
+  }
+]'></textarea>
+
+        <div style="margin-top: 10px;">
+          <div class="label">Toplu Etiket (sourceTag)</div>
+          <select id="bulkSourceTagPreset">
+            <option value="">Kayitli etiket sec (opsiyonel)</option>
+            <option value="__blank__">Bos gec (tek space)</option>
+          </select>
+        </div>
+
+        <div style="margin-top: 8px;">
+          <div class="label">Yeni Etiket / Manuel Giris</div>
+          <input
+            id="bulkSourceTag"
+            type="text"
+            autocomplete="off"
+            placeholder='Ornek: 2026 - Pegem | Bos gecmek icin klavyeden 1 kez "space" basin'
+          />
+        </div>
+
+        <div class="toolbar">
+          <button class="primary" id="validateBtn">Dogrula ve Hazirla</button>
+          <button class="ghost" id="loadSampleBtn">Ornek Yukle</button>
+          <button class="ghost" id="exportRegistryBtn">Kayitlari TXT Indir</button>
+          <button class="ghost" id="importRegistryBtn">TXT Yukle</button>
+          <button class="bad" id="clearRegistryBtn">ID Kaydini Temizle</button>
+        </div>
+        <input id="registryFileInput" type="file" accept=".txt,.json,application/json,text/plain" style="display:none;" />
+
+        <div id="inputStatus" class="status">
+          JSON girip <b>Dogrula ve Hazirla</b> butonuna basin.
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="label">Cikti JSON (Export)</div>
+        <textarea id="outputJson" spellcheck="false" readonly></textarea>
+
+        <div class="toolbar">
+          <button class="primary" id="downloadBtn" disabled>JSON Indir</button>
+          <button class="ghost" id="copyBtn" disabled>Kopyala</button>
+          <button class="ghost" id="commitIdsBtn" disabled>ID Kayitlarini Isaretle</button>
+        </div>
+
+        <div id="outputStatus" class="status">
+          Hazir cikti henuz yok.
+        </div>
+
+        <div class="foot">
+          Kabul edilen giris: <code>[...]</code> veya <code>{ "questions": [...] }</code> veya <code>{ "topic": {...}, "questions": [...] }</code>.
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      "use strict";
+
+      const STORAGE_KEY = "kpss_question_id_registry_v1";
+      const SOURCE_TAG_HISTORY_KEY = "kpss_source_tag_history_v1";
+      const SOURCE_TAG_HISTORY_LIMIT = 200;
+      const BLOGGER_PRE_OPEN = '<pre id="kpss-json" style="display:none;">';
+      const BLOGGER_PRE_CLOSE = "</pre>";
+      const ID_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+      const EXPECTED_KEYS = [
+        "questionId",
+        "questionText",
+        "contextText",
+        "contentItems",
+        "options",
+        "correctOptionIndex",
+        "answer",
+        "explanation",
+        "sourceTag",
+        "imageUrl"
+      ];
+
+      const inputEl = document.getElementById("inputJson");
+      const bulkSourceTagPresetEl = document.getElementById("bulkSourceTagPreset");
+      const bulkSourceTagEl = document.getElementById("bulkSourceTag");
+      const outputEl = document.getElementById("outputJson");
+      const inputStatusEl = document.getElementById("inputStatus");
+      const outputStatusEl = document.getElementById("outputStatus");
+      const registryCountPill = document.getElementById("registryCountPill");
+
+      const validateBtn = document.getElementById("validateBtn");
+      const loadSampleBtn = document.getElementById("loadSampleBtn");
+      const exportRegistryBtn = document.getElementById("exportRegistryBtn");
+      const importRegistryBtn = document.getElementById("importRegistryBtn");
+      const registryFileInput = document.getElementById("registryFileInput");
+      const clearRegistryBtn = document.getElementById("clearRegistryBtn");
+      const downloadBtn = document.getElementById("downloadBtn");
+      const copyBtn = document.getElementById("copyBtn");
+      const commitIdsBtn = document.getElementById("commitIdsBtn");
+
+      let lastNormalized = null;
+      let lastWarnings = [];
+      let lastErrors = [];
+
+      function loadRegistrySet() {
+        try {
+          const raw = localStorage.getItem(STORAGE_KEY);
+          if (!raw) return new Set();
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) {
+            return new Set(parsed.filter((x) => typeof x === "string" && x.trim()));
+          }
+          if (parsed && typeof parsed === "object") {
+            return new Set(Object.keys(parsed));
+          }
+          return new Set();
+        } catch {
+          return new Set();
+        }
+      }
+
+      function saveRegistrySet(set) {
+        const list = Array.from(set.values()).sort();
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
+      }
+
+      function updateRegistryCount() {
+        const set = loadRegistrySet();
+        registryCountPill.textContent = "Kayitli ID: " + set.size;
+      }
+
+      function loadSourceTagHistory() {
+        try {
+          const raw = localStorage.getItem(SOURCE_TAG_HISTORY_KEY);
+          if (!raw) return [];
+          const parsed = JSON.parse(raw);
+          if (!Array.isArray(parsed)) return [];
+          const seen = new Set();
+          const list = [];
+          parsed.forEach((item) => {
+            if (typeof item !== "string") return;
+            const trimmed = item.trim();
+            if (!trimmed || seen.has(trimmed)) return;
+            seen.add(trimmed);
+            list.push(trimmed);
+          });
+          return list;
+        } catch {
+          return [];
+        }
+      }
+
+      function saveSourceTagHistory(list) {
+        localStorage.setItem(SOURCE_TAG_HISTORY_KEY, JSON.stringify(list.slice(0, SOURCE_TAG_HISTORY_LIMIT)));
+      }
+
+      function rememberSourceTag(tag) {
+        if (typeof tag !== "string") return;
+        const normalized = tag.trim();
+        if (!normalized) return;
+        const history = loadSourceTagHistory().filter((item) => item !== normalized);
+        history.unshift(normalized);
+        saveSourceTagHistory(history);
+      }
+
+      function mergeSourceTagHistory(tags) {
+        if (!Array.isArray(tags)) return;
+        const normalizedIncoming = tags
+          .filter((item) => typeof item === "string")
+          .map((item) => item.trim())
+          .filter(Boolean);
+        if (!normalizedIncoming.length) return;
+        const current = loadSourceTagHistory();
+        const merged = [];
+        const seen = new Set();
+        normalizedIncoming.concat(current).forEach((item) => {
+          if (seen.has(item)) return;
+          seen.add(item);
+          merged.push(item);
+        });
+        saveSourceTagHistory(merged);
+      }
+
+      function renderSourceTagPresetOptions(selectedValue) {
+        const history = loadSourceTagHistory();
+        const options = [
+          { value: "", label: "Kayitli etiket sec (opsiyonel)" },
+          { value: "__blank__", label: "Bos gec (tek space)" },
+          ...history.map((item) => ({ value: item, label: item })),
+        ];
+        bulkSourceTagPresetEl.innerHTML = "";
+        options.forEach((item) => {
+          const optionEl = document.createElement("option");
+          optionEl.value = item.value;
+          optionEl.textContent = item.label;
+          bulkSourceTagPresetEl.appendChild(optionEl);
+        });
+        const hasSelected = options.some((item) => item.value === selectedValue);
+        bulkSourceTagPresetEl.value = hasSelected ? selectedValue : "";
+      }
+
+      function htmlEscape(text) {
+        return String(text)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;");
+      }
+
+      function setStatus(el, kind, title, lines) {
+        el.className = "status " + (kind || "");
+        let html = "<b>" + htmlEscape(title) + "</b>";
+        if (Array.isArray(lines) && lines.length > 0) {
+          html += "<ul>" + lines.map((line) => "<li>" + htmlEscape(line) + "</li>").join("") + "</ul>";
+        }
+        el.innerHTML = html;
+      }
+
+      function firestoreLikeId() {
+        let out = "";
+        for (let i = 0; i < 20; i += 1) {
+          const idx = Math.floor(Math.random() * ID_CHARS.length);
+          out += ID_CHARS[idx];
+        }
+        return out;
+      }
+
+      function normalizeQuestionId(raw) {
+        if (typeof raw !== "string") return null;
+        const t = raw.trim();
+        if (!t) return null;
+        return t;
+      }
+
+      function ensureUniqueId(baseId, usedInThisBatch, usedGlobal) {
+        let id = baseId && !usedInThisBatch.has(baseId) && !usedGlobal.has(baseId)
+          ? baseId
+          : null;
+        while (!id) {
+          const candidate = firestoreLikeId();
+          if (!usedInThisBatch.has(candidate) && !usedGlobal.has(candidate)) {
+            id = candidate;
+          }
+        }
+        usedInThisBatch.add(id);
+        return id;
+      }
+
+      function parseInputPayload(rawText) {
+        const parsed = JSON.parse(rawText);
+        if (Array.isArray(parsed)) return parsed;
+        if (parsed && typeof parsed === "object" && Array.isArray(parsed.questions)) return parsed.questions;
+        throw new Error("JSON kokunde dizi veya questions dizisi bulunamadi.");
+      }
+
+      function toNullableString(value) {
+        if (value == null) return null;
+        if (typeof value !== "string") return null;
+        const t = value.trim();
+        return t.length ? t : null;
+      }
+
+      function validateAndNormalizeQuestions(rawQuestions, globalIds, forcedSourceTag) {
+        const errors = [];
+        const warnings = [];
+        const usedInBatch = new Set();
+        const normalized = [];
+
+        rawQuestions.forEach((raw, idx) => {
+          const qNo = idx + 1;
+          if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+            errors.push("Soru " + qNo + ": kayit bir nesne olmali.");
+            return;
+          }
+
+          const q = raw;
+          const qText = typeof q.questionText === "string" ? q.questionText.trim() : "";
+          if (!qText) {
+            errors.push("Soru " + qNo + ": questionText bos.");
+            return;
+          }
+
+          if (!Array.isArray(q.options)) {
+            errors.push("Soru " + qNo + ": options dizi olmali.");
+            return;
+          }
+
+          const options = q.options.map((x) => (typeof x === "string" ? x.trim() : "")).filter(Boolean);
+          if (options.length !== 5) {
+            errors.push("Soru " + qNo + ": options tam 5 secenek olmali.");
+            return;
+          }
+
+          let correctOptionIndex = Number.isInteger(q.correctOptionIndex) ? q.correctOptionIndex : null;
+          const answerRaw = typeof q.answer === "string" ? q.answer.trim().toUpperCase() : "";
+          if (correctOptionIndex == null || correctOptionIndex < 0 || correctOptionIndex > 4) {
+            const ai = "ABCDE".indexOf(answerRaw);
+            if (ai >= 0) {
+              correctOptionIndex = ai;
+              warnings.push("Soru " + qNo + ": correctOptionIndex answer alanindan turetildi.");
+            } else {
+              errors.push("Soru " + qNo + ": correctOptionIndex gecersiz ve answer kullanilamaz.");
+              return;
+            }
+          }
+
+          const computedAnswer = "ABCDE"[correctOptionIndex];
+          if (answerRaw && answerRaw !== computedAnswer) {
+            warnings.push("Soru " + qNo + ": answer alani correctOptionIndex ile uyumsuzdu, duzeltildi.");
+          }
+
+          let givenId = normalizeQuestionId(q.questionId || q.id);
+          if (givenId && (usedInBatch.has(givenId) || globalIds.has(givenId))) {
+            warnings.push("Soru " + qNo + ": questionId cakisiyordu, yeni id uretildi.");
+            givenId = null;
+          }
+          const finalId = ensureUniqueId(givenId, usedInBatch, globalIds);
+
+          const known = new Set(EXPECTED_KEYS.concat(["id"]));
+          const extras = Object.keys(q).filter((k) => !known.has(k));
+          if (extras.length > 0) {
+            warnings.push("Soru " + qNo + ": taninmayan alanlar var (" + extras.join(", ") + "), exportta tutulmadi.");
+          }
+
+          normalized.push({
+            questionId: finalId,
+            questionText: qText,
+            contextText: toNullableString(q.contextText),
+            contentItems: Array.isArray(q.contentItems)
+              ? q.contentItems.map((x) => (typeof x === "string" ? x.trim() : "")).filter(Boolean)
+              : [],
+            options: options,
+            correctOptionIndex: correctOptionIndex,
+            answer: computedAnswer,
+            explanation: typeof q.explanation === "string" ? q.explanation : "",
+            sourceTag: forcedSourceTag,
+            imageUrl: toNullableString(q.imageUrl)
+          });
+        });
+
+        return { errors, warnings, normalized };
+      }
+
+      function formatNowDateFile() {
+        const d = new Date();
+        const yyyy = d.getFullYear();
+        const mm = String(d.getMonth() + 1).padStart(2, "0");
+        const dd = String(d.getDate()).padStart(2, "0");
+        const hh = String(d.getHours()).padStart(2, "0");
+        const mi = String(d.getMinutes()).padStart(2, "0");
+        return yyyy + "-" + mm + "-" + dd + "_" + hh + "-" + mi;
+      }
+
+      function commitIdsToRegistry(ids) {
+        const set = loadRegistrySet();
+        let addedCount = 0;
+        ids.forEach((id) => {
+          if (!set.has(id)) addedCount += 1;
+          set.add(id);
+        });
+        saveRegistrySet(set);
+        updateRegistryCount();
+        return { addedCount: addedCount, totalCount: set.size };
+      }
+
+      function buildBloggerSnippet(questions) {
+        return BLOGGER_PRE_OPEN + "\n" + JSON.stringify(questions, null, 2) + "\n" + BLOGGER_PRE_CLOSE;
+      }
+
+      function buildRegistryBackupPayload() {
+        return {
+          formatVersion: 1,
+          exportedAt: new Date().toISOString(),
+          ids: Array.from(loadRegistrySet().values()).sort(),
+          sourceTags: loadSourceTagHistory(),
+        };
+      }
+
+      function parseRegistryBackupText(rawText) {
+        const text = String(rawText || "");
+        try {
+          const parsed = JSON.parse(text);
+          if (Array.isArray(parsed)) {
+            return { ids: parsed, sourceTags: [] };
+          }
+          if (parsed && typeof parsed === "object") {
+            const ids = Array.isArray(parsed.ids) ? parsed.ids : [];
+            const sourceTags = Array.isArray(parsed.sourceTags) ? parsed.sourceTags : [];
+            return { ids: ids, sourceTags: sourceTags };
+          }
+        } catch {
+          // JSON degilse satir bazli id listesi kabul edilir.
+        }
+
+        const ids = text
+          .split(/\r?\n/g)
+          .map((line) => line.trim())
+          .filter(Boolean);
+        return { ids: ids, sourceTags: [] };
+      }
+
+      function resetOutputState() {
+        lastNormalized = null;
+        lastWarnings = [];
+        lastErrors = [];
+        outputEl.value = "";
+        downloadBtn.disabled = true;
+        copyBtn.disabled = true;
+        commitIdsBtn.disabled = true;
+        setStatus(outputStatusEl, "", "Hazir cikti henuz yok.", []);
+      }
+
+      function syncPresetWithInput() {
+        if (bulkSourceTagEl.value === " ") {
+          bulkSourceTagPresetEl.value = "__blank__";
+          return;
+        }
+        const trimmed = bulkSourceTagEl.value.trim();
+        if (!trimmed) {
+          bulkSourceTagPresetEl.value = "";
+          return;
+        }
+        const history = loadSourceTagHistory();
+        bulkSourceTagPresetEl.value = history.includes(trimmed) ? trimmed : "";
+      }
+
+      bulkSourceTagPresetEl.addEventListener("change", () => {
+        const selected = bulkSourceTagPresetEl.value;
+        if (selected === "__blank__") {
+          bulkSourceTagEl.value = " ";
+        } else if (selected) {
+          bulkSourceTagEl.value = selected;
+        }
+        bulkSourceTagEl.focus();
+      });
+
+      bulkSourceTagEl.addEventListener("input", () => {
+        syncPresetWithInput();
+      });
+
+      validateBtn.addEventListener("click", () => {
+        resetOutputState();
+        const rawText = inputEl.value.trim();
+        if (!rawText) {
+          setStatus(inputStatusEl, "err", "Giris bos.", ["JSON metni yapistirin."]);
+          return;
+        }
+
+        let rawQuestions;
+        try {
+          rawQuestions = parseInputPayload(rawText);
+        } catch (e) {
+          setStatus(inputStatusEl, "err", "JSON parse hatasi.", [String(e.message || e)]);
+          return;
+        }
+
+        if (!Array.isArray(rawQuestions) || rawQuestions.length === 0) {
+          setStatus(inputStatusEl, "err", "Gecerli soru bulunamadi.", ["Dizi bos veya format yanlis."]);
+          return;
+        }
+
+        const rawBulkTag = typeof bulkSourceTagEl.value === "string" ? bulkSourceTagEl.value : "";
+        if (rawBulkTag.length === 0) {
+          setStatus(inputStatusEl, "err", "Etiket zorunlu.", ['Toplu etiket girin veya bos gecmek icin klavyeden 1 kez "space" basin.']);
+          return;
+        }
+        let forcedSourceTag = null;
+        if (rawBulkTag === " ") {
+          forcedSourceTag = null;
+        } else {
+          const trimmedBulkTag = rawBulkTag.trim();
+          if (!trimmedBulkTag) {
+            setStatus(inputStatusEl, "err", "Etiket gecersiz.", ['Bos gecilecekse yalnizca 1 adet "space" kullanin.']);
+            return;
+          }
+          forcedSourceTag = trimmedBulkTag;
+        }
+
+        const registry = loadRegistrySet();
+        const result = validateAndNormalizeQuestions(rawQuestions, registry, forcedSourceTag);
+        lastWarnings = result.warnings;
+        lastErrors = result.errors;
+
+        if (result.errors.length > 0) {
+          setStatus(inputStatusEl, "err", "Dogrulama basarisiz. (" + result.errors.length + " hata)", result.errors.slice(0, 25));
+          setStatus(outputStatusEl, "err", "Export hazir degil.", ["Once hatalari duzeltin."]);
+          return;
+        }
+
+        if (typeof forcedSourceTag === "string") {
+          rememberSourceTag(forcedSourceTag);
+          renderSourceTagPresetOptions(forcedSourceTag);
+        } else {
+          renderSourceTagPresetOptions("__blank__");
+        }
+
+        const registrySyncResult = commitIdsToRegistry(result.normalized.map((q) => q.questionId));
+
+        lastNormalized = result.normalized;
+        outputEl.value = buildBloggerSnippet(result.normalized);
+        downloadBtn.disabled = false;
+        copyBtn.disabled = false;
+        commitIdsBtn.disabled = false;
+
+        const summary = [
+          "Toplam soru: " + result.normalized.length,
+          "Uygulanan etiket: " + (forcedSourceTag === null ? "(bos)" : forcedSourceTag),
+          "Kayda eklenen yeni ID: " + registrySyncResult.addedCount,
+          "Kayitli toplam ID: " + registrySyncResult.totalCount,
+          "Hata: 0",
+          "Uyari: " + result.warnings.length
+        ];
+        setStatus(inputStatusEl, result.warnings.length ? "warn" : "ok", "Dogrulama tamam.", summary.concat(result.warnings.slice(0, 20)));
+        setStatus(outputStatusEl, "ok", "Export hazir.", ["JSON indirilebilir veya kopyalanabilir.", "ID kaydi otomatik guncellendi."]);
+      });
+
+      downloadBtn.addEventListener("click", () => {
+        if (!lastNormalized) return;
+        const snippet = buildBloggerSnippet(lastNormalized);
+        const blob = new Blob([snippet], { type: "text/html;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "kpss_json_snippet_" + formatNowDateFile() + ".html";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+
+        const registrySyncResult = commitIdsToRegistry(lastNormalized.map((q) => q.questionId));
+        setStatus(outputStatusEl, "ok", "JSON indirildi.", [
+          "ID kaydi guncellendi.",
+          "Yeni eklenen ID: " + registrySyncResult.addedCount
+        ]);
+      });
+
+      copyBtn.addEventListener("click", async () => {
+        if (!lastNormalized) return;
+        try {
+          await navigator.clipboard.writeText(outputEl.value);
+          setStatus(outputStatusEl, "ok", "Cikti panoya kopyalandi.", []);
+        } catch {
+          setStatus(outputStatusEl, "warn", "Pano kopyasi basarisiz.", ["Tarayici izin vermedi."]);
+        }
+      });
+
+      commitIdsBtn.addEventListener("click", () => {
+        if (!lastNormalized) return;
+        const registrySyncResult = commitIdsToRegistry(lastNormalized.map((q) => q.questionId));
+        setStatus(outputStatusEl, "ok", "ID kaydi guncellendi.", [
+          "Bu ID'ler gelecekte cakismaz.",
+          "Yeni eklenen ID: " + registrySyncResult.addedCount
+        ]);
+      });
+
+      clearRegistryBtn.addEventListener("click", () => {
+        const ok = window.confirm("Kayitli tum ID'ler temizlensin mi?");
+        if (!ok) return;
+        localStorage.removeItem(STORAGE_KEY);
+        updateRegistryCount();
+        setStatus(inputStatusEl, "warn", "ID kaydi temizlendi.", ["Yeni exportlarda ID'ler bastan olusturulur."]);
+      });
+
+      loadSampleBtn.addEventListener("click", () => {
+        bulkSourceTagEl.value = "2026 - Ornek";
+        syncPresetWithInput();
+        inputEl.value = JSON.stringify([
+          {
+            questionId: "0fPNrPGEuJu1xXiLDZuN",
+            questionText: "Asagidakilerden hangisi dogru bir bilgi degildir?",
+            contextText: null,
+            contentItems: [],
+            options: [
+              "Secenek A",
+              "Secenek B",
+              "Secenek C",
+              "Secenek D",
+              "Secenek E"
+            ],
+            correctOptionIndex: 3,
+            answer: "D",
+            explanation: "",
+            sourceTag: "2026 - Ornek",
+            imageUrl: null
+          }
+        ], null, 2);
+        setStatus(inputStatusEl, "", "Ornek yuklendi.", ["Isterseniz duzenleyip dogrulayabilirsiniz."]);
+      });
+
+      exportRegistryBtn.addEventListener("click", () => {
+        const payload = buildRegistryBackupPayload();
+        const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "text/plain;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "kpss_registry_backup_" + formatNowDateFile() + ".txt";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        setStatus(inputStatusEl, "ok", "Kayitlar TXT olarak indirildi.", [
+          "ID sayisi: " + payload.ids.length,
+          "Etiket sayisi: " + payload.sourceTags.length
+        ]);
+      });
+
+      importRegistryBtn.addEventListener("click", () => {
+        registryFileInput.value = "";
+        registryFileInput.click();
+      });
+
+      registryFileInput.addEventListener("change", async () => {
+        const file = registryFileInput.files && registryFileInput.files[0];
+        if (!file) return;
+        try {
+          const text = await file.text();
+          const parsed = parseRegistryBackupText(text);
+
+          const currentIds = loadRegistrySet();
+          const beforeIdCount = currentIds.size;
+          parsed.ids.forEach((item) => {
+            const normalized = normalizeQuestionId(item);
+            if (normalized) currentIds.add(normalized);
+          });
+          saveRegistrySet(currentIds);
+          updateRegistryCount();
+
+          const beforeTagCount = loadSourceTagHistory().length;
+          mergeSourceTagHistory(parsed.sourceTags);
+          const afterTagCount = loadSourceTagHistory().length;
+          renderSourceTagPresetOptions(bulkSourceTagPresetEl.value || "");
+          syncPresetWithInput();
+
+          setStatus(inputStatusEl, "ok", "TXT yukleme tamamlandi.", [
+            "Eklenen ID: " + (currentIds.size - beforeIdCount),
+            "Toplam ID: " + currentIds.size,
+            "Eklenen etiket: " + (afterTagCount - beforeTagCount),
+            "Toplam etiket: " + afterTagCount
+          ]);
+        } catch (error) {
+          setStatus(inputStatusEl, "err", "TXT yukleme basarisiz.", [String(error && error.message ? error.message : error)]);
+        }
+      });
+
+      updateRegistryCount();
+      renderSourceTagPresetOptions("");
+      syncPresetWithInput();
+    })();
+  </script>
+</body>
+</html>

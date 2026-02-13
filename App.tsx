@@ -133,8 +133,16 @@ const STORAGE_KEYS = {
   quizSize: 'kpsspro_quiz_size',
   categories: 'kpsspro_categories',
   topicProgressStats: 'kpsspro_topic_progress_stats',
+  topicBloggerPages: 'kpsspro_topic_blogger_pages',
+  persistSeenQuestionsToFirestore: 'kpsspro_persist_seen_questions_firestore',
 } as const;
 const UNTAGGED_SOURCE_KEY = '__untagged__';
+const QUESTION_ID_MAX_LENGTH = 120;
+const DEFAULT_BLOGGER_JSON_URL = 'https://kpsst.blogspot.com/p/kpss-iott.html';
+const runtimeEnv = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env || {};
+const QUESTIONS_SOURCE = (runtimeEnv.VITE_QUESTIONS_SOURCE || 'blogger').toLowerCase();
+const BLOGGER_JSON_URL = (runtimeEnv.VITE_BLOGGER_JSON_URL || DEFAULT_BLOGGER_JSON_URL).trim();
+const DEFAULT_PERSIST_SEEN_QUESTIONS_TO_FIRESTORE = false;
 
 const EMPTY_TOPIC_PROGRESS: TopicProgressStats = {
   seenCount: 0,
@@ -170,6 +178,321 @@ const getQuestionTrackingIdFromSeenDocId = (docId: string): string => {
   } catch {
     return docId;
   }
+};
+
+const sanitizeQuestionId = (value: unknown): string | null => {
+  if (typeof value !== 'string') return null;
+  const compact = value
+    .trim()
+    .replace(/\s+/g, '-')
+    .replace(/[\/\\?#\[\]]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+  if (!compact) return null;
+  return compact.slice(0, QUESTION_ID_MAX_LENGTH);
+};
+
+const createQuestionId = (topicId: string): string => {
+  const safeTopicId = sanitizeQuestionId(topicId) || 'topic';
+  const randomPart = Math.random().toString(36).slice(2, 10);
+  return `${safeTopicId}_${Date.now()}_${randomPart}`;
+};
+
+const getQuestionStableId = (question: Question): string | null => {
+  const explicitId = sanitizeQuestionId(question.questionId);
+  if (explicitId) return explicitId;
+  const fallbackId = sanitizeQuestionId(question.id);
+  if (fallbackId) return fallbackId;
+  return null;
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> => {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+};
+
+const asNonEmptyString = (value: unknown): string | null => {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+};
+
+const normalizeHttpUrl = (value: unknown): string | null => {
+  const text = asNonEmptyString(value);
+  if (!text) return null;
+  try {
+    const parsed = new URL(text);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+};
+
+const normalizeQuestionOptions = (value: unknown): string[] => {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => asNonEmptyString(entry))
+    .filter((entry): entry is string => Boolean(entry));
+};
+
+const resolveCorrectOptionIndex = (raw: Record<string, unknown>, optionCount: number): number => {
+  const fromIndex = raw.correctOptionIndex;
+  if (typeof fromIndex === 'number' && Number.isFinite(fromIndex)) {
+    const indexValue = Math.trunc(fromIndex);
+    if (indexValue >= 0 && indexValue < optionCount) return indexValue;
+  }
+
+  const fromAnswer = raw.answer;
+  if (typeof fromAnswer === 'string') {
+    const answerIndex = 'ABCDE'.indexOf(fromAnswer.trim().toUpperCase());
+    if (answerIndex >= 0 && answerIndex < optionCount) return answerIndex;
+  }
+
+  return 0;
+};
+
+const createFallbackQuestionId = (topicId: string, questionText: string, index: number): string => {
+  const safeTopicId = sanitizeQuestionId(topicId) || 'topic';
+  const safeQuestionPart = sanitizeQuestionId(questionText.toLocaleLowerCase('tr')) || `soru-${index + 1}`;
+  return `${safeTopicId}_${index + 1}_${safeQuestionPart}`.slice(0, QUESTION_ID_MAX_LENGTH);
+};
+
+const normalizeExternalQuestion = (raw: unknown, topicId: string, index: number): Question | null => {
+  if (!isRecord(raw)) return null;
+  const questionText = asNonEmptyString(raw.questionText);
+  if (!questionText) return null;
+
+  const options = normalizeQuestionOptions(raw.options);
+  if (options.length < 2) return null;
+  const correctOptionIndex = resolveCorrectOptionIndex(raw, options.length);
+  const parsedQuestionId =
+    sanitizeQuestionId(raw.questionId) ||
+    sanitizeQuestionId(raw.id) ||
+    createFallbackQuestionId(topicId, questionText, index);
+
+  const contentItems = Array.isArray(raw.contentItems)
+    ? raw.contentItems
+      .map((item) => asNonEmptyString(item))
+      .filter((item): item is string => Boolean(item))
+    : undefined;
+
+  return {
+    id: parsedQuestionId,
+    questionId: parsedQuestionId,
+    questionText,
+    options,
+    correctOptionIndex,
+    contextText: asNonEmptyString(raw.contextText) || undefined,
+    contentItems: contentItems && contentItems.length > 0 ? contentItems : undefined,
+    sourceTag: asNonEmptyString(raw.sourceTag) || undefined,
+    imageUrl: asNonEmptyString(raw.imageUrl) || undefined,
+    explanation: asNonEmptyString(raw.explanation) || '',
+  };
+};
+
+const appendExternalTopicQuestions = (
+  groupedQuestions: Record<string, Question[]>,
+  topicId: string,
+  questions: unknown
+) => {
+  if (!Array.isArray(questions)) return;
+  const safeTopicId = asNonEmptyString(topicId) || 'default-topic';
+  const normalized = questions
+    .map((rawQuestion, index) => normalizeExternalQuestion(rawQuestion, safeTopicId, index))
+    .filter((question): question is Question => Boolean(question));
+  if (normalized.length === 0) return;
+  groupedQuestions[safeTopicId] = normalized;
+};
+
+const parseQuestionsFromExternalPayload = (payload: unknown): Record<string, Question[]> => {
+  const groupedQuestions: Record<string, Question[]> = {};
+
+  if (isRecord(payload) && Array.isArray(payload.topics)) {
+    payload.topics.forEach((topicEntry) => {
+      if (!isRecord(topicEntry)) return;
+      appendExternalTopicQuestions(
+        groupedQuestions,
+        asNonEmptyString(topicEntry.topicId) || 'default-topic',
+        topicEntry.questions
+      );
+    });
+    return groupedQuestions;
+  }
+
+  if (isRecord(payload) && isRecord(payload.topic) && Array.isArray(payload.questions)) {
+    const topicId = asNonEmptyString(payload.topic.topicId) || 'default-topic';
+    appendExternalTopicQuestions(groupedQuestions, topicId, payload.questions);
+    return groupedQuestions;
+  }
+
+  if (isRecord(payload) && Array.isArray(payload.questions)) {
+    const topicId =
+      asNonEmptyString(payload.topicId) ||
+      (isRecord(payload.topic) ? asNonEmptyString(payload.topic.topicId) : null) ||
+      'default-topic';
+    appendExternalTopicQuestions(groupedQuestions, topicId, payload.questions);
+    return groupedQuestions;
+  }
+
+  if (Array.isArray(payload)) {
+    appendExternalTopicQuestions(groupedQuestions, 'default-topic', payload);
+  }
+
+  return groupedQuestions;
+};
+
+const extractJsonTextFromHtml = (html: string): string | null => {
+  const parsed = new DOMParser().parseFromString(html, 'text/html');
+  const candidates = [
+    parsed.querySelector('script#kpss-json[type="application/json"]'),
+    parsed.querySelector('pre#kpss-json'),
+    parsed.querySelector('#kpss-json'),
+  ];
+
+  for (const candidate of candidates) {
+    const text = candidate?.textContent?.trim();
+    if (text) return text;
+  }
+
+  const looksLikeJson = (value: string): boolean => {
+    const trimmed = value.trim();
+    return trimmed.startsWith('{') || trimmed.startsWith('[');
+  };
+
+  const fallbackNodes = Array.from(parsed.querySelectorAll('script[type="application/json"], pre'));
+  for (const node of fallbackNodes) {
+    const text = node.textContent?.trim();
+    if (text && looksLikeJson(text)) return text;
+  }
+
+  return null;
+};
+
+const parseExternalJsonPayload = (rawText: string): unknown => {
+  const tryParse = (value: string): unknown | null => {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return null;
+    }
+  };
+
+  const plain = rawText.trim();
+  const direct = tryParse(plain);
+  if (direct !== null) return direct;
+
+  const normalizedQuotes = plain
+    .replace(/^\uFEFF/, '')
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/[\u2018\u2019]/g, "'");
+  const quoteNormalizedParsed = tryParse(normalizedQuotes);
+  if (quoteNormalizedParsed !== null) return quoteNormalizedParsed;
+
+  const firstBrace = normalizedQuotes.search(/[\[{]/);
+  const lastBrace = Math.max(normalizedQuotes.lastIndexOf('}'), normalizedQuotes.lastIndexOf(']'));
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    const sliced = normalizedQuotes.slice(firstBrace, lastBrace + 1);
+    const slicedParsed = tryParse(sliced);
+    if (slicedParsed !== null) return slicedParsed;
+  }
+
+  throw new Error('JSON parse edilemedi.');
+};
+
+const normalizePageUrlForMatch = (value: string): string | null => {
+  const safeUrl = normalizeHttpUrl(value);
+  if (!safeUrl) return null;
+  try {
+    const parsed = new URL(safeUrl);
+    const normalizedPath = parsed.pathname.replace(/\/+$/, '') || '/';
+    return `${parsed.origin}${normalizedPath}`.toLowerCase();
+  } catch {
+    return null;
+  }
+};
+
+const extractBloggerPageHtmlFromFeed = (payload: unknown, targetPageUrl: string): string | null => {
+  if (!isRecord(payload) || !isRecord(payload.feed)) return null;
+  const entries = Array.isArray(payload.feed.entry) ? payload.feed.entry : [];
+  if (entries.length === 0) return null;
+
+  const targetComparable = normalizePageUrlForMatch(targetPageUrl);
+  const resolveHtml = (entry: unknown): string | null => {
+    if (!isRecord(entry) || !isRecord(entry.content)) return null;
+    return asNonEmptyString(entry.content.$t);
+  };
+
+  for (const entry of entries) {
+    if (!isRecord(entry) || !Array.isArray(entry.link)) continue;
+    const alternate = entry.link.find((item) => {
+      if (!isRecord(item)) return false;
+      return asNonEmptyString(item.rel) === 'alternate';
+    });
+    if (!isRecord(alternate)) continue;
+    const href = normalizeHttpUrl(alternate.href);
+    if (!href) continue;
+    if (targetComparable && normalizePageUrlForMatch(href) === targetComparable) {
+      const html = resolveHtml(entry);
+      if (html) return html;
+    }
+  }
+
+  for (const entry of entries) {
+    const html = resolveHtml(entry);
+    if (html) return html;
+  }
+
+  return null;
+};
+
+const fetchBloggerPageHtmlViaJsonp = async (pageUrl: string): Promise<string | null> => {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return null;
+  const safeUrl = normalizeHttpUrl(pageUrl);
+  if (!safeUrl) return null;
+
+  let feedUrl = '';
+  try {
+    const parsed = new URL(safeUrl);
+    feedUrl = `${parsed.origin}/feeds/pages/default?alt=json-in-script&max-results=500`;
+  } catch {
+    return null;
+  }
+
+  const callbackName = `__kpssBloggerJsonp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const scriptSrc = `${feedUrl}&callback=${encodeURIComponent(callbackName)}`;
+
+  return new Promise((resolve) => {
+    const script = document.createElement('script');
+    const globalScope = window as unknown as Record<string, unknown>;
+    let timeoutId: number | null = null;
+    let settled = false;
+
+    const cleanup = () => {
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+      delete globalScope[callbackName];
+      script.remove();
+    };
+
+    const settle = (html: string | null) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(html);
+    };
+
+    globalScope[callbackName] = (payload: unknown) => {
+      const html = extractBloggerPageHtmlFromFeed(payload, safeUrl);
+      settle(html);
+    };
+
+    script.async = true;
+    script.src = scriptSrc;
+    script.onerror = () => settle(null);
+    timeoutId = window.setTimeout(() => settle(null), 12000);
+    document.head.appendChild(script);
+  });
 };
 
 const getStoredCategories = (): Category[] => {
@@ -224,6 +547,38 @@ const getStoredQuizSize = (): 0 | 1 | 2 => {
     // Ignore storage errors and use default
   }
   return 0;
+};
+
+const getStoredPersistSeenQuestionsToFirestore = (): boolean => {
+  if (typeof window === 'undefined') return DEFAULT_PERSIST_SEEN_QUESTIONS_TO_FIRESTORE;
+  try {
+    const stored = window.localStorage.getItem(STORAGE_KEYS.persistSeenQuestionsToFirestore);
+    if (stored === '1' || stored === 'true') return true;
+    if (stored === '0' || stored === 'false') return false;
+  } catch {
+    // Ignore storage errors and use default
+  }
+  return DEFAULT_PERSIST_SEEN_QUESTIONS_TO_FIRESTORE;
+};
+
+const getStoredTopicBloggerPages = (): Record<string, string> => {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEYS.topicBloggerPages);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!isRecord(parsed)) return {};
+    const next: Record<string, string> = {};
+    Object.entries(parsed).forEach(([topicId, rawUrl]) => {
+      const safeTopicId = asNonEmptyString(topicId);
+      const safeUrl = normalizeHttpUrl(rawUrl);
+      if (!safeTopicId || !safeUrl) return;
+      next[safeTopicId] = safeUrl;
+    });
+    return next;
+  } catch {
+    return {};
+  }
 };
 
 const getStoredLegacyTopicProgressStats = (): Record<string, LegacyTopicProgressStats> => {
@@ -384,9 +739,8 @@ const shuffleOptionsWithAnswer = (question: Question): Question => {
 const normalizeQuestionTrackingText = (value: string): string => value.trim().toLocaleLowerCase('tr');
 
 const getQuestionTrackingId = (question: Question, topicId: string, index: number): string => {
-  if (typeof question.id === 'string' && question.id.length > 0) {
-    return question.id;
-  }
+  const stableId = getQuestionStableId(question);
+  if (stableId) return stableId;
   return `${topicId}_${index}_${normalizeQuestionTrackingText(question.questionText)}`;
 };
 
@@ -415,6 +769,7 @@ type QuestionFormState = {
 };
 
 type PendingQuestionDraft = {
+  questionId: string;
   imageUrl: string | null;
   contextText: string | null;
   contentItems: string[] | null;
@@ -461,6 +816,7 @@ export default function App() {
   const [wrongQuestionStatsById, setWrongQuestionStatsById] = useState<Record<string, WrongQuestionStats>>({});
   const [favoriteQuestionsById, setFavoriteQuestionsById] = useState<Record<string, FavoriteQuestionRecord>>({});
   const [seenQuestionsById, setSeenQuestionsById] = useState<Record<string, SeenQuestionStats>>({});
+  const [persistSeenQuestionsToFirestore, setPersistSeenQuestionsToFirestore] = useState<boolean>(() => getStoredPersistSeenQuestionsToFirestore());
   const [activeCategory, setActiveCategory] = useState<Category | null>(null);
   const [activeTopic, setActiveTopic] = useState<{ cat: Category, sub: SubCategory } | null>(null);
   const [isDarkMode, setIsDarkMode] = useState<boolean>(() => getStoredTheme());
@@ -474,6 +830,7 @@ export default function App() {
 
   // --- SORULAR STATE (ARTIK BOŞ BAŞLIYOR) ---
   const [allQuestions, setAllQuestions] = useState<Record<string, Question[]>>({});
+  const [topicBloggerPages, setTopicBloggerPages] = useState<Record<string, string>>(() => getStoredTopicBloggerPages());
 
   // Quiz State
   const [quizState, setQuizState] = useState<QuizState>({
@@ -508,6 +865,7 @@ export default function App() {
   const [topicSearchTerm, setTopicSearchTerm] = useState('');
   const [topicCardFilter, setTopicCardFilter] = useState<'all' | 'in_progress' | 'completed' | 'not_started'>('all');
   const [homeStatsCategoryFilter, setHomeStatsCategoryFilter] = useState<string>('all');
+  const [isHomeStatsExpanded, setIsHomeStatsExpanded] = useState(true);
   const [isRulesHelpModalOpen, setIsRulesHelpModalOpen] = useState(false);
 
   // Admin Modals
@@ -652,6 +1010,33 @@ export default function App() {
   }, [categories]);
 
   useEffect(() => {
+    const validTopicIds = new Set(
+      categories.flatMap((cat) => cat.subCategories.map((sub) => sub.id))
+    );
+    setTopicBloggerPages((prev) => {
+      let changed = false;
+      const next: Record<string, string> = {};
+      Object.entries(prev).forEach(([topicId, rawUrl]) => {
+        const safeUrl = normalizeHttpUrl(rawUrl);
+        if (!validTopicIds.has(topicId) || !safeUrl) {
+          changed = true;
+          return;
+        }
+        next[topicId] = safeUrl;
+      });
+      return changed ? next : prev;
+    });
+  }, [categories]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(STORAGE_KEYS.topicBloggerPages, JSON.stringify(topicBloggerPages));
+    } catch {
+      // Ignore storage errors
+    }
+  }, [topicBloggerPages]);
+
+  useEffect(() => {
     if (homeStatsCategoryFilter === 'all') return;
     const hasSelectedCategory = categories.some((cat) => cat.id === homeStatsCategoryFilter);
     if (!hasSelectedCategory) {
@@ -667,42 +1052,149 @@ export default function App() {
     }
   }, [quizSize]);
 
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        STORAGE_KEYS.persistSeenQuestionsToFirestore,
+        persistSeenQuestionsToFirestore ? '1' : '0'
+      );
+    } catch {
+      // Ignore storage errors
+    }
+  }, [persistSeenQuestionsToFirestore]);
+
   // --- FIREBASE VERİ ÇEKME EFFECT'İ ---
   useEffect(() => {
-    // Firestore'daki "questions" koleksiyonunu dinle
-    const q = query(collection(db, "questions"));
-    
-    // Canlı dinleyici (Real-time listener)
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const groupedQuestions: Record<string, Question[]> = {};
-      
-      snapshot.forEach((doc) => {
-        const data = doc.data();
-        // Firestore verisini Question tipine çeviriyoruz
-        const question = { 
-          ...data, 
-          id: doc.id, // Firestore ID'sini kullan
-          options: data.options || [], // Güvenlik önlemi
-          contentItems: data.contentItems || undefined
-        } as Question & { topicId: string }; 
+    let isCancelled = false;
+    let unsubscribeFirestore: (() => void) | null = null;
 
-        // Soruları konu ID'lerine (topicId) göre grupla
-        const tId = question.topicId;
-        if (!tId) return; // topicId yoksa atla
+    const subscribeFirestoreQuestions = () => {
+      const questionsQuery = query(collection(db, "questions"));
+      unsubscribeFirestore = onSnapshot(questionsQuery, (snapshot) => {
+        const groupedQuestions: Record<string, Question[]> = {};
 
-        if (!groupedQuestions[tId]) {
-          groupedQuestions[tId] = [];
+        snapshot.forEach((questionDoc) => {
+          const data = questionDoc.data();
+          const stableQuestionId = sanitizeQuestionId(data.questionId) || questionDoc.id;
+          const question = {
+            ...data,
+            id: questionDoc.id,
+            questionId: stableQuestionId,
+            options: data.options || [],
+            contentItems: data.contentItems || undefined
+          } as Question & { topicId: string };
+
+          const topicId = question.topicId;
+          if (!topicId) return;
+          if (!groupedQuestions[topicId]) groupedQuestions[topicId] = [];
+          groupedQuestions[topicId].push(question);
+        });
+
+        if (!isCancelled) {
+          setAllQuestions(groupedQuestions);
         }
-        groupedQuestions[tId].push(question);
+      }, (error) => {
+        console.error("Firestore sorulari dinlenemedi:", error);
       });
-      
-      // Tarihe göre (oluşturulma sırası) veya başka bir şeye göre sıralama yapılabilir
-      // Şimdilik olduğu gibi kaydediyoruz
-      setAllQuestions(groupedQuestions);
-    });
+    };
 
-    return () => unsubscribe();
-  }, []);
+    const fetchGroupedQuestionsFromBloggerUrl = async (url: string): Promise<Record<string, Question[]> | null> => {
+      const safeUrl = normalizeHttpUrl(url);
+      if (!safeUrl) return null;
+      try {
+        let html: string | null = null;
+        const shouldPreferJsonp =
+          typeof window !== 'undefined' &&
+          (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+
+        if (shouldPreferJsonp) {
+          html = await fetchBloggerPageHtmlViaJsonp(safeUrl);
+        }
+
+        if (!html) {
+          try {
+            const response = await fetch(safeUrl, { cache: 'no-store' });
+            if (!response.ok) {
+              throw new Error(`Blogger istegi basarisiz: ${response.status}`);
+            }
+            html = await response.text();
+          } catch (fetchError) {
+            const htmlFromJsonp = await fetchBloggerPageHtmlViaJsonp(safeUrl);
+            if (htmlFromJsonp) {
+              html = htmlFromJsonp;
+            } else {
+              throw fetchError;
+            }
+          }
+        }
+
+        if (!html) {
+          throw new Error('Blogger HTML alinamadi.');
+        }
+
+        const jsonText = extractJsonTextFromHtml(html);
+        if (!jsonText) {
+          throw new Error('kpss-json etiketinde JSON bulunamadi.');
+        }
+
+        const parsedPayload = parseExternalJsonPayload(jsonText);
+        const groupedQuestions = parseQuestionsFromExternalPayload(parsedPayload);
+        if (Object.keys(groupedQuestions).length === 0) {
+          throw new Error('Blogger JSON icinde gecerli soru bulunamadi.');
+        }
+        return groupedQuestions;
+      } catch (error) {
+        console.error(`Blogger sorulari yuklenemedi (${safeUrl}):`, error);
+        return null;
+      }
+    };
+
+    const bootstrapQuestions = async () => {
+      const shouldUseFirestore = QUESTIONS_SOURCE === 'firestore';
+      if (shouldUseFirestore) {
+        subscribeFirestoreQuestions();
+        return;
+      }
+
+      const baseQuestions = (await fetchGroupedQuestionsFromBloggerUrl(BLOGGER_JSON_URL)) || {};
+      const mergedQuestions: Record<string, Question[]> = { ...baseQuestions };
+
+      const topicOverrides = Object.entries(topicBloggerPages) as Array<[string, string]>;
+      await Promise.all(topicOverrides.map(async ([topicId, overrideUrl]) => {
+        const groupedFromTopicPage = await fetchGroupedQuestionsFromBloggerUrl(overrideUrl);
+        if (!groupedFromTopicPage) return;
+
+        const directTopicQuestions = groupedFromTopicPage[topicId];
+        if (Array.isArray(directTopicQuestions) && directTopicQuestions.length > 0) {
+          mergedQuestions[topicId] = directTopicQuestions;
+          return;
+        }
+
+        const flattened = Object.values(groupedFromTopicPage).flat();
+        if (flattened.length > 0) {
+          mergedQuestions[topicId] = flattened;
+        }
+      }));
+
+      if (Object.keys(mergedQuestions).length > 0) {
+        if (!isCancelled) {
+          setAllQuestions(mergedQuestions);
+        }
+        return;
+      }
+
+      if (!Object.keys(mergedQuestions).length) {
+        subscribeFirestoreQuestions();
+      }
+    };
+
+    void bootstrapQuestions();
+
+    return () => {
+      isCancelled = true;
+      if (unsubscribeFirestore) unsubscribeFirestore();
+    };
+  }, [topicBloggerPages]);
 
   useEffect(() => {
     if (user?.role !== 'admin') {
@@ -870,7 +1362,7 @@ export default function App() {
     };
 
     void migrate();
-  }, [user?.uid]);
+  }, [user?.uid, persistSeenQuestionsToFirestore]);
 
   useEffect(() => {
     if (!user?.uid) {
@@ -884,7 +1376,6 @@ export default function App() {
     const topicStatsQuery = query(collection(db, 'users', user.uid, 'topicStats'));
     const wrongQuestionsQuery = query(collection(db, 'users', user.uid, 'wrongQuestions'));
     const favoriteQuestionsQuery = query(collection(db, 'users', user.uid, 'favoriteQuestions'));
-    const seenQuestionsQuery = query(collection(db, 'users', user.uid, 'seenQuestions'));
 
     const unsubscribeTopicStats = onSnapshot(
       topicStatsQuery,
@@ -989,41 +1480,47 @@ export default function App() {
       }
     );
 
-    const unsubscribeSeenQuestions = onSnapshot(
-      seenQuestionsQuery,
-      (snapshot) => {
-        const nextSeenQuestions: Record<string, SeenQuestionStats> = {};
-        snapshot.forEach((seenDoc) => {
-          const data = seenDoc.data() as Record<string, unknown>;
-          const questionTrackingId =
-            (typeof data.questionTrackingId === 'string' && data.questionTrackingId.length > 0)
-              ? data.questionTrackingId
-              : getQuestionTrackingIdFromSeenDocId(seenDoc.id);
-          if (!questionTrackingId) return;
-          const topicId = typeof data.topicId === 'string' ? data.topicId : '';
-          const questionText = typeof data.questionText === 'string' ? data.questionText : '';
-          nextSeenQuestions[questionTrackingId] = {
-            questionTrackingId,
-            topicId,
-            questionId: typeof data.questionId === 'string' ? data.questionId : null,
-            questionText,
-            sourceTag: typeof data.sourceTag === 'string' ? data.sourceTag : null,
-            firstSeenAt: getTimestampMillis(data.firstSeenAt),
-            lastSeenAt: getTimestampMillis(data.lastSeenAt),
-            seenCount: Number.isFinite(data.seenCount) ? Math.max(0, Math.floor(Number(data.seenCount))) : 0,
-            answeredCount: Number.isFinite(data.answeredCount) ? Math.max(0, Math.floor(Number(data.answeredCount))) : 0,
-            correctCount: Number.isFinite(data.correctCount) ? Math.max(0, Math.floor(Number(data.correctCount))) : 0,
-            wrongCount: Number.isFinite(data.wrongCount) ? Math.max(0, Math.floor(Number(data.wrongCount))) : 0,
-            blankCount: Number.isFinite(data.blankCount) ? Math.max(0, Math.floor(Number(data.blankCount))) : 0,
-          };
-        });
-        setSeenQuestionsById(nextSeenQuestions);
-      },
-      (error) => {
-        console.error('Cozulen soru istatistikleri okunamadi:', error);
-        setSeenQuestionsById({});
-      }
-    );
+    let unsubscribeSeenQuestions = () => {};
+    if (persistSeenQuestionsToFirestore) {
+      const seenQuestionsQuery = query(collection(db, 'users', user.uid, 'seenQuestions'));
+      unsubscribeSeenQuestions = onSnapshot(
+        seenQuestionsQuery,
+        (snapshot) => {
+          const nextSeenQuestions: Record<string, SeenQuestionStats> = {};
+          snapshot.forEach((seenDoc) => {
+            const data = seenDoc.data() as Record<string, unknown>;
+            const questionTrackingId =
+              (typeof data.questionTrackingId === 'string' && data.questionTrackingId.length > 0)
+                ? data.questionTrackingId
+                : getQuestionTrackingIdFromSeenDocId(seenDoc.id);
+            if (!questionTrackingId) return;
+            const topicId = typeof data.topicId === 'string' ? data.topicId : '';
+            const questionText = typeof data.questionText === 'string' ? data.questionText : '';
+            nextSeenQuestions[questionTrackingId] = {
+              questionTrackingId,
+              topicId,
+              questionId: typeof data.questionId === 'string' ? data.questionId : null,
+              questionText,
+              sourceTag: typeof data.sourceTag === 'string' ? data.sourceTag : null,
+              firstSeenAt: getTimestampMillis(data.firstSeenAt),
+              lastSeenAt: getTimestampMillis(data.lastSeenAt),
+              seenCount: Number.isFinite(data.seenCount) ? Math.max(0, Math.floor(Number(data.seenCount))) : 0,
+              answeredCount: Number.isFinite(data.answeredCount) ? Math.max(0, Math.floor(Number(data.answeredCount))) : 0,
+              correctCount: Number.isFinite(data.correctCount) ? Math.max(0, Math.floor(Number(data.correctCount))) : 0,
+              wrongCount: Number.isFinite(data.wrongCount) ? Math.max(0, Math.floor(Number(data.wrongCount))) : 0,
+              blankCount: Number.isFinite(data.blankCount) ? Math.max(0, Math.floor(Number(data.blankCount))) : 0,
+            };
+          });
+          setSeenQuestionsById(nextSeenQuestions);
+        },
+        (error) => {
+          console.error('Cozulen soru istatistikleri okunamadi:', error);
+          setSeenQuestionsById({});
+        }
+      );
+    } else {
+      setSeenQuestionsById({});
+    }
 
     return () => {
       unsubscribeTopicStats();
@@ -1395,7 +1892,7 @@ export default function App() {
       const favoriteRecord: FavoriteQuestionRecord = {
         questionTrackingId,
         topicId,
-        questionId: typeof question.id === 'string' ? question.id : null,
+        questionId: getQuestionStableId(question),
         questionText: question.questionText,
         sourceTag: typeof question.sourceTag === 'string' ? question.sourceTag : null,
         createdAt: now,
@@ -1422,7 +1919,7 @@ export default function App() {
       const currentQuestions = quizState.questions;
       const now = Date.now();
       const nextWrongQuestionStatsById = { ...wrongQuestionStatsById };
-      const nextSeenQuestionsById = { ...seenQuestionsById };
+      const nextSeenQuestionsById = persistSeenQuestionsToFirestore ? { ...seenQuestionsById } : null;
       const changedQuestionIds = new Set<string>();
       const changedSeenQuestionIds = new Set<string>();
       const prevTopicStats = topicProgressStats[topicId] || EMPTY_TOPIC_PROGRESS;
@@ -1441,24 +1938,26 @@ export default function App() {
       currentQuestions.forEach((question, index) => {
         const questionTrackingId = getQuestionTrackingId(question, topicId, index);
         const prevWrongStats = nextWrongQuestionStatsById[questionTrackingId];
-        const prevSeenStats = nextSeenQuestionsById[questionTrackingId];
         const answer = currentAnswers[index];
 
-        nextSeenQuestionsById[questionTrackingId] = {
-          questionTrackingId,
-          topicId,
-          questionId: typeof question.id === 'string' ? question.id : null,
-          questionText: question.questionText,
-          sourceTag: typeof question.sourceTag === 'string' ? question.sourceTag : null,
-          firstSeenAt: prevSeenStats?.firstSeenAt || now,
-          lastSeenAt: now,
-          seenCount: (prevSeenStats?.seenCount || 0) + 1,
-          answeredCount: (prevSeenStats?.answeredCount || 0) + (answer === null || answer === undefined ? 0 : 1),
-          correctCount: (prevSeenStats?.correctCount || 0) + (answer === question.correctOptionIndex ? 1 : 0),
-          wrongCount: (prevSeenStats?.wrongCount || 0) + (answer !== null && answer !== undefined && answer !== question.correctOptionIndex ? 1 : 0),
-          blankCount: (prevSeenStats?.blankCount || 0) + (answer === null || answer === undefined ? 1 : 0),
-        };
-        changedSeenQuestionIds.add(questionTrackingId);
+        if (persistSeenQuestionsToFirestore && nextSeenQuestionsById) {
+          const prevSeenStats = nextSeenQuestionsById[questionTrackingId];
+          nextSeenQuestionsById[questionTrackingId] = {
+            questionTrackingId,
+            topicId,
+            questionId: getQuestionStableId(question),
+            questionText: question.questionText,
+            sourceTag: typeof question.sourceTag === 'string' ? question.sourceTag : null,
+            firstSeenAt: prevSeenStats?.firstSeenAt || now,
+            lastSeenAt: now,
+            seenCount: (prevSeenStats?.seenCount || 0) + 1,
+            answeredCount: (prevSeenStats?.answeredCount || 0) + (answer === null || answer === undefined ? 0 : 1),
+            correctCount: (prevSeenStats?.correctCount || 0) + (answer === question.correctOptionIndex ? 1 : 0),
+            wrongCount: (prevSeenStats?.wrongCount || 0) + (answer !== null && answer !== undefined && answer !== question.correctOptionIndex ? 1 : 0),
+            blankCount: (prevSeenStats?.blankCount || 0) + (answer === null || answer === undefined ? 1 : 0),
+          };
+          changedSeenQuestionIds.add(questionTrackingId);
+        }
 
         if (answer === null || answer === undefined) {
           nextTopicStats.totalBlankAnswers += 1;
@@ -1519,7 +2018,9 @@ export default function App() {
         [topicId]: nextTopicStats,
       }));
       setWrongQuestionStatsById(nextWrongQuestionStatsById);
-      setSeenQuestionsById(nextSeenQuestionsById);
+      if (persistSeenQuestionsToFirestore && nextSeenQuestionsById) {
+        setSeenQuestionsById(nextSeenQuestionsById);
+      }
 
       const persistTopicAndWrongStats = async () => {
         try {
@@ -1536,15 +2037,17 @@ export default function App() {
             );
           });
 
-          changedSeenQuestionIds.forEach((questionTrackingId) => {
-            const seenStats = nextSeenQuestionsById[questionTrackingId];
-            if (!seenStats) return;
-            batch.set(
-              doc(db, 'users', user.uid, 'seenQuestions', getSeenQuestionDocId(questionTrackingId)),
-              seenStats,
-              { merge: true }
-            );
-          });
+          if (persistSeenQuestionsToFirestore && nextSeenQuestionsById) {
+            changedSeenQuestionIds.forEach((questionTrackingId) => {
+              const seenStats = nextSeenQuestionsById[questionTrackingId];
+              if (!seenStats) return;
+              batch.set(
+                doc(db, 'users', user.uid, 'seenQuestions', getSeenQuestionDocId(questionTrackingId)),
+                seenStats,
+                { merge: true }
+              );
+            });
+          }
 
           await batch.commit();
         } catch (error) {
@@ -1568,6 +2071,103 @@ export default function App() {
     return `${m}:${s < 10 ? '0' : ''}${s}`;
   };
 
+  const downloadJsonFile = (filename: string, payload: unknown) => {
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' });
+    const url = window.URL.createObjectURL(blob);
+    const link = window.document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    window.document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+  };
+
+  const buildExportQuestion = (question: Question, topicId: string) => {
+    const questionId = getQuestionStableId(question) || createQuestionId(topicId);
+    return {
+      questionId,
+      questionText: question.questionText,
+      contextText: question.contextText || null,
+      contentItems: Array.isArray(question.contentItems) ? question.contentItems : [],
+      options: Array.isArray(question.options) ? question.options : [],
+      correctOptionIndex: question.correctOptionIndex,
+      answer: 'ABCDE'[question.correctOptionIndex] || null,
+      explanation: question.explanation || '',
+      sourceTag: question.sourceTag || null,
+      imageUrl: question.imageUrl || null,
+    };
+  };
+
+  const handleExportQuestionsByTopic = () => {
+    if (!adminSelectedTopicId) return;
+    const selectedCategory = categories.find((cat) => cat.id === adminSelectedCatId);
+    const selectedTopic = selectedCategory?.subCategories.find((sub) => sub.id === adminSelectedTopicId);
+    const topicQuestions = allQuestions[adminSelectedTopicId] || [];
+    if (!selectedTopic || topicQuestions.length === 0) {
+      alert('Export edilecek soru bulunamadi.');
+      return;
+    }
+
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      formatVersion: 1,
+      topic: {
+        categoryId: selectedCategory?.id || null,
+        categoryName: selectedCategory?.name || null,
+        topicId: selectedTopic.id,
+        topicName: selectedTopic.name,
+      },
+      questionCount: topicQuestions.length,
+      questions: topicQuestions.map((question) => buildExportQuestion(question, selectedTopic.id)),
+    };
+
+    const dateText = new Date().toISOString().slice(0, 10);
+    downloadJsonFile(`sorular_${selectedTopic.id}_${dateText}.json`, payload);
+  };
+
+  const handleExportAllQuestionsByTopic = () => {
+    const topicExports = categories.flatMap((cat) => (
+      cat.subCategories
+        .map((sub) => {
+          const topicQuestions = allQuestions[sub.id] || [];
+          if (topicQuestions.length === 0) return null;
+          return {
+            categoryId: cat.id,
+            categoryName: cat.name,
+            topicId: sub.id,
+            topicName: sub.name,
+            questionCount: topicQuestions.length,
+            questions: topicQuestions.map((question) => buildExportQuestion(question, sub.id)),
+          };
+        })
+        .filter((value): value is {
+          categoryId: string;
+          categoryName: string;
+          topicId: string;
+          topicName: string;
+          questionCount: number;
+          questions: ReturnType<typeof buildExportQuestion>[];
+        } => Boolean(value))
+    ));
+
+    if (topicExports.length === 0) {
+      alert('Export edilecek soru bulunamadi.');
+      return;
+    }
+
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      formatVersion: 1,
+      totalTopicCount: topicExports.length,
+      totalQuestionCount: topicExports.reduce((sum, topicExport) => sum + topicExport.questionCount, 0),
+      topics: topicExports,
+    };
+
+    const dateText = new Date().toISOString().slice(0, 10);
+    downloadJsonFile(`sorular_konu_konu_${dateText}.json`, payload);
+  };
+
   // --- Admin Handlers (GÜNCELLENDİ) ---
 
   const handleDeleteQuestion = async (questionId: string) => {
@@ -1586,8 +2186,9 @@ export default function App() {
     }
   };
   const handleReportQuestion = (question: Question) => {
-    if (!activeTopic || !question.id || isSubmittingReport) {
-      if (!question.id) {
+    const questionStableId = getQuestionStableId(question);
+    if (!activeTopic || !questionStableId || isSubmittingReport) {
+      if (!questionStableId) {
         alert("Bu soru raporlanamadi. Soru kimligi bulunamadi.");
       }
       return;
@@ -1603,17 +2204,29 @@ export default function App() {
   };
 
   const handleSubmitQuestionReport = async () => {
-    if (!activeTopic || !reportingQuestion?.id || isSubmittingReport) return;
+    if (!activeTopic || !reportingQuestion || isSubmittingReport) return;
+    if (!auth.currentUser) {
+      alert("Bildirim gonderebilmek icin once giris yapmalisiniz.");
+      return;
+    }
+    const questionStableId = getQuestionStableId(reportingQuestion);
+    if (!questionStableId) {
+      alert("Bildirim gonderilemedi. Soru kimligi bulunamadi.");
+      return;
+    }
     setIsSubmittingReport(true);
     try {
       await addDoc(collection(db, "questionReports"), {
-        questionId: reportingQuestion.id,
+        questionId: questionStableId,
         topicId: activeTopic.sub.id,
+        topicName: activeTopic.sub.name,
         categoryId: activeTopic.cat.id,
+        categoryName: activeTopic.cat.name,
         reporterUsername: user?.username || "Kullanici",
         reporterRole: user?.role || "user",
         note: reportNote.trim() || null,
         questionTextSnapshot: reportingQuestion.questionText,
+        sourceTag: reportingQuestion.sourceTag || null,
         createdAt: new Date(),
       });
       alert("Bildiriminiz alindi.");
@@ -1769,6 +2382,12 @@ export default function App() {
   };
 
   const handleStartEditQuestion = (q: Question, idx: number) => {
+    const questionTopicId =
+      ((q as Question & { topicId?: string }).topicId || adminSelectedTopicId || '').trim();
+    if (questionTopicId && topicBloggerPages[questionTopicId]) {
+      alert('Bu konu Blogger linkinden besleniyor. Duzenleme icin JSON kaynagini guncelleyin.');
+      return;
+    }
     setEditingQuestion({ index: idx, question: q });
     setEditForm({
       imageUrl: q.imageUrl || '',
@@ -1788,6 +2407,7 @@ export default function App() {
     const contentItems = parseItems(editForm.itemsText);
 
     const updatedData = {
+      questionId: getQuestionStableId(editingQuestion.question) || editingQuestion.question.id || createQuestionId(adminSelectedTopicId || 'topic'),
       imageUrl: editForm.imageUrl.trim() || null,
       contextText: editForm.contextText.trim() || null,
       contentItems: contentItems.length > 0 ? contentItems : null,
@@ -1880,6 +2500,38 @@ export default function App() {
     });
   };
 
+  const handleSetTopicBloggerPage = () => {
+    if (!adminSelectedTopicId) return;
+    const currentUrl = topicBloggerPages[adminSelectedTopicId] || '';
+    const rawUrl = window.prompt(
+      'Bu konu icin Blogger sayfa linki girin.\nBos birakirsaniz link temizlenir.',
+      currentUrl
+    );
+    if (rawUrl === null) return;
+
+    const trimmed = rawUrl.trim();
+    if (!trimmed) {
+      setTopicBloggerPages((prev) => {
+        if (!prev[adminSelectedTopicId]) return prev;
+        const next = { ...prev };
+        delete next[adminSelectedTopicId];
+        return next;
+      });
+      return;
+    }
+
+    const safeUrl = normalizeHttpUrl(trimmed);
+    if (!safeUrl) {
+      alert('Lutfen gecerli bir http/https linki girin.');
+      return;
+    }
+
+    setTopicBloggerPages((prev) => ({
+      ...prev,
+      [adminSelectedTopicId]: safeUrl,
+    }));
+  };
+
   const handleDeleteTopic = async () => {
     if (!adminSelectedCatId || !adminSelectedTopicId) return;
     const selectedCategory = categories.find((cat) => cat.id === adminSelectedCatId);
@@ -1931,6 +2583,12 @@ export default function App() {
       setAdminQuestionSearch('');
       setAdminQuestionPage(1);
       setIsAdminActionsOpen(false);
+      setTopicBloggerPages((prev) => {
+        if (!prev[adminSelectedTopicId]) return prev;
+        const next = { ...prev };
+        delete next[adminSelectedTopicId];
+        return next;
+      });
       handleCloseAdminPreview();
     } catch (error) {
       console.error('Konu silme hatasi:', error);
@@ -1974,6 +2632,7 @@ export default function App() {
     const contentItems = parseItems(questionForm.itemsText);
 
     return {
+      questionId: createQuestionId(topicId),
       imageUrl: questionForm.imageUrl.trim() || null,
       contextText: questionForm.contextText.trim() || null,
       contentItems: contentItems.length > 0 ? contentItems : null,
@@ -2002,8 +2661,11 @@ export default function App() {
     try {
       const batch = writeBatch(db);
       pendingQuestions.forEach((draft) => {
-        const docRef = doc(collection(db, "questions"));
-        batch.set(docRef, draft);
+        const docRef = doc(db, "questions", draft.questionId);
+        batch.set(docRef, {
+          ...draft,
+          questionId: draft.questionId,
+        });
       });
 
       await batch.commit();
@@ -2053,10 +2715,22 @@ export default function App() {
     
     try {
       const batch = writeBatch(db);
-      
-      bulkParsed.forEach(q => {
-        const docRef = doc(collection(db, "questions")); // Yeni ID al
+      const usedQuestionIds = new Set<string>();
+
+      bulkParsed.forEach((q, index) => {
+        const parsedQuestionId = sanitizeQuestionId(q.questionId) || sanitizeQuestionId(q.id);
+        const baseQuestionId = parsedQuestionId || createQuestionId(adminSelectedTopicId);
+        let uniqueQuestionId = baseQuestionId;
+        let duplicateCounter = 2;
+        while (usedQuestionIds.has(uniqueQuestionId)) {
+          uniqueQuestionId = `${baseQuestionId}_${duplicateCounter}`;
+          duplicateCounter += 1;
+        }
+        usedQuestionIds.add(uniqueQuestionId);
+
+        const docRef = doc(db, "questions", uniqueQuestionId);
         batch.set(docRef, {
+          questionId: uniqueQuestionId,
           imageUrl: q.imageUrl ?? null,
           contextText: q.contextText ?? null,
           contentItems: q.contentItems ?? null,
@@ -2066,7 +2740,7 @@ export default function App() {
           correctOptionIndex: q.correctOptionIndex,
           explanation: q.explanation ?? '',
           topicId: adminSelectedTopicId,
-          createdAt: new Date()
+          createdAt: new Date(Date.now() + index)
         });
       });
 
@@ -2122,6 +2796,8 @@ export default function App() {
   const adminVisibleReports = questionReports.slice(0, 50);
   const adminSelectedCategory = categories.find((cat) => cat.id === adminSelectedCatId);
   const adminSelectedTopic = adminSelectedCategory?.subCategories.find((sub) => sub.id === adminSelectedTopicId);
+  const adminSelectedTopicBloggerPage = adminSelectedTopicId ? (topicBloggerPages[adminSelectedTopicId] || '') : '';
+  const isAdminTopicExternallySourced = Boolean(adminSelectedTopicBloggerPage);
 
   const adminTopicQuestions = adminSelectedTopicId ? (allQuestions[adminSelectedTopicId] || []) : [];
   const normalizedAdminSearch = adminQuestionSearch.trim().toLocaleLowerCase('tr');
@@ -2194,7 +2870,9 @@ export default function App() {
     },
     { seenCount: 0, correctCount: 0, wrongCount: 0, blankCount: 0, completedQuizCount: 0 }
   );
-  const allSeenQuestionStats = Object.values(seenQuestionsById) as SeenQuestionStats[];
+  const allSeenQuestionStats = persistSeenQuestionsToFirestore
+    ? (Object.values(seenQuestionsById) as SeenQuestionStats[])
+    : [];
   const selectedHomeStatsCategory = homeStatsCategoryFilter === 'all'
     ? null
     : (categories.find((cat) => cat.id === homeStatsCategoryFilter) || null);
@@ -2231,10 +2909,12 @@ export default function App() {
     const totalBlankAnswers = filteredTopicProgressStats.reduce((sum, [, stats]) => sum + stats.totalBlankAnswers, 0);
 
     const filteredSeenQuestionStats = allSeenQuestionStats.filter((stats) => includeTopic(stats.topicId));
-    const uniqueSolvedCount = filteredSeenQuestionStats.reduce((sum, stats) => (
-      stats.answeredCount > 0 ? sum + 1 : sum
-    ), 0);
-    const totalAnsweredCount = filteredSeenQuestionStats.reduce((sum, stats) => sum + stats.answeredCount, 0);
+    const uniqueSolvedCount = persistSeenQuestionsToFirestore
+      ? filteredSeenQuestionStats.reduce((sum, stats) => (stats.answeredCount > 0 ? sum + 1 : sum), 0)
+      : progressStats.seenCount;
+    const totalAnsweredCount = persistSeenQuestionsToFirestore
+      ? filteredSeenQuestionStats.reduce((sum, stats) => sum + stats.answeredCount, 0)
+      : (progressStats.correctCount + totalWrongAnswers);
 
     const filteredFavoriteCount = (Object.values(favoriteQuestionsById) as FavoriteQuestionRecord[]).reduce((sum, favoriteRecord) => (
       includeTopic(favoriteRecord.topicId) ? sum + 1 : sum
@@ -2553,6 +3233,11 @@ export default function App() {
       return sum + Math.min(option.totalCount, Math.max(0, selectedCount));
     }, 0);
     const isTagDistributionActive = selectedTagTotalQuestionCount > 0;
+    const selectedTagAvailableQuestionCount = sourceTagOptions.reduce((sum, option) => {
+      const selectedCount = quizTagQuestionCounts[option.sourceKey] || 0;
+      return selectedCount > 0 ? sum + option.totalCount : sum;
+    }, 0);
+    const questionCountMax = isTagDistributionActive ? selectedTagAvailableQuestionCount : maxQuestions;
     const effectiveQuestionCount = isTagDistributionActive ? selectedTagTotalQuestionCount : quizConfig.questionCount;
     const clampTagQuestionCountsToLimit = (
       counts: Record<string, number>,
@@ -2589,23 +3274,43 @@ export default function App() {
     const updateTagQuestionCount = (sourceKey: string, nextCount: number) => {
       const targetOption = sourceTagOptions.find((option) => option.sourceKey === sourceKey);
       if (!targetOption) return;
-      setQuizTagQuestionCounts((prev) => {
-        const normalizedPrev = clampTagQuestionCountsToLimit(prev, quizConfig.questionCount);
-        const otherSelectedTotal = Object.entries(normalizedPrev).reduce((sum, [key, value]) => {
-          if (key === sourceKey) return sum;
-          return sum + value;
-        }, 0);
-        const remainingForTarget = Math.max(0, quizConfig.questionCount - otherSelectedTotal);
-        const clampedCount = Math.min(
-          targetOption.totalCount,
-          remainingForTarget,
-          Math.max(0, Math.floor(nextCount))
-        );
-        if (clampedCount <= 0) {
-          const { [sourceKey]: _removed, ...rest } = normalizedPrev;
-          return rest;
-        }
-        return { ...normalizedPrev, [sourceKey]: clampedCount };
+      const normalizedCurrent = clampTagQuestionCountsToLimit(quizTagQuestionCounts, quizConfig.questionCount);
+      const otherSelectedTotal = Object.entries(normalizedCurrent).reduce((sum, [key, value]) => {
+        if (key === sourceKey) return sum;
+        return sum + value;
+      }, 0);
+      const remainingForTarget = Math.max(0, quizConfig.questionCount - otherSelectedTotal);
+      const clampedCount = Math.min(
+        targetOption.totalCount,
+        remainingForTarget,
+        Math.max(0, Math.floor(nextCount))
+      );
+
+      let nextTagCounts: Record<string, number>;
+      if (clampedCount <= 0) {
+        const { [sourceKey]: _removed, ...rest } = normalizedCurrent;
+        nextTagCounts = rest;
+      } else {
+        nextTagCounts = { ...normalizedCurrent, [sourceKey]: clampedCount };
+      }
+
+      setQuizTagQuestionCounts(nextTagCounts);
+
+      const nextHasTagDistribution = Object.values(nextTagCounts).some((value) => value > 0);
+      const nextSelectedTagAvailableMax = sourceTagOptions.reduce((sum, option) => {
+        const selectedCount = nextTagCounts[option.sourceKey] || 0;
+        return selectedCount > 0 ? sum + option.totalCount : sum;
+      }, 0);
+      const nextQuestionCountMax = nextHasTagDistribution ? nextSelectedTagAvailableMax : maxQuestions;
+
+      setQuizConfig((prev) => {
+        const clampedQuestionCount = Math.min(Math.max(0, prev.questionCount), Math.max(0, nextQuestionCountMax));
+        if (clampedQuestionCount === prev.questionCount) return prev;
+        return {
+          ...prev,
+          questionCount: clampedQuestionCount,
+          durationSeconds: getAutoDurationForQuestionCount(clampedQuestionCount),
+        };
       });
     };
 
@@ -2709,14 +3414,14 @@ export default function App() {
                     Soru Sayisi
                   </label>
                   <span className={`${catColor.text} ${catColor.textDark} font-bold ${catColor.bgLight} ${catColor.bgDark} px-2.5 py-0.5 rounded-full text-xs`}>
-                    Max: {maxQuestions}
+                    Max: {questionCountMax}
                   </span>
                 </div>
                 <div className="flex items-center gap-4">
                   <input
                     type="range"
                     min="0"
-                    max={maxQuestions}
+                    max={questionCountMax}
                     value={quizConfig.questionCount}
                     onChange={(e) => {
                       const nextQuestionCount = parseInt(e.target.value, 10);
@@ -2727,14 +3432,14 @@ export default function App() {
                       });
                       setQuizTagQuestionCounts((prev) => clampTagQuestionCountsToLimit(prev, nextQuestionCount));
                     }}
-                    disabled={maxQuestions === 0}
+                    disabled={questionCountMax === 0}
                     className="w-full h-2 bg-surface-200 dark:bg-surface-700 rounded-lg cursor-pointer"
                   />
                   <div className="w-14 h-10 flex items-center justify-center bg-white dark:bg-surface-800 border border-surface-200 dark:border-surface-600 rounded-xl font-extrabold text-lg text-surface-800 dark:text-white flex-shrink-0">
                     {quizConfig.questionCount}
                   </div>
                 </div>
-                {maxQuestions === 0 && <p className="text-red-500 text-xs mt-2 font-medium">Bu konuda henuz soru bulunmuyor.</p>}
+                {questionCountMax === 0 && <p className="text-red-500 text-xs mt-2 font-medium">Bu konuda henuz soru bulunmuyor.</p>}
                 {isTagDistributionActive && (
                   <p className="text-[11px] text-brand-600 dark:text-brand-300 mt-2 font-medium">
                     Etiket dagilimi aktif. Secili etiket toplam sorusu: {selectedTagTotalQuestionCount}.
@@ -3694,6 +4399,28 @@ export default function App() {
                 <p className="text-surface-400 text-sm">Icerik havuzunu yonet ve genislet.</p>
               </div>
 
+              <div className="bg-white dark:bg-surface-800 p-4 rounded-2xl shadow-card dark:shadow-card-dark border border-surface-100 dark:border-surface-700">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-bold text-surface-800 dark:text-white">SeenQuestions Kalici Yazim</h3>
+                    <p className="text-xs text-surface-500 dark:text-surface-400 mt-0.5">
+                      Kapaliysa sadece yanlis/bos soru havuzu ve konu ozet istatistikleri yazilir (write maliyeti dusurur).
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setPersistSeenQuestionsToFirestore((prev) => !prev)}
+                    className={`inline-flex items-center justify-center px-3 py-2 rounded-lg text-xs font-bold border transition ${
+                      persistSeenQuestionsToFirestore
+                        ? 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800/40'
+                        : 'bg-surface-50 dark:bg-surface-900/40 text-surface-600 dark:text-surface-300 border-surface-200 dark:border-surface-700'
+                    }`}
+                  >
+                    {persistSeenQuestionsToFirestore ? 'Acik' : 'Kapali'}
+                  </button>
+                </div>
+              </div>
+
               <div className="bg-white dark:bg-surface-800 p-6 rounded-2xl shadow-card dark:shadow-card-dark border border-surface-100 dark:border-surface-700">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
                   <div>
@@ -3738,24 +4465,40 @@ export default function App() {
 
                 {adminSelectedTopic && (
                   <div className="mb-6 rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-50/60 dark:bg-surface-900/40 p-3">
-                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-                      <p className="text-xs text-surface-500 dark:text-surface-400">
-                        Secili konu: <span className="font-bold text-surface-700 dark:text-surface-200">{adminSelectedTopic.name}</span>
-                      </p>
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={handleRenameTopic}
-                          className="px-3 py-2 rounded-lg border border-brand-200 dark:border-brand-800/40 bg-brand-50 dark:bg-brand-900/20 text-brand-700 dark:text-brand-300 text-xs font-bold hover:bg-brand-100 dark:hover:bg-brand-900/30 transition"
-                        >
-                          Adi Duzenle
-                        </button>
-                        <button
-                          onClick={() => { void handleDeleteTopic(); }}
-                          className="px-3 py-2 rounded-lg border border-red-200 dark:border-red-900/40 bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 text-xs font-bold hover:bg-red-100 dark:hover:bg-red-900/30 transition"
-                        >
-                          Konuyu Sil
-                        </button>
+                    <div className="flex flex-col gap-2">
+                      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                        <p className="text-xs text-surface-500 dark:text-surface-400">
+                          Secili konu: <span className="font-bold text-surface-700 dark:text-surface-200">{adminSelectedTopic.name}</span>
+                        </p>
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={handleSetTopicBloggerPage}
+                            className="px-3 py-2 rounded-lg border border-sky-200 dark:border-sky-800/40 bg-sky-50 dark:bg-sky-900/20 text-sky-700 dark:text-sky-300 text-xs font-bold hover:bg-sky-100 dark:hover:bg-sky-900/30 transition"
+                          >
+                            Blogger Linki
+                          </button>
+                          <button
+                            onClick={handleRenameTopic}
+                            className="px-3 py-2 rounded-lg border border-brand-200 dark:border-brand-800/40 bg-brand-50 dark:bg-brand-900/20 text-brand-700 dark:text-brand-300 text-xs font-bold hover:bg-brand-100 dark:hover:bg-brand-900/30 transition"
+                          >
+                            Adi Duzenle
+                          </button>
+                          <button
+                            onClick={() => { void handleDeleteTopic(); }}
+                            className="px-3 py-2 rounded-lg border border-red-200 dark:border-red-900/40 bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 text-xs font-bold hover:bg-red-100 dark:hover:bg-red-900/30 transition"
+                          >
+                            Konuyu Sil
+                          </button>
+                        </div>
                       </div>
+                      <p className="text-[11px] text-surface-500 dark:text-surface-400 truncate">
+                        Kaynak: {adminSelectedTopicBloggerPage ? adminSelectedTopicBloggerPage : 'Firestore / varsayilan kaynak'}
+                      </p>
+                      {isAdminTopicExternallySourced && (
+                        <p className="text-[11px] text-sky-600 dark:text-sky-300">
+                          Bu konu dis kaynaktan okunuyor. Duzenleme icin Blogger JSON kaynagini guncelleyin.
+                        </p>
+                      )}
                     </div>
                   </div>
                 )}
@@ -3775,6 +4518,9 @@ export default function App() {
                     <div className="space-y-2 max-h-[320px] overflow-y-auto custom-scrollbar pr-1">
                       {adminVisibleReports.map((report) => {
                         const linkedQuestion = report.questionId ? questionLookup[report.questionId] : undefined;
+                        const linkedQuestionIsExternal = Boolean(
+                          linkedQuestion?.topicId && topicBloggerPages[linkedQuestion.topicId]
+                        );
 
                         return (
                           <div key={report.id || `${report.questionId}_${String(report.createdAt)}`} className="rounded-lg border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800 p-3">
@@ -3785,6 +4531,16 @@ export default function App() {
                               <span className="text-[10px] px-1.5 py-0.5 rounded bg-brand-50 dark:bg-brand-900/20 text-brand-600 dark:text-brand-300 font-semibold">
                                 {report.reporterUsername || "Kullanici"}
                               </span>
+                              {report.topicId && (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-sky-50 dark:bg-sky-900/20 text-sky-700 dark:text-sky-300 font-semibold">
+                                  Konu: {report.topicName || report.topicId}
+                                </span>
+                              )}
+                              {report.questionId && (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300 font-semibold font-mono">
+                                  ID: {report.questionId}
+                                </span>
+                              )}
                               {!linkedQuestion && (
                                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-300 font-semibold">
                                   Soru bulunamadi
@@ -3826,7 +4582,7 @@ export default function App() {
                                   setAdminQuestionPage(1);
                                   handleStartEditQuestion(linkedQuestion, 0);
                                 }}
-                                disabled={!linkedQuestion}
+                                disabled={!linkedQuestion || linkedQuestionIsExternal}
                                 className="px-2.5 py-1 rounded-md text-[11px] font-semibold bg-brand-50 dark:bg-brand-900/20 text-brand-700 dark:text-brand-300 border border-brand-200 dark:border-brand-800/40 disabled:opacity-40 disabled:cursor-not-allowed"
                               >
                                 Duzenle
@@ -3837,7 +4593,7 @@ export default function App() {
                                     handleDeleteQuestion(linkedQuestion.id);
                                   }
                                 }}
-                                disabled={!linkedQuestion?.id}
+                                disabled={!linkedQuestion?.id || linkedQuestionIsExternal}
                                 className="px-2.5 py-1 rounded-md text-[11px] font-semibold bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800/40 disabled:opacity-40 disabled:cursor-not-allowed"
                               >
                                 Soruyu Sil
@@ -3876,19 +4632,21 @@ export default function App() {
                         </button>
                         <button
                           onClick={() => setIsQuestionModalOpen(true)}
-                          className="flex items-center gap-1.5 px-4 py-2.5 bg-brand-600 text-white rounded-lg hover:bg-brand-700 transition shadow-lg shadow-brand-600/20 font-bold text-xs"
+                          disabled={isAdminTopicExternallySourced}
+                          className="flex items-center gap-1.5 px-4 py-2.5 bg-brand-600 text-white rounded-lg hover:bg-brand-700 transition shadow-lg shadow-brand-600/20 font-bold text-xs disabled:opacity-40 disabled:cursor-not-allowed"
                         >
                           <Icon name="Plus" className="w-3.5 h-3.5" />
                           Soru Ekle
                         </button>
                         <button
                           onClick={() => setIsBulkImportOpen(true)}
-                          className="flex items-center gap-1.5 px-4 py-2.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition shadow-lg shadow-emerald-600/20 font-bold text-xs"
+                          disabled={isAdminTopicExternallySourced}
+                          className="flex items-center gap-1.5 px-4 py-2.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition shadow-lg shadow-emerald-600/20 font-bold text-xs disabled:opacity-40 disabled:cursor-not-allowed"
                         >
                           <Icon name="Layers" className="w-3.5 h-3.5" />
                           Toplu Aktar
                         </button>
-                        {adminTopicQuestions.length > 0 && (
+                        {adminTopicQuestions.length > 0 && !isAdminTopicExternallySourced && (
                           <div className="relative">
                             <button
                               onClick={() => setIsAdminActionsOpen(prev => !prev)}
@@ -3898,7 +4656,7 @@ export default function App() {
                               Toplu Islemler
                             </button>
                             {isAdminActionsOpen && (
-                              <div className="absolute right-0 mt-2 w-44 rounded-lg border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800 shadow-xl z-20 overflow-hidden">
+                              <div className="absolute right-0 mt-2 w-56 rounded-lg border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800 shadow-xl z-20 overflow-hidden">
                                 <button
                                   onClick={() => {
                                     setIsAdminActionsOpen(false);
@@ -3925,6 +4683,24 @@ export default function App() {
                                   className="w-full text-left px-3 py-2.5 text-xs font-semibold text-red-700 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-900/20 transition"
                                 >
                                   Toplu Sil
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setIsAdminActionsOpen(false);
+                                    handleExportQuestionsByTopic();
+                                  }}
+                                  className="w-full text-left px-3 py-2.5 text-xs font-semibold text-sky-700 dark:text-sky-300 hover:bg-sky-50 dark:hover:bg-sky-900/20 transition"
+                                >
+                                  Bu Konuyu JSON Export
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setIsAdminActionsOpen(false);
+                                    handleExportAllQuestionsByTopic();
+                                  }}
+                                  className="w-full text-left px-3 py-2.5 text-xs font-semibold text-brand-700 dark:text-brand-300 hover:bg-brand-50 dark:hover:bg-brand-900/20 transition"
+                                >
+                                  Konu Konu JSON Export
                                 </button>
                               </div>
                             )}
@@ -3995,13 +4771,15 @@ export default function App() {
                               </button>
                               <button
                                 onClick={() => handleStartEditQuestion(q, originalIndex)}
-                                className="p-2 bg-white dark:bg-surface-800 text-surface-300 hover:text-brand-500 hover:bg-brand-50 dark:hover:bg-brand-900/20 rounded-lg transition-colors"
+                                disabled={isAdminTopicExternallySourced}
+                                className="p-2 bg-white dark:bg-surface-800 text-surface-300 hover:text-brand-500 hover:bg-brand-50 dark:hover:bg-brand-900/20 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                               >
                                 <Icon name="PenLine" className="w-4 h-4" />
                               </button>
                               <button
                                 onClick={() => handleDeleteQuestion(q.id!)}
-                                className="p-2 bg-white dark:bg-surface-800 text-surface-300 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
+                                disabled={isAdminTopicExternallySourced}
+                                className="p-2 bg-white dark:bg-surface-800 text-surface-300 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                               >
                                 <Icon name="Trash" className="w-4 h-4" />
                               </button>
@@ -4130,42 +4908,59 @@ export default function App() {
                         <option key={cat.id} value={cat.id}>{cat.name}</option>
                       ))}
                     </select>
+                    <button
+                      type="button"
+                      onClick={() => setIsHomeStatsExpanded((prev) => !prev)}
+                      className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900/50 text-[11px] font-semibold text-surface-600 dark:text-surface-300 hover:text-surface-800 dark:hover:text-white hover:border-surface-300 dark:hover:border-surface-600 transition-colors"
+                      aria-expanded={isHomeStatsExpanded}
+                      aria-label={isHomeStatsExpanded ? 'Istatistikler bolumunu kapat' : 'Istatistikler bolumunu ac'}
+                    >
+                      <Icon
+                        name="ChevronRight"
+                        className={`w-3.5 h-3.5 transition-transform duration-200 ${isHomeStatsExpanded ? 'rotate-90' : 'rotate-0'}`}
+                      />
+                      {isHomeStatsExpanded ? 'Kapat' : 'Ac'}
+                    </button>
                     <span className="text-[11px] font-semibold text-surface-400 whitespace-nowrap">Canli takip</span>
                   </div>
                 </div>
-                <p className="text-[10px] font-semibold text-surface-500 dark:text-surface-400 mb-2">
-                  {homeStatsCategoryFilter === 'all' ? 'Gorunum: Tum Dersler' : `Gorunum: ${selectedHomeStatsCategory?.name || 'Secili Ders'}`}
-                </p>
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-2 md:gap-2.5">
-                  <div className="rounded-xl border border-surface-200/80 dark:border-surface-700/80 bg-surface-50/80 dark:bg-surface-900/50 p-2 md:p-2.5">
-                    <p className="text-[10px] font-bold text-surface-400 uppercase tracking-wider">Farkli Cozulen</p>
-                    <p className="text-base md:text-xl font-black text-surface-800 dark:text-white">{homeStats.uniqueSolvedCount}</p>
-                  </div>
-                  <div className="rounded-xl border border-surface-200/80 dark:border-surface-700/80 bg-surface-50/80 dark:bg-surface-900/50 p-2 md:p-2.5">
-                    <p className="text-[10px] font-bold text-surface-400 uppercase tracking-wider">Toplam Cevap</p>
-                    <p className="text-base md:text-xl font-black text-surface-800 dark:text-white">{homeStats.totalAnsweredCount}</p>
-                  </div>
-                  <div className="rounded-xl border border-surface-200/80 dark:border-surface-700/80 bg-surface-50/80 dark:bg-surface-900/50 p-2 md:p-2.5">
-                    <p className="text-[10px] font-bold text-surface-400 uppercase tracking-wider">Favori Soru</p>
-                    <p className="text-base md:text-xl font-black text-surface-800 dark:text-white">{homeStats.filteredFavoriteCount}</p>
-                  </div>
-                  <div className="rounded-xl border border-surface-200/80 dark:border-surface-700/80 bg-surface-50/80 dark:bg-surface-900/50 p-2 md:p-2.5">
-                    <p className="text-[10px] font-bold text-surface-400 uppercase tracking-wider">Cozulen Test</p>
-                    <p className="text-base md:text-xl font-black text-surface-800 dark:text-white">{homeStats.progressStats.completedQuizCount}</p>
-                  </div>
-                  <div className="rounded-xl border border-surface-200/80 dark:border-surface-700/80 bg-surface-50/80 dark:bg-surface-900/50 p-2 md:p-2.5">
-                    <p className="text-[10px] font-bold text-surface-400 uppercase tracking-wider">Toplam Dogru</p>
-                    <p className="text-base md:text-xl font-black text-emerald-600 dark:text-emerald-300">{homeStats.progressStats.correctCount}</p>
-                  </div>
-                  <div className="rounded-xl border border-surface-200/80 dark:border-surface-700/80 bg-surface-50/80 dark:bg-surface-900/50 p-2 md:p-2.5">
-                    <p className="text-[10px] font-bold text-surface-400 uppercase tracking-wider">Basari Orani</p>
-                    <p className="text-base md:text-xl font-black text-brand-600 dark:text-brand-300">%{homeStats.accuracyPercent}</p>
-                  </div>
-                </div>
-                <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[10px] text-surface-500 dark:text-surface-400 font-medium">
-                  <span className="px-1.5 py-0.5 rounded-md bg-surface-100 dark:bg-surface-700/60">Yanlis cevap: {homeStats.totalWrongAnswers}</span>
-                  <span className="px-1.5 py-0.5 rounded-md bg-surface-100 dark:bg-surface-700/60">Bos birakilan: {homeStats.totalBlankAnswers}</span>
-                </div>
+                {isHomeStatsExpanded && (
+                  <>
+                    <p className="text-[10px] font-semibold text-surface-500 dark:text-surface-400 mb-2">
+                      {homeStatsCategoryFilter === 'all' ? 'Gorunum: Tum Dersler' : `Gorunum: ${selectedHomeStatsCategory?.name || 'Secili Ders'}`}
+                    </p>
+                    <div className="grid grid-cols-2 md:grid-cols-3 gap-2 md:gap-2.5">
+                      <div className="rounded-xl border border-surface-200/80 dark:border-surface-700/80 bg-surface-50/80 dark:bg-surface-900/50 p-2 md:p-2.5">
+                        <p className="text-[10px] font-bold text-surface-400 uppercase tracking-wider">Farkli Cozulen</p>
+                        <p className="text-base md:text-xl font-black text-surface-800 dark:text-white">{homeStats.uniqueSolvedCount}</p>
+                      </div>
+                      <div className="rounded-xl border border-surface-200/80 dark:border-surface-700/80 bg-surface-50/80 dark:bg-surface-900/50 p-2 md:p-2.5">
+                        <p className="text-[10px] font-bold text-surface-400 uppercase tracking-wider">Toplam Cevap</p>
+                        <p className="text-base md:text-xl font-black text-surface-800 dark:text-white">{homeStats.totalAnsweredCount}</p>
+                      </div>
+                      <div className="rounded-xl border border-surface-200/80 dark:border-surface-700/80 bg-surface-50/80 dark:bg-surface-900/50 p-2 md:p-2.5">
+                        <p className="text-[10px] font-bold text-surface-400 uppercase tracking-wider">Favori Soru</p>
+                        <p className="text-base md:text-xl font-black text-surface-800 dark:text-white">{homeStats.filteredFavoriteCount}</p>
+                      </div>
+                      <div className="rounded-xl border border-surface-200/80 dark:border-surface-700/80 bg-surface-50/80 dark:bg-surface-900/50 p-2 md:p-2.5">
+                        <p className="text-[10px] font-bold text-surface-400 uppercase tracking-wider">Cozulen Test</p>
+                        <p className="text-base md:text-xl font-black text-surface-800 dark:text-white">{homeStats.progressStats.completedQuizCount}</p>
+                      </div>
+                      <div className="rounded-xl border border-surface-200/80 dark:border-surface-700/80 bg-surface-50/80 dark:bg-surface-900/50 p-2 md:p-2.5">
+                        <p className="text-[10px] font-bold text-surface-400 uppercase tracking-wider">Toplam Dogru</p>
+                        <p className="text-base md:text-xl font-black text-emerald-600 dark:text-emerald-300">{homeStats.progressStats.correctCount}</p>
+                      </div>
+                      <div className="rounded-xl border border-surface-200/80 dark:border-surface-700/80 bg-surface-50/80 dark:bg-surface-900/50 p-2 md:p-2.5">
+                        <p className="text-[10px] font-bold text-surface-400 uppercase tracking-wider">Basari Orani</p>
+                        <p className="text-base md:text-xl font-black text-brand-600 dark:text-brand-300">%{homeStats.accuracyPercent}</p>
+                      </div>
+                    </div>
+                    <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[10px] text-surface-500 dark:text-surface-400 font-medium">
+                      <span className="px-1.5 py-0.5 rounded-md bg-surface-100 dark:bg-surface-700/60">Yanlis cevap: {homeStats.totalWrongAnswers}</span>
+                      <span className="px-1.5 py-0.5 rounded-md bg-surface-100 dark:bg-surface-700/60">Bos birakilan: {homeStats.totalBlankAnswers}</span>
+                    </div>
+                  </>
+                )}
               </section>
 
               <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-4 auto-rows-max gap-2 md:gap-4 flex-1 min-h-0 content-start overflow-y-auto custom-scrollbar pr-0.5 md:pr-1.5 pb-1">
@@ -4254,10 +5049,13 @@ export default function App() {
                 const color = getCatColor(activeCategory.id);
                 const topicCards = activeCategory.subCategories.map((sub) => {
                   const questionCount = allQuestions[sub.id]?.length || 0;
+                  const hasExternalSource = Boolean(topicBloggerPages[sub.id]);
                   const topicProgress = getTopicProgress(sub.id);
                   const topicFavoriteCount = (favoriteQuestionIdsByTopic[sub.id] || []).length;
                   const topicSeenStats = seenQuestionStatsByTopic[sub.id] || [];
-                  const uniqueSolvedCount = topicSeenStats.reduce((sum, stats) => (stats.answeredCount > 0 ? sum + 1 : sum), 0);
+                  const uniqueSolvedCount = persistSeenQuestionsToFirestore
+                    ? topicSeenStats.reduce((sum, stats) => (stats.answeredCount > 0 ? sum + 1 : sum), 0)
+                    : Math.min(questionCount, topicProgress.seenCount);
                   const progressPercent = questionCount > 0 ? Math.min(100, Math.round((uniqueSolvedCount / questionCount) * 100)) : 0;
                   const attempted = topicProgress.correctCount + topicProgress.totalWrongAnswers;
                   const accuracy = attempted > 0 ? Math.round((topicProgress.correctCount / attempted) * 100) : 0;
@@ -4281,6 +5079,7 @@ export default function App() {
                     accuracy,
                     topicFavoriteCount,
                     hasTopicProgressStats,
+                    hasExternalSource,
                     status,
                   };
                 });
@@ -4325,7 +5124,7 @@ export default function App() {
 
                     <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar pr-0.5 pb-1">
                       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3 md:gap-4">
-                        {filteredTopicCards.map(({ sub, questionCount, topicProgress, uniqueSolvedCount, progressPercent, accuracy, topicFavoriteCount, hasTopicProgressStats, status }) => {
+                        {filteredTopicCards.map(({ sub, questionCount, topicProgress, uniqueSolvedCount, progressPercent, accuracy, topicFavoriteCount, hasTopicProgressStats, hasExternalSource, status }) => {
                           const statusLabel =
                             status === 'completed'
                               ? 'Tamamlandi'
@@ -4355,6 +5154,11 @@ export default function App() {
                                   <Icon name={activeCategory.iconName} className="w-4.5 h-4.5" />
                                 </div>
                                 <div className="flex items-center gap-1.5">
+                                  {hasExternalSource && (
+                                    <span className="px-2 py-1 rounded-md text-[10px] font-bold border whitespace-nowrap bg-sky-50 text-sky-600 border-sky-200 dark:bg-sky-900/20 dark:text-sky-300 dark:border-sky-800/40">
+                                      Blogger
+                                    </span>
+                                  )}
                                   <span className={`px-2 py-1 rounded-md text-[10px] font-bold border whitespace-nowrap ${statusClass}`}>
                                     {statusLabel}
                                   </span>
@@ -4874,7 +5678,7 @@ export default function App() {
               /* Paste Step */
               <div className="flex flex-col flex-1 overflow-hidden p-5 gap-4">
                 <p className="text-xs text-surface-400">
-                  Duz metin veya JSON formati desteklenir. JSON icin alanlar: <span className="font-mono">questionText</span>, <span className="font-mono">contentItems</span>, <span className="font-mono">options</span>, <span className="font-mono">answer</span>.
+                  Duz metin veya JSON formati desteklenir. JSON icin alanlar: <span className="font-mono">questionId</span>, <span className="font-mono">questionText</span>, <span className="font-mono">contentItems</span>, <span className="font-mono">options</span>, <span className="font-mono">answer</span>.
                 </p>
                 <textarea
                   value={bulkText}
@@ -4883,7 +5687,7 @@ export default function App() {
                     if (bulkParseErrors.length > 0) setBulkParseErrors([]);
                   }}
                   className="flex-1 min-h-[250px] w-full p-4 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white text-sm font-mono resize-none"
-                  placeholder={"Sorulari buraya yapistirin...\n\nDuz metin ornegi:\n1. Asagidakilerden hangisi...?\nA) Secenek 1\nB) Secenek 2\nC) Secenek 3\nD) Secenek 4\nE) Secenek 5\n\n1. COZUM: Aciklama... CEVAP: A\n\nJSON ornegi:\n[{\"questionText\":\"...\",\"contentItems\":[\"...\"],\"options\":[\"...\"],\"answer\":\"A\"}]"}
+                  placeholder={"Sorulari buraya yapistirin...\n\nDuz metin ornegi:\n1. Asagidakilerden hangisi...?\nA) Secenek 1\nB) Secenek 2\nC) Secenek 3\nD) Secenek 4\nE) Secenek 5\n\n1. COZUM: Aciklama... CEVAP: A\n\nJSON ornegi:\n[{\"questionId\":\"123\",\"questionText\":\"...\",\"contentItems\":[\"...\"],\"options\":[\"...\"],\"answer\":\"A\"}]"}
                 />
                 <button
                   onClick={handleBulkParse}

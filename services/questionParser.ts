@@ -472,10 +472,11 @@ function convertStructuredQuestionWithErrors(input: StructuredQuestion, index: n
     asNonEmptyString(readFirst(input, ['explanation', 'cozum', 'çözüm', 'aciklama', 'açıklama'])) || '';
   const sourceTag = asNonEmptyString(readFirst(input, ['sourceTag', 'kaynak', 'kaynakEtiketi']));
   const imageUrl = asNonEmptyString(readFirst(input, ['imageUrl', 'gorselUrl', 'görselUrl']));
+  const questionId = asNonEmptyString(readFirst(input, ['questionId', 'id']));
 
   return {
     question: {
-      id: `bulk_${Date.now()}_${index}`,
+      id: questionId || `bulk_${Date.now()}_${index}`,
       contextText: contextText || undefined,
       contentItems: contentItems.length > 0 ? contentItems : undefined,
       questionText,

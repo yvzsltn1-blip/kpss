@@ -1,0 +1,530 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Soru ID Listesi Araci</title>
+  <style>
+    :root {
+      --bg: #f3f6fb;
+      --card: #ffffff;
+      --text: #0f172a;
+      --muted: #475569;
+      --line: #cbd5e1;
+      --ok: #166534;
+      --ok-bg: #dcfce7;
+      --warn: #854d0e;
+      --warn-bg: #fef9c3;
+      --err: #991b1b;
+      --err-bg: #fee2e2;
+      --brand: #1d4ed8;
+      --brand-2: #1e40af;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      background: radial-gradient(1200px 700px at 10% -20%, #dbeafe, transparent), var(--bg);
+      color: var(--text);
+    }
+    .wrap {
+      max-width: 1280px;
+      margin: 24px auto;
+      padding: 0 16px 24px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: 0 6px 20px rgba(15, 23, 42, 0.06);
+      padding: 14px;
+    }
+    h1 {
+      margin: 0 0 6px;
+      font-size: 22px;
+      line-height: 1.2;
+    }
+    p { margin: 0 0 10px; color: var(--muted); }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+    @media (max-width: 1000px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+    .label {
+      font-size: 12px;
+      font-weight: 700;
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+      color: var(--muted);
+    }
+    textarea {
+      width: 100%;
+      min-height: 330px;
+      resize: vertical;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color: var(--text);
+      background: #fff;
+    }
+    textarea.small {
+      min-height: 150px;
+    }
+    .toolbar {
+      margin-top: 10px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    button {
+      border: 0;
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .primary { background: var(--brand); color: #fff; }
+    .primary:hover { background: var(--brand-2); }
+    .ghost {
+      background: #fff;
+      color: var(--text);
+      border: 1px solid var(--line);
+    }
+    .ghost:hover { background: #f8fafc; }
+    .status {
+      margin-top: 10px;
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 13px;
+      line-height: 1.45;
+      border: 1px solid var(--line);
+      background: #f8fafc;
+    }
+    .ok { color: var(--ok); background: var(--ok-bg); border-color: #86efac; }
+    .warn { color: var(--warn); background: var(--warn-bg); border-color: #fde047; }
+    .err { color: var(--err); background: var(--err-bg); border-color: #fca5a5; }
+    ul {
+      margin: 8px 0 0;
+      padding-left: 18px;
+    }
+    li { margin: 2px 0; }
+    .note {
+      margin-top: 8px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card" style="margin-bottom: 14px;">
+      <h1>Soru ID Listesi Araci</h1>
+      <p>Blogger JSON yapistir, tum <code>questionId</code> listesini cikar. Sonra <code>soru-id-araci.html</code> ile ayni kayda aktar.</p>
+    </div>
+
+    <div class="grid">
+      <section class="card">
+        <div class="label">Giris JSON</div>
+        <textarea id="inputJson" spellcheck="false" placeholder='[
+  {
+    "questionId": "NvEPWJpTsV0cTjgxwlMc",
+    "questionText": "...",
+    "options": ["A", "B", "C", "D", "E"],
+    "correctOptionIndex": 1
+  }
+]'></textarea>
+
+        <div class="toolbar">
+          <button id="analyzeBtn" class="primary">IDleri Cikar</button>
+          <button id="downloadBackupBtn" class="ghost" disabled>Soru-ID Araci Icin TXT Indir</button>
+          <button id="downloadIdsBtn" class="ghost" disabled>Sadece ID TXT Indir</button>
+          <button id="copyBackupBtn" class="ghost" disabled>Yedek JSON Kopyala</button>
+          <button id="saveLocalBtn" class="ghost" disabled>Local Kayda Yaz</button>
+        </div>
+
+        <div id="inputStatus" class="status">
+          JSON yapistirip <b>IDleri Cikar</b> butonuna basin.
+        </div>
+        <div class="note">
+          Kabul edilen format: <code>[...]</code>, <code>{ "questions": [...] }</code>, <code>{ "topics": [...] }</code>, tek soru nesnesi.
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="label">ID Listesi (Unique)</div>
+        <textarea id="idListOutput" readonly class="small"></textarea>
+
+        <div class="label" style="margin-top: 10px;">Soru-ID Araci Uyumlu Yedek JSON</div>
+        <textarea id="backupOutput" readonly></textarea>
+
+        <div id="outputStatus" class="status">
+          Cikti henuz olusmadi.
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      "use strict";
+
+      const REGISTRY_KEY = "kpss_question_id_registry_v1";
+      const SOURCE_TAG_HISTORY_KEY = "kpss_source_tag_history_v1";
+
+      const inputEl = document.getElementById("inputJson");
+      const idListOutputEl = document.getElementById("idListOutput");
+      const backupOutputEl = document.getElementById("backupOutput");
+      const inputStatusEl = document.getElementById("inputStatus");
+      const outputStatusEl = document.getElementById("outputStatus");
+      const analyzeBtn = document.getElementById("analyzeBtn");
+      const downloadBackupBtn = document.getElementById("downloadBackupBtn");
+      const downloadIdsBtn = document.getElementById("downloadIdsBtn");
+      const copyBackupBtn = document.getElementById("copyBackupBtn");
+      const saveLocalBtn = document.getElementById("saveLocalBtn");
+
+      let lastResult = null;
+
+      function htmlEscape(text) {
+        return String(text)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;");
+      }
+
+      function setStatus(el, kind, title, lines) {
+        el.className = "status " + (kind || "");
+        let html = "<b>" + htmlEscape(title) + "</b>";
+        if (Array.isArray(lines) && lines.length > 0) {
+          html += "<ul>" + lines.map((line) => "<li>" + htmlEscape(line) + "</li>").join("") + "</ul>";
+        }
+        el.innerHTML = html;
+      }
+
+      function formatNowDateFile() {
+        const d = new Date();
+        const yyyy = d.getFullYear();
+        const mm = String(d.getMonth() + 1).padStart(2, "0");
+        const dd = String(d.getDate()).padStart(2, "0");
+        const hh = String(d.getHours()).padStart(2, "0");
+        const mi = String(d.getMinutes()).padStart(2, "0");
+        return yyyy + "-" + mm + "-" + dd + "_" + hh + "-" + mi;
+      }
+
+      function resetOutputState() {
+        lastResult = null;
+        idListOutputEl.value = "";
+        backupOutputEl.value = "";
+        downloadBackupBtn.disabled = true;
+        downloadIdsBtn.disabled = true;
+        copyBackupBtn.disabled = true;
+        saveLocalBtn.disabled = true;
+        setStatus(outputStatusEl, "", "Cikti henuz olusmadi.", []);
+      }
+
+      function normalizeText(raw) {
+        return String(raw || "")
+          .replace(/^\uFEFF/, "")
+          .replace(/^\s*<pre[^>]*>/i, "")
+          .replace(/<\/pre>\s*$/i, "")
+          .trim();
+      }
+
+      function tryParseJson(text) {
+        try {
+          return JSON.parse(text);
+        } catch {
+          return null;
+        }
+      }
+
+      function parseFlexiblePayload(rawText) {
+        const normalized = normalizeText(rawText);
+        if (!normalized) throw new Error("Giris bos.");
+
+        const direct = tryParseJson(normalized);
+        if (direct !== null) return direct;
+
+        const quoteNormalized = normalized
+          .replace(/[\u201C\u201D]/g, "\"")
+          .replace(/[\u2018\u2019]/g, "'");
+        const secondTry = tryParseJson(quoteNormalized);
+        if (secondTry !== null) return secondTry;
+
+        let wrapped = quoteNormalized;
+        if (!wrapped.startsWith("[")) {
+          wrapped = "[" + wrapped + "]";
+        }
+        wrapped = wrapped.replace(/,\s*\]$/, "]");
+        const wrappedTry = tryParseJson(wrapped);
+        if (wrappedTry !== null) return wrappedTry;
+
+        const firstBrace = quoteNormalized.search(/[\[{]/);
+        const lastBrace = Math.max(quoteNormalized.lastIndexOf("}"), quoteNormalized.lastIndexOf("]"));
+        if (firstBrace >= 0 && lastBrace > firstBrace) {
+          const sliced = quoteNormalized.slice(firstBrace, lastBrace + 1);
+          const slicedTry = tryParseJson(sliced);
+          if (slicedTry !== null) return slicedTry;
+        }
+
+        throw new Error("JSON parse edilemedi. Format kontrol edin.");
+      }
+
+      function isObject(value) {
+        return !!value && typeof value === "object" && !Array.isArray(value);
+      }
+
+      function extractQuestionList(payload) {
+        if (Array.isArray(payload)) return payload;
+
+        if (isObject(payload) && Array.isArray(payload.questions)) {
+          return payload.questions;
+        }
+
+        if (isObject(payload) && Array.isArray(payload.topics)) {
+          const merged = [];
+          payload.topics.forEach((topic) => {
+            if (isObject(topic) && Array.isArray(topic.questions)) {
+              merged.push.apply(merged, topic.questions);
+            }
+          });
+          return merged;
+        }
+
+        if (isObject(payload) && (typeof payload.questionText === "string" || Array.isArray(payload.options))) {
+          return [payload];
+        }
+
+        return [];
+      }
+
+      function buildAnalysisResult(questionList) {
+        const uniqueIds = [];
+        const uniqueIdSet = new Set();
+        const duplicateMap = new Map();
+        const sourceTagSet = new Set();
+        let missingIdCount = 0;
+
+        questionList.forEach((item) => {
+          if (!isObject(item)) return;
+          const rawId = typeof item.questionId === "string"
+            ? item.questionId
+            : (typeof item.id === "string" ? item.id : "");
+          const id = rawId.trim();
+
+          if (!id) {
+            missingIdCount += 1;
+          } else if (!uniqueIdSet.has(id)) {
+            uniqueIdSet.add(id);
+            uniqueIds.push(id);
+            duplicateMap.set(id, 1);
+          } else {
+            duplicateMap.set(id, (duplicateMap.get(id) || 1) + 1);
+          }
+
+          const tag = typeof item.sourceTag === "string" ? item.sourceTag.trim() : "";
+          if (tag) sourceTagSet.add(tag);
+        });
+
+        const duplicates = [];
+        duplicateMap.forEach((count, id) => {
+          if (count > 1) duplicates.push({ id: id, count: count });
+        });
+        duplicates.sort((a, b) => b.count - a.count || a.id.localeCompare(b.id));
+
+        const sourceTags = Array.from(sourceTagSet.values()).sort((a, b) => a.localeCompare(b, "tr"));
+        const backupPayload = {
+          formatVersion: 1,
+          exportedAt: new Date().toISOString(),
+          ids: uniqueIds.slice().sort(),
+          sourceTags: sourceTags,
+        };
+
+        return {
+          totalQuestions: questionList.length,
+          uniqueIds: uniqueIds,
+          missingIdCount: missingIdCount,
+          duplicates: duplicates,
+          sourceTags: sourceTags,
+          backupPayload: backupPayload,
+        };
+      }
+
+      function loadRegistrySet() {
+        try {
+          const raw = localStorage.getItem(REGISTRY_KEY);
+          if (!raw) return new Set();
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) return new Set(parsed.filter((v) => typeof v === "string" && v.trim()));
+          if (isObject(parsed)) return new Set(Object.keys(parsed));
+          return new Set();
+        } catch {
+          return new Set();
+        }
+      }
+
+      function saveRegistrySet(set) {
+        const list = Array.from(set.values()).sort();
+        localStorage.setItem(REGISTRY_KEY, JSON.stringify(list));
+      }
+
+      function loadSourceTagHistory() {
+        try {
+          const raw = localStorage.getItem(SOURCE_TAG_HISTORY_KEY);
+          if (!raw) return [];
+          const parsed = JSON.parse(raw);
+          if (!Array.isArray(parsed)) return [];
+          const out = [];
+          const seen = new Set();
+          parsed.forEach((item) => {
+            if (typeof item !== "string") return;
+            const t = item.trim();
+            if (!t || seen.has(t)) return;
+            seen.add(t);
+            out.push(t);
+          });
+          return out;
+        } catch {
+          return [];
+        }
+      }
+
+      function saveSourceTagHistory(list) {
+        localStorage.setItem(SOURCE_TAG_HISTORY_KEY, JSON.stringify(list.slice(0, 200)));
+      }
+
+      function mergeSourceTags(tags) {
+        const current = loadSourceTagHistory();
+        const incoming = Array.isArray(tags)
+          ? tags.filter((t) => typeof t === "string").map((t) => t.trim()).filter(Boolean)
+          : [];
+        const merged = [];
+        const seen = new Set();
+        incoming.concat(current).forEach((tag) => {
+          if (seen.has(tag)) return;
+          seen.add(tag);
+          merged.push(tag);
+        });
+        saveSourceTagHistory(merged);
+      }
+
+      analyzeBtn.addEventListener("click", function () {
+        resetOutputState();
+        const rawText = inputEl.value.trim();
+        if (!rawText) {
+          setStatus(inputStatusEl, "err", "Giris bos.", ["JSON metni yapistirin."]);
+          return;
+        }
+
+        let payload;
+        try {
+          payload = parseFlexiblePayload(rawText);
+        } catch (error) {
+          setStatus(inputStatusEl, "err", "JSON parse hatasi.", [String(error && error.message ? error.message : error)]);
+          return;
+        }
+
+        const questions = extractQuestionList(payload);
+        if (!Array.isArray(questions) || questions.length === 0) {
+          setStatus(inputStatusEl, "err", "Soru listesi bulunamadi.", ["Kokte dizi/questions/topics yapisini kontrol edin."]);
+          return;
+        }
+
+        const result = buildAnalysisResult(questions);
+        lastResult = result;
+        idListOutputEl.value = result.uniqueIds.join("\n");
+        backupOutputEl.value = JSON.stringify(result.backupPayload, null, 2);
+
+        downloadBackupBtn.disabled = false;
+        downloadIdsBtn.disabled = false;
+        copyBackupBtn.disabled = false;
+        saveLocalBtn.disabled = false;
+
+        const summary = [
+          "Toplam kayit: " + result.totalQuestions,
+          "Unique ID: " + result.uniqueIds.length,
+          "ID olmayan soru: " + result.missingIdCount,
+          "Duplicate ID sayisi: " + result.duplicates.length,
+          "Etiket sayisi: " + result.sourceTags.length,
+        ];
+
+        const duplicateLines = result.duplicates.slice(0, 20).map(function (d) {
+          return d.id + " (x" + d.count + ")";
+        });
+
+        const statusKind = result.missingIdCount > 0 || result.duplicates.length > 0 ? "warn" : "ok";
+        setStatus(inputStatusEl, statusKind, "Analiz tamam.", summary.concat(duplicateLines));
+        setStatus(outputStatusEl, "ok", "Cikti hazir.", [
+          "TXT indirip soru-id-araci.html > TXT Yukle ile aktarabilirsiniz.",
+          "Isterseniz bu sayfadan dogrudan local kayda da yazabilirsiniz."
+        ]);
+      });
+
+      downloadBackupBtn.addEventListener("click", function () {
+        if (!lastResult) return;
+        const text = JSON.stringify(lastResult.backupPayload, null, 2);
+        const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "kpss_registry_backup_from_list_" + formatNowDateFile() + ".txt";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      });
+
+      downloadIdsBtn.addEventListener("click", function () {
+        if (!lastResult) return;
+        const text = lastResult.uniqueIds.join("\n");
+        const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "question_ids_" + formatNowDateFile() + ".txt";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      });
+
+      copyBackupBtn.addEventListener("click", async function () {
+        if (!lastResult) return;
+        try {
+          await navigator.clipboard.writeText(JSON.stringify(lastResult.backupPayload, null, 2));
+          setStatus(outputStatusEl, "ok", "Yedek JSON panoya kopyalandi.", []);
+        } catch {
+          setStatus(outputStatusEl, "warn", "Pano kopyasi basarisiz.", ["Tarayici izin vermedi."]);
+        }
+      });
+
+      saveLocalBtn.addEventListener("click", function () {
+        if (!lastResult) return;
+
+        const currentIds = loadRegistrySet();
+        const beforeIdCount = currentIds.size;
+        lastResult.uniqueIds.forEach((id) => currentIds.add(id));
+        saveRegistrySet(currentIds);
+
+        const beforeTagCount = loadSourceTagHistory().length;
+        mergeSourceTags(lastResult.sourceTags);
+        const afterTagCount = loadSourceTagHistory().length;
+
+        setStatus(outputStatusEl, "ok", "Local kayda yazildi.", [
+          "Eklenen ID: " + (currentIds.size - beforeIdCount),
+          "Toplam ID: " + currentIds.size,
+          "Eklenen etiket: " + (afterTagCount - beforeTagCount),
+          "Toplam etiket: " + afterTagCount,
+          "soru-id-araci.html ayni tarayicida aciksa bu IDleri gorecektir."
+        ]);
+      });
+    })();
+  </script>
+</body>
+</html>
