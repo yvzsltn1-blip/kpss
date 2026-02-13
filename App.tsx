@@ -4260,14 +4260,74 @@ export default function App() {
     const progressPercent = quizState.questions.length > 0 ? ((quizState.currentQuestionIndex + 1) / quizState.questions.length) * 100 : 0;
     const timerPercent = quizState.totalTime > 0 ? (quizState.timeLeft / quizState.totalTime) * 100 : 100;
     const scorePercent = quizState.questions.length > 0 ? (score / quizState.questions.length) * 100 : 0;
+    const roundedScorePercent = Math.round(scorePercent);
+    const resultFeedback = (() => {
+      if (roundedScorePercent <= 20) {
+        return {
+          title: 'Temelden Başlayalım',
+          detail: 'Bu başlangıç düzeyi normal. Konuyu kısa tekrar edip küçük bir setle yeniden dene.',
+        };
+      }
+      if (roundedScorePercent <= 30) {
+        return {
+          title: 'Başlangıç Güzel',
+          detail: 'Doğru yöndesin. Yanlış yaptığın noktaları not alıp bir tur daha çöz.',
+        };
+      }
+      if (roundedScorePercent <= 40) {
+        return {
+          title: 'Ritim Kazanıyorsun',
+          detail: 'Kavramlar oturmaya başlamış. Soru köklerini daha dikkatli okuyarak hızlanabilirsin.',
+        };
+      }
+      if (roundedScorePercent <= 50) {
+        return {
+          title: 'Orta Seviyeye Geldin',
+          detail: 'Temel doğru. Şimdi yanlış tiplerini hedefleyip isabet oranını artırma zamanı.',
+        };
+      }
+      if (roundedScorePercent <= 60) {
+        return {
+          title: 'İyi İlerliyorsun',
+          detail: 'Çözüm kaliten artıyor. Zorlandığın soru tiplerinde 10 soruluk mini tekrar yap.',
+        };
+      }
+      if (roundedScorePercent <= 70) {
+        return {
+          title: 'Güçlü Performans',
+          detail: 'Çoğu noktayı doğru yönetiyorsun. Süre yönetimine odaklanırsan sonuç daha da yükselir.',
+        };
+      }
+      if (roundedScorePercent <= 80) {
+        return {
+          title: 'Çok İyi',
+          detail: 'Konu hakimiyetin güçlü. Küçük hataları temizleyerek üst banda rahat çıkarsın.',
+        };
+      }
+      if (roundedScorePercent <= 90) {
+        return {
+          title: 'Harika Seviye',
+          detail: 'Netlerin çok iyi. Bu çizgiyi korumak için düzenli kısa tekrar yeterli.',
+        };
+      }
+      return {
+        title: 'Mükemmel',
+        detail: 'Neredeyse kusursuz çözüm. Aynı disiplini sürdürerek standardını sabitle.',
+      };
+    })();
     const totalQuestions = quizState.questions.length;
     const hasCollapsedQuestionNav = totalQuestions > 7;
-    const leadingQuestionIndices = hasCollapsedQuestionNav
-      ? [0, 1, 2]
-      : Array.from({ length: totalQuestions }, (_, idx) => idx);
-    const trailingQuestionIndices = hasCollapsedQuestionNav
-      ? [totalQuestions - 3, totalQuestions - 2, totalQuestions - 1]
-      : [];
+    const questionNavItems: Array<{ type: 'question'; index: number } | { type: 'jump' }> = hasCollapsedQuestionNav
+      ? [
+          { type: 'question', index: 0 },
+          { type: 'question', index: 1 },
+          { type: 'question', index: 2 },
+          { type: 'jump' },
+          { type: 'question', index: totalQuestions - 3 },
+          { type: 'question', index: totalQuestions - 2 },
+          { type: 'question', index: totalQuestions - 1 },
+        ]
+      : Array.from({ length: totalQuestions }, (_, idx) => ({ type: 'question' as const, index: idx }));
     const questionStemTextSizeClass = quizSize === 0
       ? 'text-[14px] leading-6'
       : quizSize === 1
@@ -4641,94 +4701,82 @@ export default function App() {
           {/* Footer Nav */}
           {!quizState.showResults && !quizState.loading && !quizState.error && quizState.questions.length > 0 && (
             <div className={`absolute bottom-0 w-full bg-white/88 dark:bg-surface-800/88 backdrop-blur-2xl border-t border-surface-200/80 dark:border-surface-700/70 z-50 mobile-safe-bottom ${
-              quizSize === 0 ? 'p-2' : 'p-3'
+              quizSize === 0 ? 'p-1.5' : 'p-2.5'
             }`}>
               <div className="max-w-2xl mx-auto">
-                {/* Question dots navigator */}
-                <div className={`flex justify-start sm:justify-center overflow-x-auto no-scrollbar whitespace-nowrap ${quizSize === 0 ? 'gap-1 mb-2' : 'gap-1.5 mb-2.5'}`}>
-                  {leadingQuestionIndices.map((idx) => (
-                    <button
-                      key={`head_${idx}`}
-                      onClick={() => goToQuestion(idx)}
-                      className={`inline-flex items-center justify-center font-bold transition-all duration-200 border ${
-                        quizSize === 0 ? 'w-6 h-6 text-[9px] rounded-md' : 'w-7 h-7 text-[10px] rounded-lg'
-                      } ${idx === quizState.currentQuestionIndex
-                          ? `bg-gradient-to-r ${catColor.gradient} text-white shadow-sm border-transparent`
-                          : quizState.userAnswers[idx] !== null
-                            ? `${catColor.bgLight} ${catColor.bgDark} ${catColor.text} ${catColor.textDark} border-transparent`
-                            : 'bg-surface-100 dark:bg-surface-700 text-surface-400 border-surface-200 dark:border-surface-600'
+                <div className="rounded-2xl border border-surface-200/90 dark:border-surface-700/80 bg-white/95 dark:bg-surface-800/95 overflow-hidden shadow-card dark:shadow-card-dark">
+                  {/* Question Navigator */}
+                  <div className="p-0.5 sm:p-1">
+                    <div
+                      className="grid rounded-xl border border-surface-200/85 dark:border-surface-700/80 overflow-hidden"
+                      style={{
+                        gridTemplateColumns: hasCollapsedQuestionNav
+                          ? '1fr 1fr 1fr 1.25fr 1fr 1fr 1fr'
+                          : `repeat(${Math.max(questionNavItems.length, 1)}, minmax(0, 1fr))`,
+                      }}
+                    >
+                      {questionNavItems.map((item, navIndex) => {
+                        const leftBorderClass = navIndex > 0 ? 'border-l border-surface-200/85 dark:border-surface-700/80' : '';
+                        if (item.type === 'jump') {
+                          return (
+                            <button
+                              key="jump"
+                              onClick={handleJumpToQuestion}
+                              title="Soru numarasina git"
+                              className={`h-7 sm:h-8 flex items-center justify-center font-black tracking-wider text-[9px] bg-surface-100 dark:bg-surface-700 text-surface-500 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-600 transition ${leftBorderClass}`}
+                            >
+                              ...
+                            </button>
+                          );
                         }
-                      `}
-                    >
-                      {idx + 1}
-                    </button>
-                  ))}
 
-                  {hasCollapsedQuestionNav && (
+                        const isActive = item.index === quizState.currentQuestionIndex;
+                        const isAnswered = quizState.userAnswers[item.index] !== null;
+
+                        return (
+                          <button
+                            key={`q_${item.index}`}
+                            onClick={() => goToQuestion(item.index)}
+                            className={`h-7 sm:h-8 flex items-center justify-center font-bold text-[9px] transition-all duration-200 ${
+                              isActive
+                                ? `bg-gradient-to-r ${catColor.gradient} text-white shadow-sm`
+                                : isAnswered
+                                  ? `${catColor.bgLight} ${catColor.bgDark} ${catColor.text} ${catColor.textDark}`
+                                  : 'bg-surface-50 dark:bg-surface-800 text-surface-500 dark:text-surface-300'
+                            } ${leftBorderClass}`}
+                          >
+                            {item.index + 1}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Action Row */}
+                  <div className="grid grid-cols-3 border-t border-surface-200/90 dark:border-surface-700/80">
                     <button
-                      onClick={handleJumpToQuestion}
-                      title="Soru numarasina git"
-                      className={`inline-flex items-center justify-center font-black tracking-wider transition-all duration-200 border bg-surface-100 dark:bg-surface-700 text-surface-500 dark:text-surface-300 border-surface-200 dark:border-surface-600 hover:bg-surface-200 dark:hover:bg-surface-600 ${
-                        quizSize === 0 ? 'w-6 h-6 text-[9px] rounded-md' : 'w-7 h-7 text-[10px] rounded-lg'
-                      }`}
+                      onClick={handlePrevQuestion}
+                      disabled={quizState.currentQuestionIndex === 0}
+                      className="h-9 sm:h-10 border-r border-surface-200/90 dark:border-surface-700/80 bg-surface-100 dark:bg-surface-700 text-surface-600 dark:text-surface-300 font-semibold text-[11px] hover:bg-surface-200 dark:hover:bg-surface-600 transition disabled:opacity-40 disabled:cursor-not-allowed"
                     >
-                      ...
+                      Önceki
                     </button>
-                  )}
 
-                  {trailingQuestionIndices.map((idx) => (
                     <button
-                      key={`tail_${idx}`}
-                      onClick={() => goToQuestion(idx)}
-                      className={`inline-flex items-center justify-center font-bold transition-all duration-200 border ${
-                        quizSize === 0 ? 'w-6 h-6 text-[9px] rounded-md' : 'w-7 h-7 text-[10px] rounded-lg'
-                      } ${idx === quizState.currentQuestionIndex
-                          ? `bg-gradient-to-r ${catColor.gradient} text-white shadow-sm border-transparent`
-                          : quizState.userAnswers[idx] !== null
-                            ? `${catColor.bgLight} ${catColor.bgDark} ${catColor.text} ${catColor.textDark} border-transparent`
-                            : 'bg-surface-100 dark:bg-surface-700 text-surface-400 border-surface-200 dark:border-surface-600'
-                        }
-                      `}
+                      onClick={() => setQuizConfirmAction('finish')}
+                      className="h-9 sm:h-10 border-r border-surface-200/90 dark:border-surface-700/80 bg-gradient-to-r from-rose-800 to-red-700 hover:from-rose-900 hover:to-red-800 text-white font-bold text-[11px] transition"
                     >
-                      {idx + 1}
+                      Bitir
                     </button>
-                  ))}
-                </div>
 
-                {/* Nav Buttons */}
-                <div className={`flex ${quizSize === 0 ? 'gap-2' : 'gap-3'}`}>
-                  <button
-                    onClick={handlePrevQuestion}
-                    disabled={quizState.currentQuestionIndex === 0}
-                    className={`flex-1 rounded-xl font-bold text-surface-600 dark:text-surface-300 bg-surface-100 dark:bg-surface-700 hover:bg-surface-200 dark:hover:bg-surface-600 transition disabled:opacity-40 disabled:cursor-not-allowed border border-surface-200 dark:border-surface-600 ${
-                      quizSize === 0 ? 'py-2 text-xs' : 'py-2.5 text-xs sm:text-sm'
-                    }`}
-                  >
-                    Onceki
-                  </button>
-
-                  <button
-                    onClick={() => setQuizConfirmAction('finish')}
-                    className={`flex-1 rounded-xl font-bold text-red-600 dark:text-red-300 bg-red-50 dark:bg-red-900/20 hover:bg-red-100 dark:hover:bg-red-900/30 transition border border-red-200 dark:border-red-900/40 ${
-                      quizSize === 0 ? 'py-2 text-xs' : 'py-2.5 text-xs sm:text-sm'
-                    }`}
-                  >
-                    Bitir
-                  </button>
-
-                  <button
-                    onClick={handleNextQuestion}
-                    className={`flex-[2] rounded-xl font-bold text-white shadow-lg transition transform active:scale-[0.98] flex items-center justify-center gap-2 ${
-                      quizSize === 0 ? 'py-2 text-xs' : 'py-2.5 text-xs sm:text-sm'
-                    } ${quizState.currentQuestionIndex === quizState.questions.length - 1
-                        ? 'bg-gradient-to-r from-emerald-500 to-green-600 shadow-emerald-500/20'
-                        : `bg-gradient-to-r ${catColor.gradient} ${catColor.shadow}`
-                      }
-                    `}
-                  >
-                    {quizState.currentQuestionIndex === quizState.questions.length - 1 ? 'Testi Bitir' : 'Sonraki'}
-                    <Icon name={quizState.currentQuestionIndex === quizState.questions.length - 1 ? "CheckCircle" : "ChevronRight"} className="w-4 h-4" />
-                  </button>
+                    <button
+                      onClick={handleNextQuestion}
+                      className="h-9 sm:h-10 bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 text-white font-bold text-[11px] transition flex items-center justify-center gap-1"
+                    >
+                      Sonraki
+                      <Icon name="ChevronRight" className="w-3 h-3" />
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -4756,29 +4804,32 @@ export default function App() {
                       <span className="text-3xl font-black text-surface-800 dark:text-white animate-count-up">
                         %{Math.round(scorePercent)}
                       </span>
-                      <span className="text-xs text-surface-400 font-medium">Basari</span>
+                      <span className="text-xs text-surface-400 font-medium">Başarı</span>
                     </div>
                   </div>
 
                   <h3 className="text-2xl font-extrabold text-surface-800 dark:text-white mb-1">
-                    {scorePercent >= 70 ? 'Harika!' : scorePercent >= 40 ? 'Iyi Gidiyorsun' : 'Daha Cok Calismalisin'}
+                    {resultFeedback.title}
                   </h3>
+                  <p className="text-surface-500 dark:text-surface-300 text-sm mb-1.5">
+                    {resultFeedback.detail}
+                  </p>
                   <p className="text-surface-400 text-sm mb-6">
-                    {quizState.questions.length} sorudan {score} tanesini dogru yanitladin.
+                    {quizState.questions.length} sorudan {score} tanesini doğru yanıtladın.
                   </p>
 
                   <div className="grid grid-cols-3 gap-3 mb-6">
                     <div className="bg-emerald-50 dark:bg-emerald-900/20 p-3 rounded-xl">
-                      <span className="block text-[10px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider mb-1">Dogru</span>
+                      <span className="block text-[10px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider mb-1">Doğru</span>
                       <span className="text-2xl font-black text-emerald-500">{score}</span>
                     </div>
                     <div className="bg-red-50 dark:bg-red-900/20 p-3 rounded-xl">
-                      <span className="block text-[10px] font-bold text-red-600 dark:text-red-400 uppercase tracking-wider mb-1">Yanlis</span>
+                      <span className="block text-[10px] font-bold text-red-600 dark:text-red-400 uppercase tracking-wider mb-1">Yanlış</span>
                       <span className="text-2xl font-black text-red-400">{wrongCount}</span>
                     </div>
-                    <div className="bg-slate-100 dark:bg-slate-800/70 p-3 rounded-xl">
-                      <span className="block text-[10px] font-bold text-slate-600 dark:text-slate-300 uppercase tracking-wider mb-1">Bos</span>
-                      <span className="text-2xl font-black text-slate-500 dark:text-slate-200">{blankCount}</span>
+                    <div className="bg-orange-50 dark:bg-orange-900/20 p-3 rounded-xl">
+                      <span className="block text-[10px] font-bold text-orange-600 dark:text-orange-300 uppercase tracking-wider mb-1">Boş</span>
+                      <span className="text-2xl font-black text-orange-500 dark:text-orange-300">{blankCount}</span>
                     </div>
                   </div>
 
@@ -4787,21 +4838,21 @@ export default function App() {
                       onClick={() => { setActiveTopic(null); resetQuiz(); setCurrentView('dashboard'); }}
                       className="flex-1 py-3 rounded-xl font-bold text-sm text-surface-600 dark:text-surface-300 bg-surface-100 dark:bg-surface-700 hover:bg-surface-200 dark:hover:bg-surface-600 transition"
                     >
-                      Ana Menu
+                      Ana Menü
                     </button>
                     <button
                       onClick={() => openQuizSetup(activeTopic.cat, activeTopic.sub)}
                       className={`flex-1 py-3 rounded-xl bg-gradient-to-r ${catColor.gradient} text-white font-bold text-sm hover:opacity-90 shadow-lg ${catColor.shadow} transition flex items-center justify-center gap-2`}
                     >
                       <Icon name="RotateCcw" className="w-3.5 h-3.5" />
-                      Tekrar Coz
+                      Tekrar Çöz
                     </button>
                   </div>
                 </div>
 
                 {/* Question Review */}
                 <div className="space-y-3">
-                  <h4 className="text-sm font-bold text-surface-500 uppercase tracking-wider px-1">Soru Detaylari</h4>
+                  <h4 className="text-sm font-bold text-surface-500 uppercase tracking-wider px-1">Soru Detayları</h4>
                   {quizState.questions.map((q, idx) => {
                     const userAnswer = quizState.userAnswers[idx];
                     const isCorrect = userAnswer === q.correctOptionIndex;
