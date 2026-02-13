@@ -15,6 +15,18 @@ service cloud.firestore {
       allow create, update, delete: if isAdmin();
     }
 
+    // Konu bazli Blogger kaynak sayfalari (tum istemciler okur, admin yazar)
+    match /appConfig/topicBloggerPages {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    // Kategori/konu listesi (tum istemciler okur, admin yazar)
+    match /appConfig/categories {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
     // Hatali soru bildirimleri
     match /questionReports/{reportId} {
       allow read: if isAdmin();

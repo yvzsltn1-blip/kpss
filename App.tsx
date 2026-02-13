@@ -139,6 +139,13 @@ const STORAGE_KEYS = {
 const UNTAGGED_SOURCE_KEY = '__untagged__';
 const QUESTION_ID_MAX_LENGTH = 120;
 const DEFAULT_BLOGGER_JSON_URL = 'https://kpsst.blogspot.com/p/kpss-iott.html';
+const APP_CONFIG_COLLECTION = 'appConfig';
+const CATEGORIES_CONFIG_DOC = 'categories';
+const CATEGORIES_CONFIG_FIELD = 'categories';
+const TOPIC_BLOGGER_PAGES_CONFIG_COLLECTION = APP_CONFIG_COLLECTION;
+const TOPIC_BLOGGER_PAGES_CONFIG_DOC = 'topicBloggerPages';
+const TOPIC_BLOGGER_PAGES_FIELD = 'pages';
+const DELETED_TOPIC_IDS_FIELD = 'deletedTopicIds';
 const runtimeEnv = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env || {};
 const QUESTIONS_SOURCE = (runtimeEnv.VITE_QUESTIONS_SOURCE || 'blogger').toLowerCase();
 const BLOGGER_JSON_URL = (runtimeEnv.VITE_BLOGGER_JSON_URL || DEFAULT_BLOGGER_JSON_URL).trim();
@@ -495,31 +502,52 @@ const fetchBloggerPageHtmlViaJsonp = async (pageUrl: string): Promise<string | n
   });
 };
 
+const normalizeCategories = (value: unknown): Category[] | null => {
+  if (!Array.isArray(value)) return null;
+  const normalized: Category[] = [];
+
+  for (const rawCategory of value) {
+    if (!isRecord(rawCategory)) return null;
+
+    const categoryId = asNonEmptyString(rawCategory.id);
+    const categoryName = asNonEmptyString(rawCategory.name);
+    const iconName = asNonEmptyString(rawCategory.iconName);
+    const description = asNonEmptyString(rawCategory.description);
+    if (!categoryId || !categoryName || !iconName || !description) return null;
+    if (!Array.isArray(rawCategory.subCategories)) return null;
+
+    const subCategories: SubCategory[] = [];
+    for (const rawSubCategory of rawCategory.subCategories) {
+      if (!isRecord(rawSubCategory)) return null;
+      const subCategoryId = asNonEmptyString(rawSubCategory.id);
+      const subCategoryName = asNonEmptyString(rawSubCategory.name);
+      if (!subCategoryId || !subCategoryName) return null;
+      subCategories.push({
+        id: subCategoryId,
+        name: subCategoryName,
+      });
+    }
+
+    normalized.push({
+      id: categoryId,
+      name: categoryName,
+      iconName,
+      description,
+      subCategories,
+    });
+  }
+
+  return normalized;
+};
+
 const getStoredCategories = (): Category[] => {
   if (typeof window === 'undefined') return INITIAL_CATEGORIES;
   try {
     const rawCategories = window.localStorage.getItem(STORAGE_KEYS.categories);
     if (!rawCategories) return INITIAL_CATEGORIES;
     const parsed = JSON.parse(rawCategories);
-    if (!Array.isArray(parsed)) return INITIAL_CATEGORIES;
-
-    const isValid = parsed.every((cat: unknown) => {
-      const typedCat = cat as Partial<Category>;
-      return (
-        typedCat &&
-        typeof typedCat.id === 'string' &&
-        typeof typedCat.name === 'string' &&
-        typeof typedCat.iconName === 'string' &&
-        typeof typedCat.description === 'string' &&
-        Array.isArray(typedCat.subCategories) &&
-        typedCat.subCategories.every((sub: unknown) => {
-          const typedSub = sub as Partial<SubCategory>;
-          return typedSub && typeof typedSub.id === 'string' && typeof typedSub.name === 'string';
-        })
-      );
-    });
-
-    return isValid ? (parsed as Category[]) : INITIAL_CATEGORIES;
+    const normalized = normalizeCategories(parsed);
+    return normalized ?? INITIAL_CATEGORIES;
   } catch {
     return INITIAL_CATEGORIES;
   }
@@ -561,21 +589,92 @@ const getStoredPersistSeenQuestionsToFirestore = (): boolean => {
   return DEFAULT_PERSIST_SEEN_QUESTIONS_TO_FIRESTORE;
 };
 
+const normalizeTopicBloggerPagesMap = (
+  value: unknown,
+  validTopicIds?: Set<string>
+): Record<string, string> => {
+  if (!isRecord(value)) return {};
+  const next: Record<string, string> = {};
+  Object.entries(value).forEach(([topicId, rawUrl]) => {
+    const safeTopicId = asNonEmptyString(topicId);
+    const safeUrl = normalizeHttpUrl(rawUrl);
+    if (!safeTopicId || !safeUrl) return;
+    if (validTopicIds && !validTopicIds.has(safeTopicId)) return;
+    next[safeTopicId] = safeUrl;
+  });
+  return next;
+};
+
+const normalizeTopicIdList = (value: unknown): string[] => {
+  if (!Array.isArray(value)) return [];
+  const unique = new Set<string>();
+  value.forEach((entry) => {
+    const safeTopicId = asNonEmptyString(entry);
+    if (!safeTopicId) return;
+    unique.add(safeTopicId);
+  });
+  return Array.from(unique);
+};
+
+const areStringListsEqual = (left: string[], right: string[]): boolean => {
+  if (left.length !== right.length) return false;
+  return left.every((value, index) => value === right[index]);
+};
+
+const filterCategoriesByDeletedTopicIds = (
+  source: Category[],
+  deletedTopicIds: Set<string>
+): Category[] => {
+  if (deletedTopicIds.size === 0) return source;
+  return source
+    .map((category) => ({
+      ...category,
+      subCategories: category.subCategories.filter((subCategory) => !deletedTopicIds.has(subCategory.id)),
+    }))
+    .filter((category) => category.subCategories.length > 0);
+};
+
+const areCategoriesEqual = (left: Category[], right: Category[]): boolean => {
+  if (left.length !== right.length) return false;
+  return left.every((leftCategory, categoryIndex) => {
+    const rightCategory = right[categoryIndex];
+    if (!rightCategory) return false;
+    if (
+      leftCategory.id !== rightCategory.id ||
+      leftCategory.name !== rightCategory.name ||
+      leftCategory.iconName !== rightCategory.iconName ||
+      leftCategory.description !== rightCategory.description ||
+      leftCategory.subCategories.length !== rightCategory.subCategories.length
+    ) {
+      return false;
+    }
+    return leftCategory.subCategories.every((leftSubCategory, subCategoryIndex) => {
+      const rightSubCategory = rightCategory.subCategories[subCategoryIndex];
+      return Boolean(
+        rightSubCategory &&
+        leftSubCategory.id === rightSubCategory.id &&
+        leftSubCategory.name === rightSubCategory.name
+      );
+    });
+  });
+};
+
+const areTopicBloggerPagesEqual = (
+  left: Record<string, string>,
+  right: Record<string, string>
+): boolean => {
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  if (leftKeys.length !== rightKeys.length) return false;
+  return leftKeys.every((key) => left[key] === right[key]);
+};
+
 const getStoredTopicBloggerPages = (): Record<string, string> => {
   if (typeof window === 'undefined') return {};
   try {
     const raw = window.localStorage.getItem(STORAGE_KEYS.topicBloggerPages);
     if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    if (!isRecord(parsed)) return {};
-    const next: Record<string, string> = {};
-    Object.entries(parsed).forEach(([topicId, rawUrl]) => {
-      const safeTopicId = asNonEmptyString(topicId);
-      const safeUrl = normalizeHttpUrl(rawUrl);
-      if (!safeTopicId || !safeUrl) return;
-      next[safeTopicId] = safeUrl;
-    });
-    return next;
+    return normalizeTopicBloggerPagesMap(JSON.parse(raw));
   } catch {
     return {};
   }
@@ -831,6 +930,7 @@ export default function App() {
   // --- SORULAR STATE (ARTIK BOŞ BAŞLIYOR) ---
   const [allQuestions, setAllQuestions] = useState<Record<string, Question[]>>({});
   const [topicBloggerPages, setTopicBloggerPages] = useState<Record<string, string>>(() => getStoredTopicBloggerPages());
+  const [deletedTopicIds, setDeletedTopicIds] = useState<string[]>([]);
 
   // Quiz State
   const [quizState, setQuizState] = useState<QuizState>({
@@ -912,6 +1012,48 @@ export default function App() {
   const timerRef = useRef<number | null>(null);
   // Auto-advance ref
   const autoAdvanceRef = useRef<number | null>(null);
+  const categoriesRef = useRef<Category[]>(categories);
+  const topicBloggerPagesRef = useRef<Record<string, string>>(topicBloggerPages);
+  const categoriesSeedAttemptedRef = useRef(false);
+  const topicBloggerPagesSeedAttemptedRef = useRef(false);
+  const deletedTopicIdsRef = useRef<string[]>(deletedTopicIds);
+
+  const saveTopicConfigToFirestore = async (options: {
+    pages?: Record<string, string>;
+    deletedTopicIds?: string[];
+  }) => {
+    const payload: Record<string, unknown> = {
+      updatedAt: new Date(),
+      updatedBy: user?.uid || null,
+    };
+    if (options.pages) {
+      const validTopicIds = new Set<string>(
+        categoriesRef.current.flatMap((cat) => cat.subCategories.map((sub) => sub.id))
+      );
+      payload[TOPIC_BLOGGER_PAGES_FIELD] = normalizeTopicBloggerPagesMap(options.pages, validTopicIds);
+    }
+    if (options.deletedTopicIds) {
+      payload[DELETED_TOPIC_IDS_FIELD] = normalizeTopicIdList(options.deletedTopicIds).sort();
+    }
+    await setDoc(
+      doc(db, TOPIC_BLOGGER_PAGES_CONFIG_COLLECTION, TOPIC_BLOGGER_PAGES_CONFIG_DOC),
+      payload,
+      { merge: true }
+    );
+  };
+
+  const saveCategoriesToFirestore = async (nextCategories: Category[]) => {
+    await setDoc(
+      doc(db, APP_CONFIG_COLLECTION, CATEGORIES_CONFIG_DOC),
+      {
+        [CATEGORIES_CONFIG_FIELD]: nextCategories,
+        updatedAt: new Date(),
+        updatedBy: user?.uid || null,
+      },
+      { merge: true }
+    );
+  };
+
   const buildQuestionIdsByTopic = (status: WrongQuestionStatus): Record<string, string[]> => {
     const trackingIdsByTopic: Record<string, Set<string>> = {};
     const legacyTextKeysByTopic: Record<string, Set<string>> = {};
@@ -1010,7 +1152,117 @@ export default function App() {
   }, [categories]);
 
   useEffect(() => {
-    const validTopicIds = new Set(
+    categoriesRef.current = categories;
+  }, [categories]);
+
+  useEffect(() => {
+    deletedTopicIdsRef.current = deletedTopicIds;
+  }, [deletedTopicIds]);
+
+  useEffect(() => {
+    topicBloggerPagesRef.current = topicBloggerPages;
+  }, [topicBloggerPages]);
+
+  useEffect(() => {
+    const categoriesConfigRef = doc(db, APP_CONFIG_COLLECTION, CATEGORIES_CONFIG_DOC);
+    const unsubscribe = onSnapshot(categoriesConfigRef, (snapshot) => {
+      if (!snapshot.exists()) {
+        const cachedCategories = normalizeCategories(categoriesRef.current);
+        if (
+          user?.role === 'admin' &&
+          !categoriesSeedAttemptedRef.current &&
+          cachedCategories &&
+          cachedCategories.length > 0
+        ) {
+          categoriesSeedAttemptedRef.current = true;
+          void setDoc(
+            categoriesConfigRef,
+            {
+              [CATEGORIES_CONFIG_FIELD]: cachedCategories,
+              updatedAt: new Date(),
+              updatedBy: user?.uid || null,
+            },
+            { merge: true }
+          ).catch((error) => {
+            categoriesSeedAttemptedRef.current = false;
+            console.error('Kategoriler Firestorea aktarilamadi:', error);
+          });
+        }
+        return;
+      }
+
+      const data = snapshot.data() as Record<string, unknown>;
+      const remoteCategoriesRaw = data[CATEGORIES_CONFIG_FIELD] ?? data.categories;
+      const remoteCategories = normalizeCategories(remoteCategoriesRaw);
+      if (!remoteCategories) return;
+
+      const deletedTopicSet = new Set<string>(deletedTopicIdsRef.current);
+      const filteredCategories = filterCategoriesByDeletedTopicIds(remoteCategories, deletedTopicSet);
+      setCategories((prev) => (areCategoriesEqual(prev, filteredCategories) ? prev : filteredCategories));
+    }, (error) => {
+      console.error('Kategoriler dinlenemedi:', error);
+    });
+
+    return () => unsubscribe();
+  }, [user?.role, user?.uid]);
+
+  useEffect(() => {
+    const configRef = doc(db, TOPIC_BLOGGER_PAGES_CONFIG_COLLECTION, TOPIC_BLOGGER_PAGES_CONFIG_DOC);
+    const unsubscribe = onSnapshot(configRef, (snapshot) => {
+      const validTopicIds = new Set<string>(
+        categoriesRef.current.flatMap((cat) => cat.subCategories.map((sub) => sub.id))
+      );
+      if (!snapshot.exists()) {
+        const cachedPages = normalizeTopicBloggerPagesMap(topicBloggerPagesRef.current, validTopicIds);
+        if (
+          user?.role === 'admin' &&
+          !topicBloggerPagesSeedAttemptedRef.current &&
+          Object.keys(cachedPages).length > 0
+        ) {
+          topicBloggerPagesSeedAttemptedRef.current = true;
+          void setDoc(
+            configRef,
+            {
+              [TOPIC_BLOGGER_PAGES_FIELD]: cachedPages,
+              updatedAt: new Date(),
+              updatedBy: user?.uid || null,
+            },
+            { merge: true }
+          ).catch((error) => {
+            topicBloggerPagesSeedAttemptedRef.current = false;
+            console.error('Topic Blogger sayfa linkleri Firestorea aktarilamadi:', error);
+          });
+        }
+        return;
+      }
+
+      const data = snapshot.data() as Record<string, unknown>;
+      const remoteDeletedTopicIds = normalizeTopicIdList(data[DELETED_TOPIC_IDS_FIELD]).sort();
+      const deletedTopicSet = new Set<string>(remoteDeletedTopicIds);
+      setDeletedTopicIds((prev) => (areStringListsEqual(prev, remoteDeletedTopicIds) ? prev : remoteDeletedTopicIds));
+      setCategories((prev) => {
+        const filtered = filterCategoriesByDeletedTopicIds(prev, deletedTopicSet);
+        return areCategoriesEqual(prev, filtered) ? prev : filtered;
+      });
+      const remotePagesRaw = data[TOPIC_BLOGGER_PAGES_FIELD] ?? data.topicBloggerPages;
+      const remotePages = normalizeTopicBloggerPagesMap(remotePagesRaw, validTopicIds);
+      const remotePagesWithoutDeleted: Record<string, string> = {};
+      Object.entries(remotePages).forEach(([topicId, pageUrl]) => {
+        if (deletedTopicSet.has(topicId)) return;
+        remotePagesWithoutDeleted[topicId] = pageUrl;
+      });
+      setTopicBloggerPages((prev) => (
+        areTopicBloggerPagesEqual(prev, remotePagesWithoutDeleted) ? prev : remotePagesWithoutDeleted
+      ));
+    }, (error) => {
+      console.error('Topic Blogger sayfa linkleri dinlenemedi:', error);
+    });
+
+    return () => unsubscribe();
+  }, [user?.role, user?.uid]);
+
+  useEffect(() => {
+    const validTopicIds = new Set<string>(
       categories.flatMap((cat) => cat.subCategories.map((sub) => sub.id))
     );
     setTopicBloggerPages((prev) => {
@@ -1027,6 +1279,27 @@ export default function App() {
       return changed ? next : prev;
     });
   }, [categories]);
+
+  useEffect(() => {
+    const loadedTopicIds = Object.keys(allQuestions);
+    if (loadedTopicIds.length === 0) return;
+
+    const currentTopicIds = new Set(
+      categories.flatMap((cat) => cat.subCategories.map((sub) => sub.id))
+    );
+    const hasOverlapWithCurrent = loadedTopicIds.some((topicId) => currentTopicIds.has(topicId));
+    if (hasOverlapWithCurrent) return;
+
+    const defaultTopicIds = new Set(
+      INITIAL_CATEGORIES.flatMap((cat) => cat.subCategories.map((sub) => sub.id))
+    );
+    const hasOverlapWithDefault = loadedTopicIds.some((topicId) => defaultTopicIds.has(topicId));
+    if (!hasOverlapWithDefault) return;
+
+    console.warn('Kayitli kategori kimlikleri yuklenen soru kimlikleriyle eslesmiyor. Varsayilan kategorilere donuluyor.');
+    setCategories(filterCategoriesByDeletedTopicIds(INITIAL_CATEGORIES, new Set(deletedTopicIds)));
+    setActiveCategory(null);
+  }, [allQuestions, categories, deletedTopicIds]);
 
   useEffect(() => {
     try {
@@ -1102,47 +1375,56 @@ export default function App() {
       const safeUrl = normalizeHttpUrl(url);
       if (!safeUrl) return null;
       try {
-        let html: string | null = null;
-        const shouldPreferJsonp =
-          typeof window !== 'undefined' &&
-          (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
-
-        if (shouldPreferJsonp) {
-          html = await fetchBloggerPageHtmlViaJsonp(safeUrl);
-        }
-
-        if (!html) {
-          try {
-            const response = await fetch(safeUrl, { cache: 'no-store' });
-            if (!response.ok) {
-              throw new Error(`Blogger istegi basarisiz: ${response.status}`);
-            }
-            html = await response.text();
-          } catch (fetchError) {
-            const htmlFromJsonp = await fetchBloggerPageHtmlViaJsonp(safeUrl);
-            if (htmlFromJsonp) {
-              html = htmlFromJsonp;
-            } else {
-              throw fetchError;
-            }
+        const parseFromHtml = (html: string, source: 'fetch' | 'jsonp'): Record<string, Question[]> => {
+          const jsonText = extractJsonTextFromHtml(html);
+          if (!jsonText) {
+            throw new Error(`${source}: kpss-json etiketinde JSON bulunamadi.`);
           }
+
+          const parsedPayload = parseExternalJsonPayload(jsonText);
+          const groupedQuestions = parseQuestionsFromExternalPayload(parsedPayload);
+          if (Object.keys(groupedQuestions).length === 0) {
+            throw new Error(`${source}: Blogger JSON icinde gecerli soru bulunamadi.`);
+          }
+          return groupedQuestions;
+        };
+
+        const isBloggerHost = (() => {
+          try {
+            const host = new URL(safeUrl).hostname.toLowerCase();
+            return (
+              host === 'blogspot.com' ||
+              host.endsWith('.blogspot.com') ||
+              host === 'blogger.com' ||
+              host.endsWith('.blogger.com')
+            );
+          } catch {
+            return false;
+          }
+        })();
+
+        if (isBloggerHost) {
+          const htmlFromJsonp = await fetchBloggerPageHtmlViaJsonp(safeUrl);
+          if (!htmlFromJsonp) {
+            throw new Error('jsonp: Blogger HTML alinamadi.');
+          }
+          return parseFromHtml(htmlFromJsonp, 'jsonp');
         }
 
-        if (!html) {
-          throw new Error('Blogger HTML alinamadi.');
+        try {
+          const response = await fetch(safeUrl, { cache: 'no-store' });
+          if (!response.ok) {
+            throw new Error(`Blogger istegi basarisiz: ${response.status}`);
+          }
+          const htmlFromFetch = await response.text();
+          return parseFromHtml(htmlFromFetch, 'fetch');
+        } catch (fetchOrParseError) {
+          const htmlFromJsonp = await fetchBloggerPageHtmlViaJsonp(safeUrl);
+          if (!htmlFromJsonp) {
+            throw fetchOrParseError;
+          }
+          return parseFromHtml(htmlFromJsonp, 'jsonp');
         }
-
-        const jsonText = extractJsonTextFromHtml(html);
-        if (!jsonText) {
-          throw new Error('kpss-json etiketinde JSON bulunamadi.');
-        }
-
-        const parsedPayload = parseExternalJsonPayload(jsonText);
-        const groupedQuestions = parseQuestionsFromExternalPayload(parsedPayload);
-        if (Object.keys(groupedQuestions).length === 0) {
-          throw new Error('Blogger JSON icinde gecerli soru bulunamadi.');
-        }
-        return groupedQuestions;
       } catch (error) {
         console.error(`Blogger sorulari yuklenemedi (${safeUrl}):`, error);
         return null;
@@ -1229,7 +1511,8 @@ export default function App() {
       }
 
       try {
-        const token = await firebaseUser.getIdTokenResult();
+        // Force refresh token to get latest custom claims (admin)
+        const token = await firebaseUser.getIdTokenResult(true);
         const role: User['role'] = token.claims.admin === true ? 'admin' : 'user';
         const fallbackName = firebaseUser.email ? firebaseUser.email.split('@')[0] : 'Kullanici';
         const username = firebaseUser.displayName?.trim() || fallbackName;
@@ -2428,40 +2711,61 @@ export default function App() {
     }
   };
 
-  const handleAddCategory = () => {
-    if (!newCategoryName.trim()) return;
+  const handleAddCategory = async () => {
+    const nextCategoryName = newCategoryName.trim();
+    if (!nextCategoryName) return;
     const newCat: Category = {
       id: Date.now().toString(),
-      name: newCategoryName,
+      name: nextCategoryName,
       iconName: 'BookOpen',
       description: 'Yeni eklenen kategori',
       subCategories: []
     };
-    setCategories([...categories, newCat]);
+    const previousCategories = categories;
+    const nextCategories = [...previousCategories, newCat];
+    setCategories(nextCategories);
     setNewCategoryName('');
     setIsCategoryModalOpen(false);
+    try {
+      await saveCategoriesToFirestore(nextCategories);
+    } catch (error) {
+      console.error('Kategori kaydedilemedi:', error);
+      setCategories(previousCategories);
+      alert('Kategori kaydedilemedi. Lutfen tekrar deneyin.');
+    }
   };
 
-  const handleAddTopic = () => {
-    if (!newTopicName.trim()) return;
+  const handleAddTopic = async () => {
+    const nextTopicName = newTopicName.trim();
+    if (!nextTopicName) return;
     let targetCatId = activeCategory?.id;
     if (currentView === 'admin' && adminSelectedCatId) targetCatId = adminSelectedCatId;
     if (!targetCatId) return;
 
-    const newSub: SubCategory = { id: Date.now().toString(), name: newTopicName };
-    const updatedCategories = categories.map(c => {
+    const newSub: SubCategory = { id: Date.now().toString(), name: nextTopicName };
+    const previousCategories = categories;
+    const previousActiveCategory = activeCategory;
+    const updatedCategories = previousCategories.map(c => {
       if (c.id === targetCatId) return { ...c, subCategories: [...c.subCategories, newSub] };
       return c;
     });
     setCategories(updatedCategories);
-    if (activeCategory && activeCategory.id === targetCatId) {
-        setActiveCategory(prev => prev ? { ...prev, subCategories: [...prev.subCategories, newSub] } : null);
+    if (previousActiveCategory && previousActiveCategory.id === targetCatId) {
+      setActiveCategory(updatedCategories.find((cat) => cat.id === targetCatId) || null);
     }
     setNewTopicName('');
     setIsTopicModalOpen(false);
+    try {
+      await saveCategoriesToFirestore(updatedCategories);
+    } catch (error) {
+      console.error('Konu kaydedilemedi:', error);
+      setCategories(previousCategories);
+      setActiveCategory(previousActiveCategory);
+      alert('Konu kaydedilemedi. Lutfen tekrar deneyin.');
+    }
   };
 
-  const handleRenameTopic = () => {
+  const handleRenameTopic = async () => {
     if (!adminSelectedCatId || !adminSelectedTopicId) return;
     const selectedCategory = categories.find((cat) => cat.id === adminSelectedCatId);
     const selectedTopic = selectedCategory?.subCategories.find((sub) => sub.id === adminSelectedTopicId);
@@ -2476,7 +2780,9 @@ export default function App() {
     }
     if (nextName === selectedTopic.name) return;
 
-    setCategories((prev) => prev.map((cat) => {
+    const previousCategories = categories;
+    const previousActiveCategory = activeCategory;
+    const nextCategories = previousCategories.map((cat) => {
       if (cat.id !== adminSelectedCatId) return cat;
       return {
         ...cat,
@@ -2486,21 +2792,24 @@ export default function App() {
             : sub
         )),
       };
-    }));
-    setActiveCategory((prev) => {
-      if (!prev || prev.id !== adminSelectedCatId) return prev;
-      return {
-        ...prev,
-        subCategories: prev.subCategories.map((sub) => (
-          sub.id === adminSelectedTopicId
-            ? { ...sub, name: nextName }
-            : sub
-        )),
-      };
     });
+
+    setCategories(nextCategories);
+    if (previousActiveCategory && previousActiveCategory.id === adminSelectedCatId) {
+      setActiveCategory(nextCategories.find((cat) => cat.id === adminSelectedCatId) || null);
+    }
+
+    try {
+      await saveCategoriesToFirestore(nextCategories);
+    } catch (error) {
+      console.error('Konu adi kaydedilemedi:', error);
+      setCategories(previousCategories);
+      setActiveCategory(previousActiveCategory);
+      alert('Konu adi kaydedilemedi. Lutfen tekrar deneyin.');
+    }
   };
 
-  const handleSetTopicBloggerPage = () => {
+  const handleSetTopicBloggerPage = async () => {
     if (!adminSelectedTopicId) return;
     const currentUrl = topicBloggerPages[adminSelectedTopicId] || '';
     const rawUrl = window.prompt(
@@ -2511,12 +2820,18 @@ export default function App() {
 
     const trimmed = rawUrl.trim();
     if (!trimmed) {
-      setTopicBloggerPages((prev) => {
-        if (!prev[adminSelectedTopicId]) return prev;
-        const next = { ...prev };
-        delete next[adminSelectedTopicId];
-        return next;
-      });
+      const previousPages = topicBloggerPages;
+      if (!previousPages[adminSelectedTopicId]) return;
+      const nextPages = { ...previousPages };
+      delete nextPages[adminSelectedTopicId];
+      setTopicBloggerPages(nextPages);
+      try {
+        await saveTopicConfigToFirestore({ pages: nextPages });
+      } catch (error) {
+        console.error('Topic Blogger linki temizlenemedi:', error);
+        setTopicBloggerPages(previousPages);
+        alert('Blogger linki kaydedilemedi. Lutfen tekrar deneyin.');
+      }
       return;
     }
 
@@ -2526,10 +2841,20 @@ export default function App() {
       return;
     }
 
-    setTopicBloggerPages((prev) => ({
-      ...prev,
+    const previousPages = topicBloggerPages;
+    const nextPages = {
+      ...previousPages,
       [adminSelectedTopicId]: safeUrl,
-    }));
+    };
+    if (areTopicBloggerPagesEqual(previousPages, nextPages)) return;
+    setTopicBloggerPages(nextPages);
+    try {
+      await saveTopicConfigToFirestore({ pages: nextPages });
+    } catch (error) {
+      console.error('Topic Blogger linki kaydedilemedi:', error);
+      setTopicBloggerPages(previousPages);
+      alert('Blogger linki kaydedilemedi. Lutfen tekrar deneyin.');
+    }
   };
 
   const handleDeleteTopic = async () => {
@@ -2558,20 +2883,19 @@ export default function App() {
         await batch.commit();
       }
 
-      setCategories((prev) => prev.map((cat) => {
+      const previousCategories = categories;
+      const previousActiveCategory = activeCategory;
+      const nextCategories = previousCategories.map((cat) => {
         if (cat.id !== adminSelectedCatId) return cat;
         return {
           ...cat,
           subCategories: cat.subCategories.filter((sub) => sub.id !== adminSelectedTopicId),
         };
-      }));
-      setActiveCategory((prev) => {
-        if (!prev || prev.id !== adminSelectedCatId) return prev;
-        return {
-          ...prev,
-          subCategories: prev.subCategories.filter((sub) => sub.id !== adminSelectedTopicId),
-        };
       });
+      setCategories(nextCategories);
+      if (previousActiveCategory && previousActiveCategory.id === adminSelectedCatId) {
+        setActiveCategory(nextCategories.find((cat) => cat.id === adminSelectedCatId) || null);
+      }
 
       if (activeTopic?.sub.id === adminSelectedTopicId) {
         resetQuiz();
@@ -2579,16 +2903,35 @@ export default function App() {
         setCurrentView('dashboard');
       }
 
+      const topicIdToDelete = adminSelectedTopicId;
+      const previousPages = topicBloggerPages;
+      const nextPages = { ...previousPages };
+      delete nextPages[topicIdToDelete];
+      const nextDeletedTopicIds = normalizeTopicIdList([...deletedTopicIds, topicIdToDelete]).sort();
+
       setAdminSelectedTopicId('');
       setAdminQuestionSearch('');
       setAdminQuestionPage(1);
       setIsAdminActionsOpen(false);
-      setTopicBloggerPages((prev) => {
-        if (!prev[adminSelectedTopicId]) return prev;
-        const next = { ...prev };
-        delete next[adminSelectedTopicId];
-        return next;
-      });
+      if (!areCategoriesEqual(previousCategories, nextCategories)) {
+        try {
+          await saveCategoriesToFirestore(nextCategories);
+        } catch (error) {
+          console.error('Konu silme sonrasi kategori listesi kaydedilemedi:', error);
+          alert('Konu silindi ancak kategori listesi senkronize edilemedi. Lutfen tekrar deneyin.');
+        }
+      }
+      const shouldPersistConfig =
+        !areTopicBloggerPagesEqual(previousPages, nextPages) ||
+        !areStringListsEqual(deletedTopicIds, nextDeletedTopicIds);
+      if (shouldPersistConfig) {
+        await saveTopicConfigToFirestore({
+          pages: nextPages,
+          deletedTopicIds: nextDeletedTopicIds,
+        });
+        setTopicBloggerPages(nextPages);
+        setDeletedTopicIds(nextDeletedTopicIds);
+      }
       handleCloseAdminPreview();
     } catch (error) {
       console.error('Konu silme hatasi:', error);
@@ -4463,6 +4806,20 @@ export default function App() {
                   </div>
                 </div>
 
+                {adminSelectedCatId && (
+                  <div className="mb-6 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-50/60 dark:bg-surface-900/40 p-3">
+                    <p className="text-xs text-surface-500 dark:text-surface-400">
+                      Secili ders: <span className="font-bold text-surface-700 dark:text-surface-200">{adminSelectedCategory?.name || adminSelectedCatId}</span>
+                    </p>
+                    <button
+                      onClick={() => setIsTopicModalOpen(true)}
+                      className="px-4 py-2.5 bg-surface-100 dark:bg-surface-700 text-surface-600 dark:text-surface-300 rounded-lg hover:bg-surface-200 dark:hover:bg-surface-600 transition font-bold text-xs"
+                    >
+                      Konu Ekle
+                    </button>
+                  </div>
+                )}
+
                 {adminSelectedTopic && (
                   <div className="mb-6 rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-50/60 dark:bg-surface-900/40 p-3">
                     <div className="flex flex-col gap-2">
@@ -4624,12 +4981,6 @@ export default function App() {
                         Sorular <span className="text-surface-400 ml-1.5 text-sm font-medium">({adminTopicQuestions.length})</span>
                       </h3>
                       <div className="flex gap-2 flex-wrap">
-                        <button
-                          onClick={() => setIsTopicModalOpen(true)}
-                          className="px-4 py-2.5 bg-surface-100 dark:bg-surface-700 text-surface-600 dark:text-surface-300 rounded-lg hover:bg-surface-200 dark:hover:bg-surface-600 transition font-bold text-xs"
-                        >
-                          Konu Ekle
-                        </button>
                         <button
                           onClick={() => setIsQuestionModalOpen(true)}
                           disabled={isAdminTopicExternallySourced}

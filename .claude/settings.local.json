@@ -4,7 +4,16 @@
       "Bash(ls:*)",
       "Bash(npx vite build:*)",
       "Bash(wc:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(firebase projects:list:*)",
+      "Bash(firebase firestore:rules:*)",
+      "Bash(firebase deploy:*)",
+      "Bash(firebase auth:export:*)",
+      "Bash(firebase auth:import:*)",
+      "Bash(npm run build:*)",
+      "Bash(netstat:*)",
+      "Bash(findstr:*)",
+      "Bash(start update-blogger-pages.html)"
     ]
   }
 }
