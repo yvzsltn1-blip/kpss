@@ -115,6 +115,7 @@ const DEFAULT_COLOR = {
 
 const getCatColor = (id: string) => CATEGORY_COLORS[id] || DEFAULT_COLOR;
 const ADMIN_QUESTIONS_PER_PAGE = 5;
+const QUESTION_JUMP_PICKER_ROW_HEIGHT = 40;
 const WRONG_RECOVERY_STREAK_TARGET = 3;
 const RESOLVED_RETENTION_DAYS = 45;
 const RESOLVED_RETENTION_MS = RESOLVED_RETENTION_DAYS * 24 * 60 * 60 * 1000;
@@ -921,6 +922,7 @@ export default function App() {
   });
   const [questionCountInputValue, setQuestionCountInputValue] = useState('10');
   const [quizTagQuestionCounts, setQuizTagQuestionCounts] = useState<Record<string, number>>({});
+  const [quizTagPickerSourceKey, setQuizTagPickerSourceKey] = useState('');
 
   // --- SORULAR STATE (ARTIK BOŞ BAŞLIYOR) ---
   const [allQuestions, setAllQuestions] = useState<Record<string, Question[]>>({});
@@ -944,6 +946,7 @@ export default function App() {
   const [adminSelectedCatId, setAdminSelectedCatId] = useState<string>('');
   const [adminSelectedTopicId, setAdminSelectedTopicId] = useState<string>('');
   const [adminQuestionSearch, setAdminQuestionSearch] = useState('');
+  const [adminSelectedSourceTag, setAdminSelectedSourceTag] = useState<string>('all');
   const [adminQuestionPage, setAdminQuestionPage] = useState(1);
   const [isAdminActionsOpen, setIsAdminActionsOpen] = useState(false);
   const [adminPreviewQuestion, setAdminPreviewQuestion] = useState<Question | null>(null);
@@ -954,6 +957,8 @@ export default function App() {
   const [reportingQuestion, setReportingQuestion] = useState<Question | null>(null);
   const [reportNote, setReportNote] = useState('');
   const [quizConfirmAction, setQuizConfirmAction] = useState<QuizConfirmAction | null>(null);
+  const [isQuestionJumpModalOpen, setIsQuestionJumpModalOpen] = useState(false);
+  const [questionJumpTargetIndex, setQuestionJumpTargetIndex] = useState(0);
   const [isResetStatsModalOpen, setIsResetStatsModalOpen] = useState(false);
   const [resetStatsTargetTopic, setResetStatsTargetTopic] = useState<{ id: string; name: string } | null>(null);
   const [quizStatusFilter, setQuizStatusFilter] = useState<QuizStatusFilter>({ wrong: false, favorite: false });
@@ -1010,6 +1015,7 @@ export default function App() {
   const timerRef = useRef<number | null>(null);
   // Auto-advance ref
   const autoAdvanceRef = useRef<number | null>(null);
+  const questionJumpPickerRef = useRef<HTMLDivElement | null>(null);
   const categoriesRef = useRef<Category[]>(categories);
   const topicBloggerPagesRef = useRef<Record<string, string>>(topicBloggerPages);
   const statisticsScopeMenuRef = useRef<HTMLDivElement | null>(null);
@@ -2081,6 +2087,7 @@ export default function App() {
   const resetQuiz = () => {
     if (timerRef.current) clearInterval(timerRef.current);
     if (autoAdvanceRef.current) clearTimeout(autoAdvanceRef.current);
+    setIsQuestionJumpModalOpen(false);
     setReportingQuestion(null);
     setReportNote('');
     setQuizConfirmAction(null);
@@ -2123,6 +2130,7 @@ export default function App() {
     const initialQuestionCount = filteredCount > 0 ? Math.min(10, filteredCount) : 0;
     setQuizStatusFilter(nextStatusFilter);
     setQuizTagQuestionCounts({});
+    setQuizTagPickerSourceKey('');
     setQuizConfig({
       questionCount: initialQuestionCount,
       durationSeconds: getAutoDurationForQuestionCount(initialQuestionCount),
@@ -3074,6 +3082,7 @@ export default function App() {
 
       setAdminSelectedTopicId('');
       setAdminQuestionSearch('');
+      setAdminSelectedSourceTag('all');
       setAdminQuestionPage(1);
       setIsAdminActionsOpen(false);
       if (!areCategoriesEqual(previousCategories, nextCategories)) {
@@ -3315,10 +3324,16 @@ export default function App() {
   const isAdminTopicExternallySourced = Boolean(adminSelectedTopicBloggerPage);
 
   const adminTopicQuestions = adminSelectedTopicId ? (allQuestions[adminSelectedTopicId] || []) : [];
+  const adminAvailableSourceTags: string[] = Array.from(
+    new Set<string>(adminTopicQuestions.map((question) => getQuestionSourceKey(question)))
+  ).sort((a, b) => getSourceTagLabel(a).localeCompare(getSourceTagLabel(b), 'tr'));
   const normalizedAdminSearch = adminQuestionSearch.trim().toLocaleLowerCase('tr');
   const adminFilteredQuestions = adminTopicQuestions
     .map((question, originalIndex) => ({ question, originalIndex }))
     .filter(({ question }) => {
+      const matchesSourceTag =
+        adminSelectedSourceTag === 'all' || getQuestionSourceKey(question) === adminSelectedSourceTag;
+      if (!matchesSourceTag) return false;
       if (!normalizedAdminSearch) return true;
       const haystack = [
         question.questionText,
@@ -3343,10 +3358,26 @@ export default function App() {
   }, [adminQuestionPage, adminSafePage]);
 
   useEffect(() => {
+    if (adminSelectedSourceTag === 'all') return;
+    if (!adminAvailableSourceTags.includes(adminSelectedSourceTag)) {
+      setAdminSelectedSourceTag('all');
+    }
+  }, [adminAvailableSourceTags, adminSelectedSourceTag]);
+
+  useEffect(() => {
     if (!adminSelectedTopicId || currentView !== 'admin') {
       setIsAdminActionsOpen(false);
     }
   }, [adminSelectedTopicId, currentView]);
+
+  useEffect(() => {
+    if (!isQuestionJumpModalOpen || currentView !== 'quiz') return;
+    const picker = questionJumpPickerRef.current;
+    if (!picker) return;
+    const safeQuestionCount = Math.max(quizState.questions.length, 1);
+    const safeTargetIndex = Math.min(Math.max(questionJumpTargetIndex, 0), safeQuestionCount - 1);
+    picker.scrollTop = safeTargetIndex * QUESTION_JUMP_PICKER_ROW_HEIGHT;
+  }, [isQuestionJumpModalOpen, currentView, quizState.questions.length]);
 
   const calculateScore = () => {
     if (!quizState.questions || quizState.questions.length === 0) return 0;
@@ -3824,7 +3855,7 @@ export default function App() {
     const favoriteOnlyQuestionCount = getFilteredQuestionsByStatus({ wrong: false, favorite: true }).length;
     const maxQuestions = setupTopicQuestions.length;
     const activeSourceLabels = [
-      quizStatusFilter.wrong ? 'yanlis' : '',
+      quizStatusFilter.wrong ? 'yanlış' : '',
       quizStatusFilter.favorite ? 'favori' : '',
     ].filter((label) => label.length > 0);
     const catColor = getCatColor(activeTopic.cat.id);
@@ -3853,6 +3884,37 @@ export default function App() {
       const selectedCount = quizTagQuestionCounts[option.sourceKey] || 0;
       return selectedCount > 0 ? sum + option.totalCount : sum;
     }, 0);
+    const selectedTagEntries = sourceTagOptions
+      .map((option) => {
+        const selectedCount = Math.min(
+          option.totalCount,
+          Math.max(0, quizTagQuestionCounts[option.sourceKey] || 0)
+        );
+        return {
+          ...option,
+          selectedCount,
+        };
+      })
+      .filter((entry) => entry.selectedCount > 0);
+    const quizTagPickerValue = sourceTagOptions.some((option) => option.sourceKey === quizTagPickerSourceKey)
+      ? quizTagPickerSourceKey
+      : (sourceTagOptions[0]?.sourceKey || '');
+    const activeTagOption = sourceTagOptions.find((option) => option.sourceKey === quizTagPickerValue) || null;
+    const activeTagSelectedCount = activeTagOption
+      ? Math.min(activeTagOption.totalCount, Math.max(0, quizTagQuestionCounts[activeTagOption.sourceKey] || 0))
+      : 0;
+    const activeTagSelectedWithoutCurrent = Math.max(0, selectedTagTotalQuestionCount - activeTagSelectedCount);
+    const activeTagMaxSelectable = activeTagOption
+      ? Math.min(
+          activeTagOption.totalCount,
+          Math.max(0, quizConfig.questionCount - activeTagSelectedWithoutCurrent)
+        )
+      : 0;
+    const activeTagCannotEnable = Boolean(
+      activeTagOption &&
+      activeTagSelectedCount === 0 &&
+      activeTagMaxSelectable === 0
+    );
     const questionCountMax = isTagDistributionActive ? selectedTagAvailableQuestionCount : maxQuestions;
     const effectiveQuestionCount = isTagDistributionActive ? selectedTagTotalQuestionCount : quizConfig.questionCount;
     const clampTagQuestionCountsToLimit = (
@@ -3880,6 +3942,7 @@ export default function App() {
         : 0;
       setQuizStatusFilter(nextStatusFilter);
       setQuizTagQuestionCounts({});
+      setQuizTagPickerSourceKey('');
       setQuizConfig((prev) => ({
         ...prev,
         questionCount: nextQuestionCount,
@@ -3952,7 +4015,7 @@ export default function App() {
             className="flex items-center gap-2 text-surface-400 hover:text-surface-700 dark:hover:text-white transition-colors mb-4 md:mb-6 font-medium text-xs md:text-sm"
           >
             <Icon name="ArrowLeft" className="w-4 h-4" />
-            Geri Don
+            Geri Dön
           </button>
 
           <div className="bg-white dark:bg-surface-800 rounded-2xl md:rounded-3xl shadow-card dark:shadow-card-dark p-4 sm:p-5 md:p-9 border border-surface-100 dark:border-surface-700">
@@ -3961,7 +4024,7 @@ export default function App() {
               <div className={`w-12 h-12 md:w-16 md:h-16 ${catColor.bgLight} ${catColor.bgDark} rounded-xl md:rounded-2xl mx-auto flex items-center justify-center mb-3 md:mb-5 ${catColor.text} ${catColor.textDark}`}>
                 <Icon name="Settings" className="w-6 h-6 md:w-8 md:h-8" />
               </div>
-              <h2 className="text-xl md:text-2xl font-extrabold text-surface-800 dark:text-white mb-1">Sinavi Ozellestir</h2>
+              <h2 className="text-xl md:text-2xl font-extrabold text-surface-800 dark:text-white mb-1">Sınavı özelleştir</h2>
               <p className="text-surface-400 text-xs md:text-sm break-words">{activeTopic.cat.name} &middot; {activeTopic.sub.name}</p>
             </div>
 
@@ -3973,10 +4036,10 @@ export default function App() {
                   <div className="flex items-center justify-between mb-3">
                     <label className="font-bold text-surface-700 dark:text-surface-200 text-sm flex items-center gap-2">
                       <Icon name="Target" className="w-4 h-4 text-surface-400" />
-                      Soru Kaynagi
+                      Soru Kaynağı
                     </label>
                     <span className="text-[11px] font-bold text-surface-500 dark:text-surface-300 bg-white dark:bg-surface-800 px-2 py-0.5 rounded-full border border-surface-200 dark:border-surface-600">
-                      {statusFilterActive ? `${maxQuestions} soru` : 'Tum sorular'}
+                      {statusFilterActive ? `${maxQuestions} soru` : 'Tüm sorular'}
                     </span>
                   </div>
 
@@ -3990,7 +4053,7 @@ export default function App() {
                           : 'border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800'
                       } disabled:opacity-40 disabled:cursor-not-allowed`}
                     >
-                      <p className="text-[11px] md:text-xs font-bold text-surface-700 dark:text-surface-200">Yanlislarim</p>
+                      <p className="text-[11px] md:text-xs font-bold text-surface-700 dark:text-surface-200">Yanlışlarım</p>
                       <p className="text-[11px] text-red-600 dark:text-red-300 mt-0.5">{wrongOnlyQuestionCount} soru</p>
                     </button>
                     <button
@@ -4010,7 +4073,7 @@ export default function App() {
                   {statusFilterActive && (
                     <div className="mt-2.5 flex items-center justify-between">
                       <p className="text-[11px] text-brand-600 dark:text-brand-300 font-medium">
-                        {`Sadece ${activeSourceLabels.join(' + ')} sorulardan secilecek.`}
+                        {`Sadece ${activeSourceLabels.join(' + ')} sorulardan seçilecek.`}
                       </p>
                       <button
                         onClick={() => updateQuizStatusFilter({ wrong: false, favorite: false })}
@@ -4028,7 +4091,7 @@ export default function App() {
                 <div className="flex justify-between items-center mb-3">
                   <label className="font-bold text-surface-700 dark:text-surface-200 text-sm flex items-center gap-2">
                     <Icon name="Hash" className="w-4 h-4 text-surface-400" />
-                    Soru Sayisi
+                    Soru Sayısı
                   </label>
                   <span className={`${catColor.text} ${catColor.textDark} font-bold ${catColor.bgLight} ${catColor.bgDark} px-2.5 py-0.5 rounded-full text-xs`}>
                     Max: {questionCountMax}
@@ -4073,10 +4136,10 @@ export default function App() {
                     className="w-14 h-10 bg-white dark:bg-surface-800 border border-surface-200 dark:border-surface-600 rounded-xl font-extrabold text-lg text-surface-800 dark:text-white text-center outline-none focus:border-brand-500 disabled:opacity-50"
                   />
                 </div>
-                {questionCountMax === 0 && <p className="text-red-500 text-xs mt-2 font-medium">Bu konuda henuz soru bulunmuyor.</p>}
+                {questionCountMax === 0 && <p className="text-red-500 text-xs mt-2 font-medium">Bu konuda henüz soru bulunmuyor.</p>}
                 {isTagDistributionActive && (
                   <p className="text-[11px] text-brand-600 dark:text-brand-300 mt-2 font-medium">
-                    Etiket dagilimi aktif. Secili etiket toplam sorusu: {selectedTagTotalQuestionCount}.
+                    Etiket dağılımı aktif. Seçili etiket toplam sorusu: {selectedTagTotalQuestionCount}.
                   </p>
                 )}
               </div>
@@ -4087,94 +4150,111 @@ export default function App() {
                   <div className="flex items-center justify-between mb-3">
                     <label className="font-bold text-surface-700 dark:text-surface-200 text-sm flex items-center gap-2">
                       <Icon name="BookOpen" className="w-4 h-4 text-surface-400" />
-                      Etiket Dagilimi
+                      Etiket dağılımı
                     </label>
                     <span className="text-[11px] font-bold text-surface-500 dark:text-surface-300 bg-white dark:bg-surface-800 px-2 py-0.5 rounded-full border border-surface-200 dark:border-surface-600">
-                      Secili: {selectedTagTotalQuestionCount} / {quizConfig.questionCount}
+                      Seçili: {selectedTagTotalQuestionCount} / {quizConfig.questionCount}
                     </span>
                   </div>
 
                   <p className="text-xs text-surface-400 mb-3">
-                    Bir veya birden fazla etiket secip her etiketten kac soru gelecegini belirleyin. 0 degeri, o etiketi kapatir.
+                    Etiketi açılır menüden seçin, ardından bu etiketten kaç soru geleceğini belirleyin.
                   </p>
 
-                  <div className="space-y-2 max-h-[52vh] md:max-h-56 overflow-y-auto custom-scrollbar pr-0.5 md:pr-1">
-                    {sourceTagOptions.map((option) => {
-                      const selectedCount = Math.min(
-                        option.totalCount,
-                        Math.max(0, quizTagQuestionCounts[option.sourceKey] || 0)
-                      );
-                      const isSelected = selectedCount > 0;
-                      const selectedWithoutCurrent = Math.max(0, selectedTagTotalQuestionCount - selectedCount);
-                      const maxSelectableForOption = Math.min(
-                        option.totalCount,
-                        Math.max(0, quizConfig.questionCount - selectedWithoutCurrent)
-                      );
-                      const cannotSelectNew = !isSelected && maxSelectableForOption === 0;
-
-                      return (
-                        <div
-                          key={option.sourceKey}
-                          className={`rounded-xl border p-2.5 md:p-3 transition ${
-                            isSelected
-                              ? 'border-brand-200 dark:border-brand-800/40 bg-brand-50/50 dark:bg-brand-900/10'
-                              : 'border-surface-200 dark:border-surface-700 bg-white/80 dark:bg-surface-800/70'
-                          }`}
-                        >
-                          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-                            <label className="flex items-start gap-2 min-w-0 cursor-pointer">
-                              <input
-                                type="checkbox"
-                                checked={isSelected}
-                                onChange={(e) => updateTagQuestionCount(option.sourceKey, e.target.checked ? Math.min(1, maxSelectableForOption) : 0)}
-                                disabled={cannotSelectNew}
-                                className="w-4 h-4 accent-brand-600 mt-0.5"
-                              />
-                              <div className="min-w-0">
-                                <p className="text-[13px] md:text-sm font-semibold text-surface-700 dark:text-surface-200 break-words leading-snug">{option.label}</p>
-                                <p className="text-[11px] text-surface-400 mt-0.5">{option.totalCount} soru mevcut</p>
-                              </div>
-                            </label>
-
-                            <div className="flex items-center gap-1.5 self-end sm:self-auto">
-                              <button
-                                onClick={() => updateTagQuestionCount(option.sourceKey, selectedCount - 1)}
-                                disabled={selectedCount === 0}
-                                className="w-8 h-8 md:w-7 md:h-7 rounded-md border border-surface-200 dark:border-surface-600 text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-700 disabled:opacity-40 disabled:cursor-not-allowed"
-                              >
-                                -
-                              </button>
-                              <input
-                                type="number"
-                                min={0}
-                                max={maxSelectableForOption}
-                                value={selectedCount}
-                                onChange={(e) => updateTagQuestionCount(option.sourceKey, parseInt(e.target.value, 10) || 0)}
-                                className="w-14 h-8 md:h-7 rounded-md border border-surface-200 dark:border-surface-600 bg-white dark:bg-surface-800 text-center text-xs font-bold text-surface-700 dark:text-surface-200 outline-none focus:border-brand-500"
-                              />
-                              <button
-                                onClick={() => updateTagQuestionCount(option.sourceKey, selectedCount + 1)}
-                                disabled={selectedCount >= maxSelectableForOption}
-                                className="w-8 h-8 md:w-7 md:h-7 rounded-md border border-surface-200 dark:border-surface-600 text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-700 disabled:opacity-40 disabled:cursor-not-allowed"
-                              >
-                                +
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
+                  <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_110px] gap-2 mb-3">
+                    <select
+                      value={quizTagPickerValue}
+                      onChange={(e) => setQuizTagPickerSourceKey(e.target.value)}
+                      className="w-full h-10 px-3 rounded-lg bg-white dark:bg-surface-800 border border-surface-200 dark:border-surface-600 outline-none focus:border-brand-500 dark:text-white text-sm font-medium"
+                    >
+                      {sourceTagOptions.map((option) => (
+                        <option key={option.sourceKey} value={option.sourceKey}>
+                          {option.label} ({option.totalCount})
+                        </option>
+                      ))}
+                    </select>
+                    <div className="h-10 rounded-lg border border-surface-200 dark:border-surface-600 bg-white dark:bg-surface-800 flex items-center justify-center text-xs font-bold text-surface-600 dark:text-surface-300">
+                      {activeTagOption ? `${activeTagOption.totalCount} mevcut` : '-'}
+                    </div>
                   </div>
+
+                  {activeTagOption && (
+                    <div className="rounded-xl border border-surface-200 dark:border-surface-700 bg-white/80 dark:bg-surface-800/70 p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-sm font-semibold text-surface-700 dark:text-surface-200 truncate">{activeTagOption.label}</p>
+                        <span className="text-[11px] font-bold text-brand-700 dark:text-brand-300 bg-brand-50 dark:bg-brand-900/20 px-2 py-0.5 rounded-full">
+                          {activeTagSelectedCount} seçili
+                        </span>
+                      </div>
+
+                      <p className="text-[11px] text-surface-400 mt-1">{activeTagOption.totalCount} soru mevcut</p>
+
+                      <div className="mt-2.5 flex items-center gap-1.5">
+                        <button
+                          onClick={() => updateTagQuestionCount(activeTagOption.sourceKey, activeTagSelectedCount - 1)}
+                          disabled={activeTagSelectedCount === 0}
+                          className="w-8 h-8 rounded-md border border-surface-200 dark:border-surface-600 text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          -
+                        </button>
+                        <input
+                          type="number"
+                          min={0}
+                          max={activeTagMaxSelectable}
+                          value={activeTagSelectedCount}
+                          onChange={(e) => updateTagQuestionCount(activeTagOption.sourceKey, parseInt(e.target.value, 10) || 0)}
+                          disabled={activeTagCannotEnable}
+                          className="w-16 h-8 rounded-md border border-surface-200 dark:border-surface-600 bg-white dark:bg-surface-800 text-center text-xs font-bold text-surface-700 dark:text-surface-200 outline-none focus:border-brand-500 disabled:opacity-50"
+                        />
+                        <button
+                          onClick={() => updateTagQuestionCount(activeTagOption.sourceKey, activeTagSelectedCount + 1)}
+                          disabled={activeTagSelectedCount >= activeTagMaxSelectable}
+                          className="w-8 h-8 rounded-md border border-surface-200 dark:border-surface-600 text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          +
+                        </button>
+                      </div>
+
+                      {activeTagCannotEnable && (
+                        <p className="text-[11px] text-amber-600 dark:text-amber-300 mt-2">
+                          Bu etiketi açmak için önce toplam soru sayısını artırın veya başka etiketten azaltın.
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  {selectedTagEntries.length > 0 && (
+                    <div className="mt-3">
+                      <p className="text-[11px] font-semibold text-surface-500 dark:text-surface-300 mb-1.5">Seçili etiketler</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {selectedTagEntries.map((entry) => (
+                          <button
+                            key={entry.sourceKey}
+                            onClick={() => {
+                              setQuizTagPickerSourceKey(entry.sourceKey);
+                              updateTagQuestionCount(entry.sourceKey, 0);
+                            }}
+                            className="px-2 py-1 rounded-md border border-brand-200 dark:border-brand-800/50 bg-brand-50 dark:bg-brand-900/20 text-[11px] font-semibold text-brand-700 dark:text-brand-300"
+                          >
+                            {entry.label}: {entry.selectedCount} x
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
                   <div className="mt-3 flex items-center justify-between gap-2">
                     <p className="text-xs text-surface-500 dark:text-surface-400">
                       {isTagDistributionActive
-                        ? `Toplam ${selectedTagTotalQuestionCount} soru etiket seciminden gelecek (ust limit: ${quizConfig.questionCount}).`
-                        : 'Etiket secmezseniz sorular rastgele secilir.'}
+                        ? `Toplam ${selectedTagTotalQuestionCount} soru etiket seçiminden gelecek (üst limit: ${quizConfig.questionCount}).`
+                        : 'Etiket seçmezseniz sorular rastgele seçilir.'}
                     </p>
                     {isTagDistributionActive && (
                       <button
-                        onClick={() => setQuizTagQuestionCounts({})}
+                        onClick={() => {
+                          setQuizTagQuestionCounts({});
+                          setQuizTagPickerSourceKey(quizTagPickerValue);
+                        }}
                         className="text-[11px] font-bold text-surface-500 hover:text-surface-700 dark:text-surface-300 dark:hover:text-white"
                       >
                         Temizle
@@ -4186,7 +4266,7 @@ export default function App() {
 
               {sourceTagOptions.length === 0 && maxQuestions > 0 && (
                 <div className="bg-surface-50 dark:bg-surface-900/50 p-4 rounded-2xl border border-surface-100 dark:border-surface-700/50">
-                  <p className="text-xs text-surface-400">Bu konuda etiketli soru bulunamadi. Standart rastgele secim kullanilir.</p>
+                  <p className="text-xs text-surface-400">Bu konuda etiketli soru bulunamadı. Standart rastgele seçim kullanılır.</p>
                 </div>
               )}
 
@@ -4194,7 +4274,7 @@ export default function App() {
               <div className="bg-surface-50 dark:bg-surface-900/50 p-3.5 md:p-5 rounded-xl md:rounded-2xl border border-surface-100 dark:border-surface-700/50">
                 <label className="block font-bold text-surface-700 dark:text-surface-200 text-sm mb-3 flex items-center gap-2">
                   <Icon name="Timer" className="w-4 h-4 text-surface-400" />
-                  Sure
+                  Süre
                 </label>
                 <div className="flex items-center gap-2 overflow-hidden">
                   <button
@@ -4228,7 +4308,7 @@ export default function App() {
                 onClick={() => { setActiveTopic(null); setCurrentView('dashboard'); }}
                 className="flex-1 py-3.5 rounded-xl font-bold text-sm text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-700/50 transition"
               >
-                Vazgec
+                Vazgeç
               </button>
               <button
                 onClick={handleStartQuiz}
@@ -4236,7 +4316,7 @@ export default function App() {
                 className={`flex-[2] py-3.5 rounded-xl bg-gradient-to-r ${catColor.gradient} text-white font-bold text-sm hover:opacity-90 shadow-lg ${catColor.shadow} transition transform hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-40 disabled:cursor-not-allowed disabled:transform-none flex items-center justify-center gap-2`}
               >
                 <Icon name="Play" className="w-4 h-4" />
-                Sinavi Baslat ({effectiveQuestionCount})
+                Sınavı Başlat ({effectiveQuestionCount})
               </button>
             </div>
           </div>
@@ -4370,17 +4450,22 @@ export default function App() {
       }
     };
     const handleJumpToQuestion = () => {
-      const rawInput = window.prompt(
-        `Gitmek istediginiz soru numarasini girin (1-${totalQuestions})`,
-        String(quizState.currentQuestionIndex + 1)
-      );
-      if (rawInput === null) return;
-      const parsed = Number.parseInt(rawInput.trim(), 10);
-      if (!Number.isFinite(parsed) || parsed < 1 || parsed > totalQuestions) {
-        alert(`Lutfen 1 ile ${totalQuestions} arasinda bir soru numarasi girin.`);
-        return;
+      setQuestionJumpTargetIndex(quizState.currentQuestionIndex);
+      setIsQuestionJumpModalOpen(true);
+    };
+    const handleCloseQuestionJumpModal = () => {
+      setIsQuestionJumpModalOpen(false);
+    };
+    const handleConfirmQuestionJump = () => {
+      goToQuestion(questionJumpTargetIndex);
+      setIsQuestionJumpModalOpen(false);
+    };
+    const handleQuestionJumpPickerScroll = (event: React.UIEvent<HTMLDivElement>) => {
+      const nextIndex = Math.round(event.currentTarget.scrollTop / QUESTION_JUMP_PICKER_ROW_HEIGHT);
+      const safeIndex = Math.min(Math.max(nextIndex, 0), Math.max(totalQuestions - 1, 0));
+      if (safeIndex !== questionJumpTargetIndex) {
+        setQuestionJumpTargetIndex(safeIndex);
       }
-      goToQuestion(parsed - 1);
     };
 
     return (
@@ -4741,8 +4826,8 @@ export default function App() {
                               isActive
                                 ? `bg-gradient-to-r ${catColor.gradient} text-white shadow-sm`
                                 : isAnswered
-                                  ? `${catColor.bgLight} ${catColor.bgDark} ${catColor.text} ${catColor.textDark}`
-                                  : 'bg-surface-50 dark:bg-surface-800 text-surface-500 dark:text-surface-300'
+                                  ? 'bg-emerald-50 dark:bg-emerald-900/25 text-emerald-700 dark:text-emerald-300'
+                                  : 'bg-rose-50 dark:bg-rose-900/20 text-rose-600 dark:text-rose-300'
                             } ${leftBorderClass}`}
                           >
                             {item.index + 1}
@@ -4757,8 +4842,9 @@ export default function App() {
                     <button
                       onClick={handlePrevQuestion}
                       disabled={quizState.currentQuestionIndex === 0}
-                      className="h-9 sm:h-10 border-r border-surface-200/90 dark:border-surface-700/80 bg-surface-100 dark:bg-surface-700 text-surface-600 dark:text-surface-300 font-semibold text-[11px] hover:bg-surface-200 dark:hover:bg-surface-600 transition disabled:opacity-40 disabled:cursor-not-allowed"
+                      className="h-9 sm:h-10 border-r border-surface-200/90 dark:border-surface-700/80 bg-gradient-to-r from-sky-600 to-blue-700 hover:from-sky-700 hover:to-blue-800 text-white font-bold text-[11px] transition flex items-center justify-center gap-1 disabled:opacity-45 disabled:cursor-not-allowed"
                     >
+                      <Icon name="ChevronLeft" className="w-3 h-3" />
                       Önceki
                     </button>
 
@@ -4771,7 +4857,7 @@ export default function App() {
 
                     <button
                       onClick={handleNextQuestion}
-                      className="h-9 sm:h-10 bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 text-white font-bold text-[11px] transition flex items-center justify-center gap-1"
+                      className="h-9 sm:h-10 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white font-bold text-[11px] transition flex items-center justify-center gap-1"
                     >
                       Sonraki
                       <Icon name="ChevronRight" className="w-3 h-3" />
@@ -4904,6 +4990,100 @@ export default function App() {
                       </div>
                     );
                   })}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Question Jump Modal */}
+          {isQuestionJumpModalOpen && (
+            <div
+              className="fixed inset-0 z-[82] flex items-end sm:items-center justify-center bg-slate-950/60 backdrop-blur-sm p-0 sm:p-4 modal-backdrop"
+              onClick={handleCloseQuestionJumpModal}
+            >
+              <div
+                className="w-full sm:max-w-md bg-white/95 dark:bg-surface-800/95 border border-surface-200 dark:border-surface-700 shadow-2xl rounded-t-3xl sm:rounded-3xl overflow-hidden modal-content animate-fade-in-scale"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <div className="px-5 pt-4 pb-3 border-b border-surface-100 dark:border-surface-700">
+                  <div className="w-10 h-1 rounded-full bg-surface-200 dark:bg-surface-600 mx-auto mb-3 sm:hidden"></div>
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <h3 className="text-base font-extrabold text-surface-900 dark:text-white">Soruya Git</h3>
+                      <p className="text-[11px] text-surface-500 dark:text-surface-400">Kaydırarak soru numarası seçebilirsin</p>
+                    </div>
+                    <button
+                      onClick={handleCloseQuestionJumpModal}
+                      className="w-9 h-9 rounded-xl bg-surface-100 dark:bg-surface-700 text-surface-500 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-600 transition flex items-center justify-center"
+                      aria-label="Kapat"
+                    >
+                      <Icon name="X" className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="px-4 pt-4">
+                  <div className="relative rounded-2xl border border-surface-200 dark:border-surface-700 bg-surface-50/70 dark:bg-surface-900/50 overflow-hidden">
+                    <div className="pointer-events-none absolute inset-x-0 top-1/2 -translate-y-1/2 h-10 border-y border-brand-200/80 dark:border-brand-700/50 bg-brand-50/65 dark:bg-brand-900/20"></div>
+                    <div
+                      ref={questionJumpPickerRef}
+                      onScroll={handleQuestionJumpPickerScroll}
+                      className="h-52 overflow-y-auto no-scrollbar snap-y snap-mandatory py-[68px] scroll-smooth"
+                    >
+                      {quizState.questions.map((_, index) => {
+                        const isSelected = index === questionJumpTargetIndex;
+                        const isAnswered = quizState.userAnswers[index] !== null;
+                        return (
+                          <button
+                            key={`jump_item_${index}`}
+                            onClick={() => setQuestionJumpTargetIndex(index)}
+                            className={`w-full h-10 snap-center px-4 flex items-center justify-between transition ${
+                              isSelected
+                                ? 'text-surface-900 dark:text-white'
+                                : 'text-surface-500 dark:text-surface-400'
+                            }`}
+                          >
+                            <span className={`font-black ${isSelected ? 'text-base' : 'text-sm'}`}>{index + 1}</span>
+                            <span
+                              className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                                isAnswered
+                                  ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300'
+                                  : 'bg-rose-100 dark:bg-rose-900/30 text-rose-700 dark:text-rose-300'
+                              }`}
+                            >
+                              {isAnswered ? 'İşaretli' : 'Boş'}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="mt-2 mb-1.5 flex items-center justify-center gap-4 text-[11px] text-surface-500 dark:text-surface-400">
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                      İşaretli
+                    </span>
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-rose-500"></span>
+                      Boş
+                    </span>
+                  </div>
+                </div>
+
+                <div className="px-4 pb-4 pt-2 grid grid-cols-2 gap-2.5">
+                  <button
+                    onClick={handleCloseQuestionJumpModal}
+                    className="h-10 rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-700 text-surface-600 dark:text-surface-300 text-sm font-bold hover:bg-surface-200 dark:hover:bg-surface-600 transition"
+                  >
+                    Vazgeç
+                  </button>
+                  <button
+                    onClick={handleConfirmQuestionJump}
+                    className={`h-10 rounded-xl bg-gradient-to-r ${catColor.gradient} text-white text-sm font-bold shadow-lg ${catColor.shadow} hover:opacity-90 transition`}
+                  >
+                    {questionJumpTargetIndex + 1}. Soruya Git
+                  </button>
                 </div>
               </div>
             </div>
@@ -5308,6 +5488,7 @@ export default function App() {
                         setAdminSelectedCatId(e.target.value);
                         setAdminSelectedTopicId('');
                         setAdminQuestionSearch('');
+                        setAdminSelectedSourceTag('all');
                         setAdminQuestionPage(1);
                         setIsAdminActionsOpen(false);
                         handleCloseAdminPreview();
@@ -5325,6 +5506,7 @@ export default function App() {
                       onChange={(e) => {
                         setAdminSelectedTopicId(e.target.value);
                         setAdminQuestionSearch('');
+                        setAdminSelectedSourceTag('all');
                         setAdminQuestionPage(1);
                         setIsAdminActionsOpen(false);
                         handleCloseAdminPreview();
@@ -5502,6 +5684,7 @@ export default function App() {
                                   }
                                   setAdminSelectedTopicId(linkedQuestion.topicId);
                                   setAdminQuestionSearch('');
+                                  setAdminSelectedSourceTag('all');
                                   setAdminQuestionPage(1);
                                   handleStartEditQuestion(linkedQuestion, 0);
                                 }}
@@ -5627,17 +5810,34 @@ export default function App() {
                     </div>
 
                     <div className="flex flex-col md:flex-row gap-3 items-start md:items-center justify-between">
-                      <div className="w-full md:max-w-md">
-                        <input
-                          type="text"
-                          value={adminQuestionSearch}
-                          onChange={(e) => {
-                            setAdminQuestionSearch(e.target.value);
-                            setAdminQuestionPage(1);
-                          }}
-                          placeholder="Soru, secenek, aciklama veya kaynakta ara..."
-                          className="w-full h-10 px-3 rounded-lg bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white text-sm"
-                        />
+                      <div className="w-full md:max-w-2xl">
+                        <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_210px] gap-2">
+                          <input
+                            type="text"
+                            value={adminQuestionSearch}
+                            onChange={(e) => {
+                              setAdminQuestionSearch(e.target.value);
+                              setAdminQuestionPage(1);
+                            }}
+                            placeholder="Soru, secenek, aciklama veya kaynakta ara..."
+                            className="w-full h-10 px-3 rounded-lg bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white text-sm"
+                          />
+                          <select
+                            value={adminSelectedSourceTag}
+                            onChange={(e) => {
+                              setAdminSelectedSourceTag(e.target.value);
+                              setAdminQuestionPage(1);
+                            }}
+                            className="w-full h-10 px-3 rounded-lg bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white text-sm font-medium"
+                          >
+                            <option value="all">Tum Etiketler</option>
+                            {adminAvailableSourceTags.map((sourceKey) => (
+                              <option key={sourceKey} value={sourceKey}>
+                                {getSourceTagLabel(sourceKey)}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
                       </div>
                       <div className="w-full md:w-auto flex items-center justify-between md:justify-end gap-2">
                         <span className="text-xs text-surface-400 font-medium">

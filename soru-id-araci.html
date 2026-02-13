@@ -433,6 +433,46 @@
         return t.length ? t : null;
       }
 
+      function toSingleLineText(value) {
+        if (typeof value !== "string") return "";
+        return value.replace(/\s+/g, " ").trim();
+      }
+
+      function toPreviewText(value, maxLen) {
+        const oneLine = toSingleLineText(value);
+        if (!oneLine) return "";
+        if (!Number.isFinite(maxLen) || maxLen < 8) return oneLine;
+        if (oneLine.length <= maxLen) return oneLine;
+        return oneLine.slice(0, maxLen - 3) + "...";
+      }
+
+      function buildQuestionLocator(raw, idx) {
+        const parts = ["JSON yolu: questions[" + idx + "]"];
+
+        if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+          const rawPreview = toPreviewText(JSON.stringify(raw), 80);
+          if (rawPreview) parts.push("kayit: " + rawPreview);
+          return " (" + parts.join(" | ") + ")";
+        }
+
+        const questionId = normalizeQuestionId(raw.questionId || raw.id);
+        if (questionId) parts.push("questionId: " + questionId);
+
+        const qTextPreview = toPreviewText(raw.questionText, 70);
+        if (qTextPreview) parts.push("soru: " + qTextPreview);
+
+        if (Array.isArray(raw.options)) {
+          const firstOptionRaw = raw.options.find((item) => typeof item === "string" && item.trim().length > 0) || "";
+          const firstOption = toPreviewText(firstOptionRaw, 54);
+          if (firstOption) parts.push("ilkSecenek: " + firstOption);
+        }
+
+        const sourceTagPreview = toPreviewText(raw.sourceTag, 40);
+        if (sourceTagPreview) parts.push("etiket: " + sourceTagPreview);
+
+        return " (" + parts.join(" | ") + ")";
+      }
+
       function validateAndNormalizeQuestions(rawQuestions, globalIds, forcedSourceTag) {
         const errors = [];
         const warnings = [];
@@ -441,26 +481,27 @@
 
         rawQuestions.forEach((raw, idx) => {
           const qNo = idx + 1;
+          const locator = buildQuestionLocator(raw, idx);
           if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-            errors.push("Soru " + qNo + ": kayit bir nesne olmali.");
+            errors.push("Soru " + qNo + ": kayit bir nesne olmali." + locator);
             return;
           }
 
           const q = raw;
           const qText = typeof q.questionText === "string" ? q.questionText.trim() : "";
           if (!qText) {
-            errors.push("Soru " + qNo + ": questionText bos.");
+            errors.push("Soru " + qNo + ": questionText bos." + locator);
             return;
           }
 
           if (!Array.isArray(q.options)) {
-            errors.push("Soru " + qNo + ": options dizi olmali.");
+            errors.push("Soru " + qNo + ": options dizi olmali." + locator);
             return;
           }
 
           const options = q.options.map((x) => (typeof x === "string" ? x.trim() : "")).filter(Boolean);
           if (options.length !== 5) {
-            errors.push("Soru " + qNo + ": options tam 5 secenek olmali.");
+            errors.push("Soru " + qNo + ": options tam 5 secenek olmali." + locator);
             return;
           }
 
@@ -472,7 +513,7 @@
               correctOptionIndex = ai;
               warnings.push("Soru " + qNo + ": correctOptionIndex answer alanindan turetildi.");
             } else {
-              errors.push("Soru " + qNo + ": correctOptionIndex gecersiz ve answer kullanilamaz.");
+              errors.push("Soru " + qNo + ": correctOptionIndex gecersiz ve answer kullanilamaz." + locator);
               return;
             }
           }
@@ -655,7 +696,9 @@
         lastErrors = result.errors;
 
         if (result.errors.length > 0) {
-          setStatus(inputStatusEl, "err", "Dogrulama basarisiz. (" + result.errors.length + " hata)", result.errors.slice(0, 25));
+          const visibleErrors = result.errors.slice(0, 25);
+          visibleErrors.unshift('Ipucu: "JSON yolu: questions[75]" bilgisini Ctrl+F ile aratip kaydi bulun.');
+          setStatus(inputStatusEl, "err", "Dogrulama basarisiz. (" + result.errors.length + " hata)", visibleErrors);
           setStatus(outputStatusEl, "err", "Export hazir degil.", ["Once hatalari duzeltin."]);
           return;
         }
