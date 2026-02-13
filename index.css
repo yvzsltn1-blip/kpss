@@ -581,3 +581,127 @@ input[type="number"] {
   backdrop-filter: blur(32px);
   -webkit-backdrop-filter: blur(32px);
 }
+
+/* ===== Neon Dashboard Theme ===== */
+.kpss-neon-mobile-header {
+  background:
+    linear-gradient(135deg, rgba(11, 20, 44, 0.92) 0%, rgba(13, 25, 58, 0.92) 100%);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.3);
+  box-shadow: 0 10px 28px rgba(2, 6, 23, 0.55);
+}
+
+.kpss-neon-sidebar {
+  background:
+    radial-gradient(120% 120% at 0% 0%, rgba(45, 212, 191, 0.16) 0%, transparent 48%),
+    radial-gradient(90% 90% at 100% 20%, rgba(168, 85, 247, 0.2) 0%, transparent 52%),
+    linear-gradient(180deg, rgba(6, 11, 26, 0.96) 0%, rgba(6, 12, 30, 0.96) 100%);
+  border-right: 1px solid rgba(148, 163, 184, 0.24);
+  box-shadow: 0 10px 32px rgba(2, 6, 23, 0.58);
+}
+
+.kpss-neon-usercard {
+  background:
+    radial-gradient(100% 120% at 100% 0%, rgba(59, 130, 246, 0.28) 0%, transparent 50%),
+    linear-gradient(140deg, rgba(130, 54, 214, 0.9) 0%, rgba(217, 70, 239, 0.82) 100%);
+  border: 1px solid rgba(216, 180, 254, 0.5);
+  box-shadow: 0 0 28px rgba(192, 132, 252, 0.32);
+}
+
+.kpss-neon-panel {
+  background:
+    linear-gradient(140deg, rgba(14, 21, 46, 0.84) 0%, rgba(13, 22, 50, 0.78) 100%);
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 12px 30px rgba(2, 6, 23, 0.5);
+}
+
+.kpss-neon-select {
+  background:
+    linear-gradient(180deg, rgba(15, 23, 42, 0.92) 0%, rgba(15, 23, 42, 0.85) 100%);
+  border: 1px solid rgba(148, 163, 184, 0.34);
+}
+
+.kpss-neon-stat-card {
+  border-radius: 16px;
+  min-height: 82px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  background:
+    radial-gradient(110% 120% at 100% 0%, rgba(96, 165, 250, 0.08) 0%, transparent 52%),
+    linear-gradient(160deg, rgba(10, 18, 44, 0.88) 0%, rgba(8, 17, 44, 0.8) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 10px 24px rgba(2, 6, 23, 0.46);
+}
+
+.kpss-neon-stat-icon {
+  background: rgba(2, 6, 23, 0.45);
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.kpss-neon-stat-fuchsia {
+  border-color: rgba(217, 70, 239, 0.7);
+  box-shadow: 0 0 18px rgba(217, 70, 239, 0.3), 0 8px 24px rgba(2, 6, 23, 0.45);
+}
+
+.kpss-neon-stat-blue {
+  border-color: rgba(96, 165, 250, 0.7);
+  box-shadow: 0 0 18px rgba(96, 165, 250, 0.28), 0 8px 24px rgba(2, 6, 23, 0.45);
+}
+
+.kpss-neon-stat-emerald {
+  border-color: rgba(52, 211, 153, 0.7);
+  box-shadow: 0 0 18px rgba(52, 211, 153, 0.25), 0 8px 24px rgba(2, 6, 23, 0.45);
+}
+
+.kpss-neon-stat-cyan {
+  border-color: rgba(34, 211, 238, 0.7);
+  box-shadow: 0 0 18px rgba(34, 211, 238, 0.28), 0 8px 24px rgba(2, 6, 23, 0.45);
+}
+
+.kpss-neon-stat-amber {
+  border-color: rgba(251, 191, 36, 0.7);
+  box-shadow: 0 0 18px rgba(251, 191, 36, 0.28), 0 8px 24px rgba(2, 6, 23, 0.45);
+}
+
+@media (max-width: 767px) {
+  .kpss-neon-stat-card {
+    min-height: 74px;
+    padding: 8px 10px;
+  }
+}
+
+.kpss-neon-mini-card {
+  border-radius: 12px;
+  min-height: 62px;
+  padding: 8px 10px;
+  border: 1px solid rgba(148, 163, 184, 0.34);
+  background: rgba(15, 23, 42, 0.55);
+}
+
+.kpss-neon-mini-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.11em;
+  color: rgba(226, 232, 240, 0.72);
+}
+
+.kpss-neon-mini-value {
+  margin-top: 2px;
+  color: #fff;
+  font-size: 24px;
+  line-height: 1;
+  font-weight: 900;
+}
+
+.kpss-neon-mini-fuchsia { border-color: rgba(217, 70, 239, 0.52); box-shadow: 0 0 14px rgba(217, 70, 239, 0.18); }
+.kpss-neon-mini-blue { border-color: rgba(96, 165, 250, 0.52); box-shadow: 0 0 14px rgba(96, 165, 250, 0.18); }
+.kpss-neon-mini-cyan { border-color: rgba(34, 211, 238, 0.52); box-shadow: 0 0 14px rgba(34, 211, 238, 0.18); }
+.kpss-neon-mini-emerald { border-color: rgba(52, 211, 153, 0.52); box-shadow: 0 0 14px rgba(52, 211, 153, 0.18); }
+.kpss-neon-mini-amber { border-color: rgba(251, 191, 36, 0.52); box-shadow: 0 0 14px rgba(251, 191, 36, 0.18); }
+.kpss-neon-mini-red { border-color: rgba(248, 113, 113, 0.52); box-shadow: 0 0 14px rgba(248, 113, 113, 0.18); }
