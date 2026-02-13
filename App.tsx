@@ -4249,6 +4249,13 @@ export default function App() {
   if (currentView === 'quiz' && activeTopic) {
     const currentQuestion = quizState.questions[quizState.currentQuestionIndex];
     const score = calculateScore();
+    const wrongCount = quizState.userAnswers.reduce((count, answer, index) => {
+      if (answer === null || answer === undefined) return count;
+      return answer !== quizState.questions[index].correctOptionIndex ? count + 1 : count;
+    }, 0);
+    const blankCount = quizState.userAnswers.reduce((count, answer) => {
+      return answer === null || answer === undefined ? count + 1 : count;
+    }, 0);
     const catColor = getCatColor(activeTopic.cat.id);
     const progressPercent = quizState.questions.length > 0 ? ((quizState.currentQuestionIndex + 1) / quizState.questions.length) * 100 : 0;
     const timerPercent = quizState.totalTime > 0 ? (quizState.timeLeft / quizState.totalTime) * 100 : 100;
@@ -4678,16 +4685,18 @@ export default function App() {
                     {quizState.questions.length} sorudan {score} tanesini dogru yanitladin.
                   </p>
 
-                  <div className="grid grid-cols-2 gap-3 mb-6">
+                  <div className="grid grid-cols-3 gap-3 mb-6">
                     <div className="bg-emerald-50 dark:bg-emerald-900/20 p-3 rounded-xl">
                       <span className="block text-[10px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider mb-1">Dogru</span>
                       <span className="text-2xl font-black text-emerald-500">{score}</span>
                     </div>
                     <div className="bg-red-50 dark:bg-red-900/20 p-3 rounded-xl">
                       <span className="block text-[10px] font-bold text-red-600 dark:text-red-400 uppercase tracking-wider mb-1">Yanlis</span>
-                      <span className="text-2xl font-black text-red-400">
-                        {quizState.userAnswers.filter((a, i) => a !== null && a !== quizState.questions[i].correctOptionIndex).length}
-                      </span>
+                      <span className="text-2xl font-black text-red-400">{wrongCount}</span>
+                    </div>
+                    <div className="bg-slate-100 dark:bg-slate-800/70 p-3 rounded-xl">
+                      <span className="block text-[10px] font-bold text-slate-600 dark:text-slate-300 uppercase tracking-wider mb-1">Bos</span>
+                      <span className="text-2xl font-black text-slate-500 dark:text-slate-200">{blankCount}</span>
                     </div>
                   </div>
 
@@ -4871,6 +4880,7 @@ export default function App() {
 
   // 4. DASHBOARD & ADMIN LAYOUT
   const isDashboardLayoutView = currentView === 'dashboard' || currentView === 'statistics';
+  const showMobileBottomNav = (currentView === 'dashboard' || currentView === 'statistics' || currentView === 'admin') && !isMobileMenuOpen;
   return (
     <div className={`min-h-screen flex bg-gradient-to-br ${
       lightThemeVariant === 'clean'
@@ -5114,7 +5124,9 @@ export default function App() {
       </aside>
 
       {/* Main Panel */}
-      <main className={`flex-1 min-w-0 lg:ml-0 pt-[calc(68px+max(env(safe-area-inset-top,0px),6px)+4px)] lg:pt-0 min-h-screen pb-[88px] lg:pb-0 ${
+      <main className={`flex-1 min-w-0 lg:ml-0 pt-[calc(68px+max(env(safe-area-inset-top,0px),6px)+4px)] lg:pt-0 min-h-screen ${
+        showMobileBottomNav ? 'pb-[88px]' : 'pb-0'
+      } lg:pb-0 ${
         isDashboardLayoutView ? 'overflow-hidden' : 'overflow-y-auto custom-scrollbar'
       }`}>
         <div className={`mx-auto ${
@@ -5195,17 +5207,33 @@ export default function App() {
                   </div>
                 </div>
 
+                <div className="mb-6 flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={() => {
+                      setIsTopicModalOpen(false);
+                      setIsCategoryModalOpen(true);
+                    }}
+                    className="px-4 py-2.5 bg-brand-600 text-white rounded-lg hover:bg-brand-700 transition font-bold text-xs"
+                  >
+                    Kategori Ekle
+                  </button>
+                  <button
+                    onClick={() => {
+                      setIsCategoryModalOpen(false);
+                      setIsTopicModalOpen(true);
+                    }}
+                    disabled={!adminSelectedCatId}
+                    className="px-4 py-2.5 bg-surface-100 dark:bg-surface-700 text-surface-600 dark:text-surface-300 rounded-lg hover:bg-surface-200 dark:hover:bg-surface-600 transition font-bold text-xs disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    Konu Ekle
+                  </button>
+                </div>
+
                 {adminSelectedCatId && (
                   <div className="mb-6 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-50/60 dark:bg-surface-900/40 p-3">
                     <p className="text-xs text-surface-500 dark:text-surface-400">
                       Secili ders: <span className="font-bold text-surface-700 dark:text-surface-200">{adminSelectedCategory?.name || adminSelectedCatId}</span>
                     </p>
-                    <button
-                      onClick={() => setIsTopicModalOpen(true)}
-                      className="px-4 py-2.5 bg-surface-100 dark:bg-surface-700 text-surface-600 dark:text-surface-300 rounded-lg hover:bg-surface-200 dark:hover:bg-surface-600 transition font-bold text-xs"
-                    >
-                      Konu Ekle
-                    </button>
                   </div>
                 )}
 
@@ -6827,7 +6855,7 @@ export default function App() {
       )}
 
       {/* Mobile Bottom Nav */}
-      {(currentView === 'dashboard' || currentView === 'statistics') && (
+      {showMobileBottomNav && (
         <div className="lg:hidden fixed bottom-2 left-2 right-2 rounded-2xl bg-slate-900/85 backdrop-blur-2xl border border-slate-400/30 shadow-[0_10px_26px_rgba(2,6,23,0.6)] z-50 mobile-safe-bottom">
           <div className="flex items-center justify-around h-14 px-1">
             <button
