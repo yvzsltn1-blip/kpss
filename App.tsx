@@ -923,6 +923,7 @@ export default function App() {
   const [questionCountInputValue, setQuestionCountInputValue] = useState('10');
   const [quizTagQuestionCounts, setQuizTagQuestionCounts] = useState<Record<string, number>>({});
   const [quizTagPickerSourceKey, setQuizTagPickerSourceKey] = useState('');
+  const [quizTagPickerCountInput, setQuizTagPickerCountInput] = useState('');
 
   // --- SORULAR STATE (ARTIK BOŞ BAŞLIYOR) ---
   const [allQuestions, setAllQuestions] = useState<Record<string, Question[]>>({});
@@ -2131,6 +2132,7 @@ export default function App() {
     setQuizStatusFilter(nextStatusFilter);
     setQuizTagQuestionCounts({});
     setQuizTagPickerSourceKey('');
+    setQuizTagPickerCountInput('');
     setQuizConfig({
       questionCount: initialQuestionCount,
       durationSeconds: getAutoDurationForQuestionCount(initialQuestionCount),
@@ -2158,18 +2160,9 @@ export default function App() {
         count: Math.max(0, Math.floor(Number(quizTagQuestionCounts[sourceKey] || 0))),
       }))
       .filter((entry) => entry.count > 0);
-    let remainingTagQuota = Math.max(0, quizConfig.questionCount);
-    const boundedSelectedTagEntries = selectedTagEntries
-      .map((entry) => {
-        if (remainingTagQuota <= 0) return { ...entry, count: 0 };
-        const boundedCount = Math.min(entry.count, remainingTagQuota);
-        remainingTagQuota -= boundedCount;
-        return { ...entry, count: boundedCount };
-      })
-      .filter((entry) => entry.count > 0);
 
     let selectedQuestions: Question[] = [];
-    if (boundedSelectedTagEntries.length > 0) {
+    if (selectedTagEntries.length > 0) {
       const tagBuckets = topicQuestionsPool.reduce<Record<string, Question[]>>((acc, question) => {
         const sourceKey = getQuestionSourceKey(question);
         if (!acc[sourceKey]) acc[sourceKey] = [];
@@ -2177,7 +2170,7 @@ export default function App() {
         return acc;
       }, {});
 
-      boundedSelectedTagEntries.forEach(({ sourceKey, count }) => {
+      selectedTagEntries.forEach(({ sourceKey, count }) => {
         const tagQuestions = [...(tagBuckets[sourceKey] || [])];
         for (let i = tagQuestions.length - 1; i > 0; i--) {
           const j = Math.floor(Math.random() * (i + 1));
@@ -3903,34 +3896,18 @@ export default function App() {
     const activeTagSelectedCount = activeTagOption
       ? Math.min(activeTagOption.totalCount, Math.max(0, quizTagQuestionCounts[activeTagOption.sourceKey] || 0))
       : 0;
-    const activeTagSelectedWithoutCurrent = Math.max(0, selectedTagTotalQuestionCount - activeTagSelectedCount);
     const activeTagMaxSelectable = activeTagOption
-      ? Math.min(
-          activeTagOption.totalCount,
-          Math.max(0, quizConfig.questionCount - activeTagSelectedWithoutCurrent)
-        )
+      ? activeTagOption.totalCount
       : 0;
-    const activeTagCannotEnable = Boolean(
-      activeTagOption &&
-      activeTagSelectedCount === 0 &&
-      activeTagMaxSelectable === 0
-    );
     const questionCountMax = isTagDistributionActive ? selectedTagAvailableQuestionCount : maxQuestions;
     const effectiveQuestionCount = isTagDistributionActive ? selectedTagTotalQuestionCount : quizConfig.questionCount;
-    const clampTagQuestionCountsToLimit = (
-      counts: Record<string, number>,
-      totalLimit: number
-    ): Record<string, number> => {
-      const safeLimit = Math.max(0, Math.floor(totalLimit));
-      let remaining = safeLimit;
+    const normalizeTagQuestionCounts = (counts: Record<string, number>): Record<string, number> => {
       const next: Record<string, number> = {};
       sourceTagOptions.forEach((option) => {
         const rawCount = Math.max(0, Math.floor(Number(counts[option.sourceKey] || 0)));
-        const boundedByTag = Math.min(option.totalCount, rawCount);
-        const bounded = Math.min(boundedByTag, remaining);
+        const bounded = Math.min(option.totalCount, rawCount);
         if (bounded > 0) {
           next[option.sourceKey] = bounded;
-          remaining -= bounded;
         }
       });
       return next;
@@ -3943,6 +3920,7 @@ export default function App() {
       setQuizStatusFilter(nextStatusFilter);
       setQuizTagQuestionCounts({});
       setQuizTagPickerSourceKey('');
+      setQuizTagPickerCountInput('');
       setQuizConfig((prev) => ({
         ...prev,
         questionCount: nextQuestionCount,
@@ -3953,15 +3931,9 @@ export default function App() {
     const updateTagQuestionCount = (sourceKey: string, nextCount: number) => {
       const targetOption = sourceTagOptions.find((option) => option.sourceKey === sourceKey);
       if (!targetOption) return;
-      const normalizedCurrent = clampTagQuestionCountsToLimit(quizTagQuestionCounts, quizConfig.questionCount);
-      const otherSelectedTotal = Object.entries(normalizedCurrent).reduce((sum, [key, value]) => {
-        if (key === sourceKey) return sum;
-        return sum + value;
-      }, 0);
-      const remainingForTarget = Math.max(0, quizConfig.questionCount - otherSelectedTotal);
+      const normalizedCurrent = normalizeTagQuestionCounts(quizTagQuestionCounts);
       const clampedCount = Math.min(
         targetOption.totalCount,
-        remainingForTarget,
         Math.max(0, Math.floor(nextCount))
       );
 
@@ -3975,20 +3947,18 @@ export default function App() {
 
       setQuizTagQuestionCounts(nextTagCounts);
 
-      const nextHasTagDistribution = Object.values(nextTagCounts).some((value) => value > 0);
-      const nextSelectedTagAvailableMax = sourceTagOptions.reduce((sum, option) => {
+      const nextSelectedTagTotal = sourceTagOptions.reduce((sum, option) => {
         const selectedCount = nextTagCounts[option.sourceKey] || 0;
-        return selectedCount > 0 ? sum + option.totalCount : sum;
+        return sum + Math.min(option.totalCount, Math.max(0, selectedCount));
       }, 0);
-      const nextQuestionCountMax = nextHasTagDistribution ? nextSelectedTagAvailableMax : maxQuestions;
 
       setQuizConfig((prev) => {
-        const clampedQuestionCount = Math.min(Math.max(0, prev.questionCount), Math.max(0, nextQuestionCountMax));
-        if (clampedQuestionCount === prev.questionCount) return prev;
+        const nextQuestionCount = Math.max(prev.questionCount, nextSelectedTagTotal);
+        if (nextQuestionCount === prev.questionCount) return prev;
         return {
           ...prev,
-          questionCount: clampedQuestionCount,
-          durationSeconds: getAutoDurationForQuestionCount(clampedQuestionCount),
+          questionCount: nextQuestionCount,
+          durationSeconds: getAutoDurationForQuestionCount(nextQuestionCount),
         };
       });
     };
@@ -3998,12 +3968,23 @@ export default function App() {
         Math.max(0, Math.floor(Number.isFinite(nextRawQuestionCount) ? nextRawQuestionCount : 0)),
         Math.max(0, questionCountMax)
       );
+      const nextQuestionCount = isTagDistributionActive
+        ? Math.max(normalizedQuestionCount, selectedTagTotalQuestionCount)
+        : normalizedQuestionCount;
       setQuizConfig((prev) => ({
         ...prev,
-        questionCount: normalizedQuestionCount,
-        durationSeconds: getAutoDurationForQuestionCount(normalizedQuestionCount),
+        questionCount: nextQuestionCount,
+        durationSeconds: getAutoDurationForQuestionCount(nextQuestionCount),
       }));
-      setQuizTagQuestionCounts((prev) => clampTagQuestionCountsToLimit(prev, normalizedQuestionCount));
+    };
+
+    const handleApplyActiveTagInput = () => {
+      if (!activeTagOption) return;
+      const raw = quizTagPickerCountInput.trim();
+      const parsed = raw === '' ? 0 : Number.parseInt(raw, 10);
+      const safeCount = Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
+      updateTagQuestionCount(activeTagOption.sourceKey, safeCount);
+      setQuizTagPickerCountInput('');
     };
 
     return (
@@ -4024,7 +4005,7 @@ export default function App() {
               <div className={`w-12 h-12 md:w-16 md:h-16 ${catColor.bgLight} ${catColor.bgDark} rounded-xl md:rounded-2xl mx-auto flex items-center justify-center mb-3 md:mb-5 ${catColor.text} ${catColor.textDark}`}>
                 <Icon name="Settings" className="w-6 h-6 md:w-8 md:h-8" />
               </div>
-              <h2 className="text-xl md:text-2xl font-extrabold text-surface-800 dark:text-white mb-1">Sınavı özelleştir</h2>
+              <h2 className="text-xl md:text-2xl font-extrabold text-surface-800 dark:text-white mb-1">Sınavı Özelleştir</h2>
               <p className="text-surface-400 text-xs md:text-sm break-words">{activeTopic.cat.name} &middot; {activeTopic.sub.name}</p>
             </div>
 
@@ -4164,7 +4145,10 @@ export default function App() {
                   <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_110px] gap-2 mb-3">
                     <select
                       value={quizTagPickerValue}
-                      onChange={(e) => setQuizTagPickerSourceKey(e.target.value)}
+                      onChange={(e) => {
+                        setQuizTagPickerSourceKey(e.target.value);
+                        setQuizTagPickerCountInput('');
+                      }}
                       className="w-full h-10 px-3 rounded-lg bg-white dark:bg-surface-800 border border-surface-200 dark:border-surface-600 outline-none focus:border-brand-500 dark:text-white text-sm font-medium"
                     >
                       {sourceTagOptions.map((option) => (
@@ -4190,36 +4174,39 @@ export default function App() {
                       <p className="text-[11px] text-surface-400 mt-1">{activeTagOption.totalCount} soru mevcut</p>
 
                       <div className="mt-2.5 flex items-center gap-1.5">
-                        <button
-                          onClick={() => updateTagQuestionCount(activeTagOption.sourceKey, activeTagSelectedCount - 1)}
-                          disabled={activeTagSelectedCount === 0}
-                          className="w-8 h-8 rounded-md border border-surface-200 dark:border-surface-600 text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-700 disabled:opacity-40 disabled:cursor-not-allowed"
-                        >
-                          -
-                        </button>
                         <input
                           type="number"
                           min={0}
                           max={activeTagMaxSelectable}
-                          value={activeTagSelectedCount}
-                          onChange={(e) => updateTagQuestionCount(activeTagOption.sourceKey, parseInt(e.target.value, 10) || 0)}
-                          disabled={activeTagCannotEnable}
-                          className="w-16 h-8 rounded-md border border-surface-200 dark:border-surface-600 bg-white dark:bg-surface-800 text-center text-xs font-bold text-surface-700 dark:text-surface-200 outline-none focus:border-brand-500 disabled:opacity-50"
+                          value={quizTagPickerCountInput}
+                          onFocus={() => setQuizTagPickerCountInput('')}
+                          onChange={(e) => {
+                            const sanitized = e.target.value.replace(/[^\d]/g, '');
+                            setQuizTagPickerCountInput(sanitized);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              handleApplyActiveTagInput();
+                            }
+                          }}
+                          placeholder={String(activeTagSelectedCount)}
+                          className="w-20 h-8 rounded-md border border-surface-200 dark:border-surface-600 bg-white dark:bg-surface-800 text-center text-xs font-bold text-surface-700 dark:text-surface-200 outline-none focus:border-brand-500"
                         />
                         <button
-                          onClick={() => updateTagQuestionCount(activeTagOption.sourceKey, activeTagSelectedCount + 1)}
-                          disabled={activeTagSelectedCount >= activeTagMaxSelectable}
-                          className="w-8 h-8 rounded-md border border-surface-200 dark:border-surface-600 text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                          onClick={handleApplyActiveTagInput}
+                          className="h-8 px-3 rounded-md border border-brand-200 dark:border-brand-800/50 bg-brand-50 dark:bg-brand-900/20 text-[11px] font-bold text-brand-700 dark:text-brand-300 hover:opacity-90"
                         >
-                          +
+                          Ekle
+                        </button>
+                        <button
+                          onClick={() => updateTagQuestionCount(activeTagOption.sourceKey, 0)}
+                          disabled={activeTagSelectedCount === 0}
+                          className="h-8 px-2.5 rounded-md border border-surface-200 dark:border-surface-600 text-[11px] font-semibold text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          Sıfırla
                         </button>
                       </div>
-
-                      {activeTagCannotEnable && (
-                        <p className="text-[11px] text-amber-600 dark:text-amber-300 mt-2">
-                          Bu etiketi açmak için önce toplam soru sayısını artırın veya başka etiketten azaltın.
-                        </p>
-                      )}
                     </div>
                   )}
 
@@ -4254,6 +4241,7 @@ export default function App() {
                         onClick={() => {
                           setQuizTagQuestionCounts({});
                           setQuizTagPickerSourceKey(quizTagPickerValue);
+                          setQuizTagPickerCountInput('');
                         }}
                         className="text-[11px] font-bold text-surface-500 hover:text-surface-700 dark:text-surface-300 dark:hover:text-white"
                       >
@@ -6478,16 +6466,19 @@ export default function App() {
                                 : 'Baslanmadi';
                           const statusClass =
                             status === 'completed'
-                              ? 'bg-emerald-50 text-emerald-600 border-emerald-200 dark:bg-emerald-900/20 dark:text-emerald-300 dark:border-emerald-800/40'
+                              ? 'bg-emerald-50/80 text-emerald-600 dark:bg-emerald-900/20 dark:text-emerald-300'
                               : status === 'in_progress'
-                                ? 'bg-amber-50 text-amber-600 border-amber-200 dark:bg-amber-900/20 dark:text-amber-300 dark:border-amber-800/40'
-                                : 'bg-surface-100 text-surface-500 border-surface-200 dark:bg-surface-700/60 dark:text-surface-300 dark:border-surface-600';
+                                ? 'bg-emerald-50/80 text-emerald-600 dark:bg-emerald-900/20 dark:text-emerald-300'
+                                : 'bg-red-50/80 text-red-600 dark:bg-red-900/20 dark:text-red-300';
                           const actionLabel =
                             status === 'completed'
                               ? 'Tekrar Coz'
                               : status === 'in_progress'
                                 ? 'Devam Et'
                                 : 'Basla';
+                          const topicCardIconName = activeCategory.iconName === 'History'
+                            ? 'Landmark'
+                            : activeCategory.iconName;
 
                           return (
                             <article
@@ -6496,17 +6487,35 @@ export default function App() {
                             >
                               <div className="flex items-start justify-between gap-2 mb-3">
                                 <div className={`w-10 h-10 rounded-xl bg-gradient-to-br ${color.gradient} text-white flex items-center justify-center shadow-md`}>
-                                  <Icon name={activeCategory.iconName} className="w-4.5 h-4.5" />
+                                  <Icon name={topicCardIconName} className="w-4.5 h-4.5" />
                                 </div>
-                                <div className="flex items-center gap-1.5">
+                                <div className="rounded-lg border border-surface-200 dark:border-surface-700 bg-surface-50/80 dark:bg-surface-900/45 overflow-hidden flex items-stretch">
                                   {hasExternalSource && (
-                                    <span className="px-2 py-1 rounded-md text-[10px] font-bold border whitespace-nowrap bg-sky-50 text-sky-600 border-sky-200 dark:bg-sky-900/20 dark:text-sky-300 dark:border-sky-800/40">
-                                      Blogger
-                                    </span>
+                                    <>
+                                      <div
+                                        className="h-7 w-8 flex items-center justify-center text-sky-600 dark:text-sky-300 bg-sky-50/80 dark:bg-sky-900/20"
+                                        title="Blogger kaynağı"
+                                        aria-label="Blogger kaynağı"
+                                      >
+                                        <Icon name="Globe" className="w-3.5 h-3.5" />
+                                      </div>
+                                      <div className="w-px bg-surface-200 dark:bg-surface-700" />
+                                    </>
                                   )}
-                                  <span className={`px-2 py-1 rounded-md text-[10px] font-bold border whitespace-nowrap ${statusClass}`}>
-                                    {statusLabel}
-                                  </span>
+                                  <div
+                                    className={`${
+                                      status === 'in_progress' || status === 'not_started'
+                                        ? 'h-7 w-8 flex items-center justify-center'
+                                        : 'h-7 px-2 text-[10px] font-bold whitespace-nowrap flex items-center'
+                                    } ${statusClass}`}
+                                  >
+                                    {status === 'in_progress'
+                                      ? <Icon name="Play" className="w-3.5 h-3.5" />
+                                      : status === 'not_started'
+                                        ? <Icon name="CircleX" className="w-3.5 h-3.5" />
+                                      : statusLabel}
+                                  </div>
+                                  <div className="w-px bg-surface-200 dark:bg-surface-700" />
                                   <button
                                     onClick={(e) => {
                                       e.preventDefault();
@@ -6514,12 +6523,13 @@ export default function App() {
                                       if (!hasTopicProgressStats) return;
                                       handleResetSingleTopicProgressStats(sub.id, sub.name);
                                     }}
-                                    className={`w-7 h-7 rounded-lg border flex items-center justify-center transition ${
+                                    className={`h-7 w-8 flex items-center justify-center transition ${
                                       hasTopicProgressStats
-                                        ? 'border-red-200 text-red-500 hover:bg-red-50 dark:border-red-900/40 dark:text-red-300 dark:hover:bg-red-900/20'
-                                        : 'border-surface-200 text-surface-300 dark:border-surface-700 dark:text-surface-500 cursor-not-allowed'
+                                        ? 'text-red-500 hover:bg-red-50/70 dark:text-red-300 dark:hover:bg-red-900/20'
+                                        : 'text-surface-300 dark:text-surface-500 cursor-not-allowed'
                                     }`}
-                                    title={hasTopicProgressStats ? 'Bu konunun istatistiklerini sifirla' : 'Bu konuda sifirlanacak istatistik yok'}
+                                    title={hasTopicProgressStats ? 'Bu konunun istatistiklerini sıfırla' : 'Bu konuda sıfırlanacak istatistik yok'}
+                                    aria-label="Konu istatistiklerini sıfırla"
                                   >
                                     <Icon name="RotateCcw" className="w-3 h-3" />
                                   </button>
@@ -6528,59 +6538,86 @@ export default function App() {
 
                               <h3 className="text-base font-extrabold text-surface-800 dark:text-white mb-2 line-clamp-2">{sub.name}</h3>
 
-                              <div className="space-y-2 mb-4">
-                                <div className="flex items-center justify-between text-[11px] text-surface-500 dark:text-surface-400">
-                                  <span>{uniqueSolvedCount} / {questionCount} soru</span>
-                                  <span className="font-bold">%{progressPercent}</span>
+                              <div className="mb-4 space-y-2">
+                                <div className="rounded-lg border border-surface-200 dark:border-surface-700 bg-surface-50/80 dark:bg-surface-900/45 overflow-hidden">
+                                  <div className="grid grid-cols-5 divide-x divide-surface-200 dark:divide-surface-700">
+                                    <div className="px-1.5 py-1.5 text-center">
+                                      <p className="text-[9px] font-semibold uppercase tracking-[0.06em] text-surface-400">Soru</p>
+                                      <p className="text-[11px] font-black text-surface-700 dark:text-surface-200">{uniqueSolvedCount}/{questionCount}</p>
+                                    </div>
+                                    <div className="px-1.5 py-1.5 text-center">
+                                      <p className="text-[9px] font-semibold uppercase tracking-[0.06em] text-surface-400">Başarı</p>
+                                      <p className="text-[11px] font-black text-surface-700 dark:text-surface-200">%{accuracy}</p>
+                                    </div>
+                                    <div className="px-1.5 py-1.5 text-center">
+                                      <p className="text-[9px] font-semibold uppercase tracking-[0.06em] text-surface-400">Yanlış</p>
+                                      <p className="text-[11px] font-black text-red-600 dark:text-red-300">{topicProgress.wrongCount}</p>
+                                    </div>
+                                    <div className="px-1.5 py-1.5 text-center">
+                                      <p className="text-[9px] font-semibold uppercase tracking-[0.06em] text-surface-400">Fav</p>
+                                      <p className="text-[11px] font-black text-amber-600 dark:text-amber-300">{topicFavoriteCount}</p>
+                                    </div>
+                                    <div className="px-1.5 py-1.5 text-center">
+                                      <p className="text-[9px] font-semibold uppercase tracking-[0.06em] text-surface-400">İlerleme</p>
+                                      <p className="text-[11px] font-black text-brand-600 dark:text-brand-300">%{progressPercent}</p>
+                                    </div>
+                                  </div>
                                 </div>
                                 <div className="w-full h-1.5 rounded-full bg-surface-100 dark:bg-surface-700 overflow-hidden">
                                   <div className={`h-full bg-gradient-to-r ${color.gradient} rounded-full transition-all duration-500`} style={{ width: `${progressPercent}%` }} />
                                 </div>
-                                <div className="flex items-center justify-between text-[11px]">
-                                  <span className="text-surface-500 dark:text-surface-400">Basari: <span className="font-bold text-surface-700 dark:text-surface-200">%{accuracy}</span></span>
-                                  <span className="text-surface-500 dark:text-surface-400">Yanlis: <span className="font-bold text-red-600 dark:text-red-300">{topicProgress.wrongCount}</span></span>
-                                  <span className="text-surface-500 dark:text-surface-400">Fav: <span className="font-bold text-amber-600 dark:text-amber-300">{topicFavoriteCount}</span></span>
-                                </div>
                               </div>
 
-                              <div className="mt-auto flex items-center gap-2">
+                              <div className="mt-auto rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-50/70 dark:bg-surface-900/40 overflow-hidden flex items-stretch">
                                 <button
                                   onClick={() => openQuizSetup(activeCategory, sub)}
-                                  className={`flex-1 h-9 rounded-lg bg-gradient-to-r ${color.gradient} text-white text-sm font-bold hover:opacity-90 transition flex items-center justify-center gap-1.5`}
+                                  className="flex-1 h-10 bg-gradient-to-r from-emerald-500 via-emerald-600 to-teal-600 text-white text-sm font-bold hover:from-emerald-600 hover:via-emerald-700 hover:to-teal-700 transition shadow-md shadow-emerald-600/25 flex items-center justify-center gap-1.5"
                                 >
                                   <Icon name="Play" className="w-3.5 h-3.5" />
                                   {actionLabel}
                                 </button>
+
+                                <div className="w-px bg-surface-200 dark:bg-surface-700" />
+
                                 <button
                                   onClick={() => openQuizSetup(activeCategory, sub, 'wrong')}
-                                  className="h-9 px-2 rounded-lg border border-red-200 dark:border-red-900/40 text-red-600 dark:text-red-300 text-xs font-bold hover:bg-red-50 dark:hover:bg-red-900/20 transition"
-                                  title="Yanlis sorulardan basla"
+                                  className="w-11 h-10 text-red-600 dark:text-red-300 hover:bg-red-50/60 dark:hover:bg-red-900/20 transition flex items-center justify-center"
+                                  title="Yanlış sorulardan başla"
+                                  aria-label="Yanlış sorulardan başla"
                                 >
-                                  Y
+                                  <Icon name="CircleX" className="w-4 h-4" />
                                 </button>
+
+                                <div className="w-px bg-surface-200 dark:bg-surface-700" />
+
                                 <button
                                   onClick={() => openQuizSetup(activeCategory, sub, 'favorite')}
                                   disabled={topicFavoriteCount === 0}
-                                  className={`h-9 px-2 rounded-lg border text-xs font-bold transition ${
+                                  className={`w-11 h-10 transition flex items-center justify-center ${
                                     topicFavoriteCount > 0
-                                      ? 'border-amber-200 dark:border-amber-900/40 text-amber-600 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-900/20'
-                                      : 'border-surface-200 dark:border-surface-700 text-surface-300 dark:text-surface-500 cursor-not-allowed'
+                                      ? 'text-amber-600 dark:text-amber-300 hover:bg-amber-50/60 dark:hover:bg-amber-900/20'
+                                      : 'text-surface-300 dark:text-surface-500 cursor-not-allowed'
                                   }`}
-                                  title={topicFavoriteCount > 0 ? 'Favori sorulardan basla' : 'Bu konuda favori soru yok'}
+                                  title={topicFavoriteCount > 0 ? 'Favori sorulardan başla' : 'Bu konuda favori soru yok'}
+                                  aria-label="Favori sorulardan başla"
                                 >
-                                  F
+                                  <Icon name="Star" className="w-4 h-4" />
                                 </button>
+
+                                <div className="w-px bg-surface-200 dark:bg-surface-700" />
+
                                 <button
                                   onClick={() => openQuizSetup(activeCategory, sub, 'wrong_favorite')}
                                   disabled={wrongOrFavoriteCount === 0}
-                                  className={`h-9 px-2 rounded-lg border text-xs font-bold transition ${
+                                  className={`w-11 h-10 transition flex items-center justify-center ${
                                     wrongOrFavoriteCount > 0
-                                      ? 'border-violet-200 dark:border-violet-900/40 text-violet-600 dark:text-violet-300 hover:bg-violet-50 dark:hover:bg-violet-900/20'
-                                      : 'border-surface-200 dark:border-surface-700 text-surface-300 dark:text-surface-500 cursor-not-allowed'
+                                      ? 'text-violet-600 dark:text-violet-300 hover:bg-violet-50/60 dark:hover:bg-violet-900/20'
+                                      : 'text-surface-300 dark:text-surface-500 cursor-not-allowed'
                                   }`}
-                                  title={wrongOrFavoriteCount > 0 ? 'Yanlis + favori sorulardan basla' : 'Bu konuda yanlis veya favori soru yok'}
+                                  title={wrongOrFavoriteCount > 0 ? 'Yanlış + favori sorulardan başla' : 'Bu konuda yanlış veya favori soru yok'}
+                                  aria-label="Yanlış ve favori sorulardan başla"
                                 >
-                                  Y+F
+                                  <Icon name="Sparkles" className="w-4 h-4" />
                                 </button>
                               </div>
                             </article>

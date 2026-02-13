@@ -45,6 +45,7 @@ import {
   PenLine,
   Flag,
   Info,
+  Landmark,
 } from 'lucide-react';
 
 export const Icon = ({ name, className }: { name: string, className?: string }) => {
@@ -94,6 +95,7 @@ export const Icon = ({ name, className }: { name: string, className?: string }) 
     PenLine: <PenLine className={className} />,
     Flag: <Flag className={className} />,
     Info: <Info className={className} />,
+    Landmark: <Landmark className={className} />,
   };
 
   return <>{icons[name] || <BookOpen className={className} />}</>;
