@@ -79,10 +79,13 @@
   (function () {
     try {
       var storedTheme = localStorage.getItem('kpsspro_theme');
-      var shouldUseDark = storedTheme === 'dark';
+      var shouldUseDark = storedTheme !== 'light';
       document.documentElement.classList.toggle('dark', shouldUseDark);
+      var storedLightVariant = localStorage.getItem('kpsspro_light_theme_variant');
+      document.documentElement.classList.toggle('light-variant-clean', storedLightVariant !== 'aura');
     } catch {
-      document.documentElement.classList.remove('dark');
+      document.documentElement.classList.add('dark');
+      document.documentElement.classList.add('light-variant-clean');
     }
   })();
 </script>

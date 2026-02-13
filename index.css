@@ -330,6 +330,11 @@ input[type="number"] {
 
 /* ===== Responsive helpers ===== */
 @media (max-width: 768px) {
+  .mobile-safe-x {
+    padding-left: calc(0.75rem + env(safe-area-inset-left, 0px));
+    padding-right: calc(0.75rem + env(safe-area-inset-right, 0px));
+  }
+
   .mobile-safe-bottom {
     padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 4px);
   }
@@ -705,3 +710,221 @@ input[type="number"] {
 .kpss-neon-mini-emerald { border-color: rgba(52, 211, 153, 0.52); box-shadow: 0 0 14px rgba(52, 211, 153, 0.18); }
 .kpss-neon-mini-amber { border-color: rgba(251, 191, 36, 0.52); box-shadow: 0 0 14px rgba(251, 191, 36, 0.18); }
 .kpss-neon-mini-red { border-color: rgba(248, 113, 113, 0.52); box-shadow: 0 0 14px rgba(248, 113, 113, 0.18); }
+
+@media (max-width: 767px) {
+  .statistics-summary-mini-card {
+    min-height: 54px;
+    padding: 6px 7px;
+    border-radius: 10px;
+  }
+
+  .statistics-summary-mini-card .kpss-neon-mini-label {
+    font-size: 9px;
+    letter-spacing: 0.05em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .statistics-summary-mini-card .kpss-neon-mini-value {
+    font-size: 20px;
+    margin-top: 1px;
+  }
+}
+
+/* ===== Neon Dashboard Light Theme Overrides ===== */
+:root:not(.dark) .kpss-neon-mobile-header {
+  background:
+    radial-gradient(110% 120% at 0% 0%, rgba(56, 189, 248, 0.14) 0%, transparent 56%),
+    radial-gradient(90% 90% at 100% 0%, rgba(192, 132, 252, 0.14) 0%, transparent 52%),
+    linear-gradient(140deg, rgba(255, 255, 255, 0.96) 0%, rgba(246, 250, 255, 0.96) 100%);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.28);
+  box-shadow: 0 10px 28px rgba(148, 163, 184, 0.22);
+  backdrop-filter: blur(14px) saturate(170%);
+  -webkit-backdrop-filter: blur(14px) saturate(170%);
+}
+
+:root:not(.dark) .kpss-neon-sidebar {
+  background:
+    radial-gradient(120% 120% at 0% 0%, rgba(45, 212, 191, 0.18) 0%, transparent 48%),
+    radial-gradient(100% 100% at 100% 15%, rgba(168, 85, 247, 0.18) 0%, transparent 52%),
+    linear-gradient(180deg, rgba(248, 251, 255, 0.98) 0%, rgba(239, 246, 255, 0.98) 100%);
+  border-right: 1px solid rgba(148, 163, 184, 0.28);
+  box-shadow: 0 16px 34px rgba(148, 163, 184, 0.24);
+}
+
+:root:not(.dark) .kpss-neon-usercard {
+  background:
+    radial-gradient(90% 100% at 100% 0%, rgba(96, 165, 250, 0.24) 0%, transparent 52%),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.95) 0%, rgba(244, 245, 255, 0.95) 52%, rgba(240, 253, 250, 0.96) 100%);
+  border: 1px solid rgba(167, 139, 250, 0.28);
+  box-shadow: 0 16px 30px rgba(129, 140, 248, 0.16);
+}
+
+:root:not(.dark) .kpss-neon-panel {
+  background:
+    radial-gradient(120% 120% at 100% 0%, rgba(59, 130, 246, 0.09) 0%, transparent 52%),
+    linear-gradient(145deg, rgba(255, 255, 255, 0.94) 0%, rgba(246, 250, 255, 0.94) 100%);
+  border: 1px solid rgba(148, 163, 184, 0.26);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    0 14px 28px rgba(148, 163, 184, 0.2);
+}
+
+:root:not(.dark) .kpss-neon-select {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94) 0%, rgba(248, 250, 252, 0.94) 100%);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  color: #334155;
+}
+
+:root:not(.dark) .kpss-neon-select:focus {
+  border-color: rgba(99, 102, 241, 0.52);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+}
+
+:root:not(.dark) .kpss-neon-select option {
+  background: #ffffff;
+  color: #0f172a;
+}
+
+:root:not(.dark) .kpss-neon-stat-card {
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background:
+    radial-gradient(120% 120% at 100% 0%, rgba(59, 130, 246, 0.08) 0%, transparent 54%),
+    linear-gradient(150deg, rgba(255, 255, 255, 0.96) 0%, rgba(243, 248, 255, 0.96) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 10px 22px rgba(148, 163, 184, 0.2);
+}
+
+:root:not(.dark) .kpss-neon-stat-icon {
+  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  box-shadow: 0 8px 16px rgba(148, 163, 184, 0.22);
+}
+
+:root:not(.dark) .kpss-neon-stat-fuchsia {
+  border-color: rgba(192, 38, 211, 0.36);
+  box-shadow: 0 10px 24px rgba(192, 38, 211, 0.14);
+}
+
+:root:not(.dark) .kpss-neon-stat-blue {
+  border-color: rgba(37, 99, 235, 0.34);
+  box-shadow: 0 10px 24px rgba(37, 99, 235, 0.14);
+}
+
+:root:not(.dark) .kpss-neon-stat-emerald {
+  border-color: rgba(5, 150, 105, 0.34);
+  box-shadow: 0 10px 24px rgba(5, 150, 105, 0.14);
+}
+
+:root:not(.dark) .kpss-neon-stat-cyan {
+  border-color: rgba(8, 145, 178, 0.34);
+  box-shadow: 0 10px 24px rgba(8, 145, 178, 0.14);
+}
+
+:root:not(.dark) .kpss-neon-stat-amber {
+  border-color: rgba(217, 119, 6, 0.34);
+  box-shadow: 0 10px 24px rgba(217, 119, 6, 0.14);
+}
+
+:root:not(.dark) .kpss-neon-mini-card {
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  background:
+    radial-gradient(120% 120% at 100% 0%, rgba(96, 165, 250, 0.08) 0%, transparent 54%),
+    linear-gradient(150deg, rgba(255, 255, 255, 0.94) 0%, rgba(247, 251, 255, 0.94) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 10px 20px rgba(148, 163, 184, 0.17);
+}
+
+:root:not(.dark) .kpss-neon-mini-label {
+  color: rgba(71, 85, 105, 0.9);
+}
+
+:root:not(.dark) .kpss-neon-mini-value {
+  color: #0f172a;
+}
+
+:root:not(.dark) .kpss-neon-mini-fuchsia { border-color: rgba(192, 38, 211, 0.36); box-shadow: 0 8px 18px rgba(192, 38, 211, 0.12); }
+:root:not(.dark) .kpss-neon-mini-blue { border-color: rgba(37, 99, 235, 0.34); box-shadow: 0 8px 18px rgba(37, 99, 235, 0.12); }
+:root:not(.dark) .kpss-neon-mini-cyan { border-color: rgba(8, 145, 178, 0.34); box-shadow: 0 8px 18px rgba(8, 145, 178, 0.12); }
+:root:not(.dark) .kpss-neon-mini-emerald { border-color: rgba(5, 150, 105, 0.34); box-shadow: 0 8px 18px rgba(5, 150, 105, 0.12); }
+:root:not(.dark) .kpss-neon-mini-amber { border-color: rgba(217, 119, 6, 0.34); box-shadow: 0 8px 18px rgba(217, 119, 6, 0.12); }
+:root:not(.dark) .kpss-neon-mini-red { border-color: rgba(220, 38, 38, 0.34); box-shadow: 0 8px 18px rgba(220, 38, 38, 0.12); }
+
+/* ===== Neon Dashboard Light Variant: Clean ===== */
+:root.light-variant-clean:not(.dark) .kpss-neon-mobile-header {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(248, 250, 252, 0.96) 100%);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.22);
+  box-shadow: 0 8px 18px rgba(148, 163, 184, 0.14);
+}
+
+:root.light-variant-clean:not(.dark) .kpss-neon-sidebar {
+  background: linear-gradient(180deg, rgba(252, 253, 255, 0.98) 0%, rgba(245, 248, 253, 0.98) 100%);
+  border-right: 1px solid rgba(148, 163, 184, 0.2);
+  box-shadow: 0 14px 28px rgba(148, 163, 184, 0.16);
+}
+
+:root.light-variant-clean:not(.dark) .kpss-neon-usercard {
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.96) 0%, rgba(247, 250, 255, 0.96) 100%);
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  box-shadow: 0 10px 22px rgba(148, 163, 184, 0.14);
+}
+
+:root.light-variant-clean:not(.dark) .kpss-neon-panel {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.95) 0%, rgba(248, 250, 252, 0.95) 100%);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    0 10px 20px rgba(148, 163, 184, 0.14);
+}
+
+:root.light-variant-clean:not(.dark) .kpss-neon-select {
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid rgba(148, 163, 184, 0.28);
+}
+
+:root.light-variant-clean:not(.dark) .kpss-neon-stat-card {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(248, 250, 252, 0.96) 100%);
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    0 8px 16px rgba(148, 163, 184, 0.13);
+}
+
+:root.light-variant-clean:not(.dark) .kpss-neon-stat-icon {
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  box-shadow: 0 6px 12px rgba(148, 163, 184, 0.14);
+}
+
+:root.light-variant-clean:not(.dark) .kpss-neon-stat-fuchsia,
+:root.light-variant-clean:not(.dark) .kpss-neon-stat-blue,
+:root.light-variant-clean:not(.dark) .kpss-neon-stat-emerald,
+:root.light-variant-clean:not(.dark) .kpss-neon-stat-cyan,
+:root.light-variant-clean:not(.dark) .kpss-neon-stat-amber {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    0 8px 16px rgba(148, 163, 184, 0.12);
+}
+
+:root.light-variant-clean:not(.dark) .kpss-neon-mini-card {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.95) 0%, rgba(248, 250, 252, 0.95) 100%);
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    0 8px 14px rgba(148, 163, 184, 0.12);
+}
+
+:root.light-variant-clean:not(.dark) .kpss-neon-mini-fuchsia,
+:root.light-variant-clean:not(.dark) .kpss-neon-mini-blue,
+:root.light-variant-clean:not(.dark) .kpss-neon-mini-cyan,
+:root.light-variant-clean:not(.dark) .kpss-neon-mini-emerald,
+:root.light-variant-clean:not(.dark) .kpss-neon-mini-amber,
+:root.light-variant-clean:not(.dark) .kpss-neon-mini-red {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    0 8px 14px rgba(148, 163, 184, 0.12);
+}

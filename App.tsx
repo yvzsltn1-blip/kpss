@@ -4,7 +4,7 @@ import { Category, User, SubCategory, Question, QuizState, QuestionReport } from
 import { Icon } from './components/Icon';
 import { parseBulkQuestionsWithReport } from './services/questionParser';
 
-// --- Firebase ImportlarÄ± ---
+// --- Firebase Importları ---
 import { auth, db } from './firebase';
 import { createUserWithEmailAndPassword, onAuthStateChanged, signInWithEmailAndPassword, signOut as firebaseSignOut } from 'firebase/auth';
 import { 
@@ -23,7 +23,7 @@ import {
   getDocs
 } from 'firebase/firestore';
 
-type ViewState = 'dashboard' | 'quiz-setup' | 'quiz' | 'admin';
+type ViewState = 'dashboard' | 'statistics' | 'quiz-setup' | 'quiz' | 'admin';
 type QuizConfirmAction = 'exit' | 'finish';
 type TopicProgressStats = {
   seenCount: number;
@@ -78,7 +78,7 @@ type QuizStatusFilter = {
   favorite: boolean;
 };
 
-// Kategori Renk TanÄ±mlarÄ±
+// Kategori Renk Tanımları
 const CATEGORY_COLORS: Record<string, { bg: string; bgLight: string; bgDark: string; text: string; textDark: string; gradient: string; shadow: string; border: string; borderDark: string }> = {
   '1': { // Tarih - Amber
     bg: 'bg-amber-500', bgLight: 'bg-amber-50', bgDark: 'dark:bg-amber-900/20',
@@ -124,12 +124,14 @@ const COMPLETED_QUIZ_COUNT_CLEANUP_KEY_PREFIX = 'kpsspro_completed_quiz_count_cl
 
 const STORAGE_KEYS = {
   theme: 'kpsspro_theme',
+  lightThemeVariant: 'kpsspro_light_theme_variant',
   quizSize: 'kpsspro_quiz_size',
   categories: 'kpsspro_categories',
   topicProgressStats: 'kpsspro_topic_progress_stats',
   topicBloggerPages: 'kpsspro_topic_blogger_pages',
   persistSeenQuestionsToFirestore: 'kpsspro_persist_seen_questions_firestore',
 } as const;
+type LightThemeVariant = 'aura' | 'clean';
 const UNTAGGED_SOURCE_KEY = '__untagged__';
 const QUESTION_ID_MAX_LENGTH = 120;
 const DEFAULT_BLOGGER_JSON_URL = 'https://kpsst.blogspot.com/p/kpss-iott.html';
@@ -545,7 +547,7 @@ const getStoredCategories = (): Category[] => {
 };
 
 const getStoredTheme = (): boolean => {
-  if (typeof window === 'undefined') return false;
+  if (typeof window === 'undefined') return true;
   try {
     const storedTheme = window.localStorage.getItem(STORAGE_KEYS.theme);
     if (storedTheme === 'dark') return true;
@@ -553,7 +555,19 @@ const getStoredTheme = (): boolean => {
   } catch {
     // Ignore storage errors and continue with default
   }
-  return false;
+  return true;
+};
+
+const getStoredLightThemeVariant = (): LightThemeVariant => {
+  if (typeof window === 'undefined') return 'clean';
+  try {
+    const storedVariant = window.localStorage.getItem(STORAGE_KEYS.lightThemeVariant);
+    if (storedVariant === 'clean') return 'clean';
+    if (storedVariant === 'aura') return 'aura';
+  } catch {
+    // Ignore storage errors and use default
+  }
+  return 'clean';
 };
 
 const getStoredQuizSize = (): 0 | 1 | 2 => {
@@ -898,15 +912,17 @@ export default function App() {
   const [activeCategory, setActiveCategory] = useState<Category | null>(null);
   const [activeTopic, setActiveTopic] = useState<{ cat: Category, sub: SubCategory } | null>(null);
   const [isDarkMode, setIsDarkMode] = useState<boolean>(() => getStoredTheme());
+  const [lightThemeVariant, setLightThemeVariant] = useState<LightThemeVariant>(() => getStoredLightThemeVariant());
 
   // Quiz Configuration State
   const [quizConfig, setQuizConfig] = useState({
     questionCount: 10,
     durationSeconds: 300,
   });
+  const [questionCountInputValue, setQuestionCountInputValue] = useState('10');
   const [quizTagQuestionCounts, setQuizTagQuestionCounts] = useState<Record<string, number>>({});
 
-  // --- SORULAR STATE (ARTIK BOÅ BAÅLIYOR) ---
+  // --- SORULAR STATE (ARTIK BOŞ BAŞLIYOR) ---
   const [allQuestions, setAllQuestions] = useState<Record<string, Question[]>>({});
   const [topicBloggerPages, setTopicBloggerPages] = useState<Record<string, string>>(() => getStoredTopicBloggerPages());
   const [deletedTopicIds, setDeletedTopicIds] = useState<string[]>([]);
@@ -944,6 +960,8 @@ export default function App() {
   const [topicSearchTerm, setTopicSearchTerm] = useState('');
   const [topicCardFilter, setTopicCardFilter] = useState<'all' | 'in_progress' | 'completed' | 'not_started'>('all');
   const [homeStatsCategoryFilter, setHomeStatsCategoryFilter] = useState<string>('all');
+  const [statisticsScopeCategoryId, setStatisticsScopeCategoryId] = useState<string>('all');
+  const [isStatisticsScopeMenuOpen, setIsStatisticsScopeMenuOpen] = useState(false);
   const [isHomeStatsExpanded, setIsHomeStatsExpanded] = useState(true);
   const [isRulesHelpModalOpen, setIsRulesHelpModalOpen] = useState(false);
 
@@ -994,6 +1012,7 @@ export default function App() {
   const autoAdvanceRef = useRef<number | null>(null);
   const categoriesRef = useRef<Category[]>(categories);
   const topicBloggerPagesRef = useRef<Record<string, string>>(topicBloggerPages);
+  const statisticsScopeMenuRef = useRef<HTMLDivElement | null>(null);
   const categoriesSeedAttemptedRef = useRef(false);
   const topicBloggerPagesSeedAttemptedRef = useRef(false);
   const deletedTopicIdsRef = useRef<string[]>(deletedTopicIds);
@@ -1119,6 +1138,19 @@ export default function App() {
       // Ignore storage errors
     }
   }, [isDarkMode]);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('light-variant-clean', lightThemeVariant === 'clean');
+    try {
+      window.localStorage.setItem(STORAGE_KEYS.lightThemeVariant, lightThemeVariant);
+    } catch {
+      // Ignore storage errors
+    }
+  }, [lightThemeVariant]);
+
+  useEffect(() => {
+    setQuestionCountInputValue(String(Math.max(0, Math.floor(quizConfig.questionCount))));
+  }, [quizConfig.questionCount]);
 
   useEffect(() => {
     try {
@@ -1295,6 +1327,35 @@ export default function App() {
   }, [categories, homeStatsCategoryFilter]);
 
   useEffect(() => {
+    if (statisticsScopeCategoryId === 'all') return;
+    const hasSelectedCategory = categories.some((cat) => cat.id === statisticsScopeCategoryId);
+    if (!hasSelectedCategory) {
+      setStatisticsScopeCategoryId('all');
+    }
+  }, [categories, statisticsScopeCategoryId]);
+
+  useEffect(() => {
+    if (!isStatisticsScopeMenuOpen) return;
+    const handleOutsidePointer = (event: MouseEvent | TouchEvent) => {
+      const targetNode = event.target;
+      if (!(targetNode instanceof Node)) return;
+      if (!statisticsScopeMenuRef.current?.contains(targetNode)) {
+        setIsStatisticsScopeMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutsidePointer);
+    document.addEventListener('touchstart', handleOutsidePointer);
+    return () => {
+      document.removeEventListener('mousedown', handleOutsidePointer);
+      document.removeEventListener('touchstart', handleOutsidePointer);
+    };
+  }, [isStatisticsScopeMenuOpen]);
+
+  useEffect(() => {
+    setIsStatisticsScopeMenuOpen(false);
+  }, [statisticsScopeCategoryId]);
+
+  useEffect(() => {
     try {
       window.localStorage.setItem(STORAGE_KEYS.quizSize, String(quizSize));
     } catch {
@@ -1313,7 +1374,7 @@ export default function App() {
     }
   }, [persistSeenQuestionsToFirestore]);
 
-  // --- FIREBASE VERÄ° Ã‡EKME EFFECT'Ä° ---
+  // --- FIREBASE VERİ ÇEKME EFFECT'İ ---
   useEffect(() => {
     let isCancelled = false;
     let unsubscribeFirestore: (() => void) | null = null;
@@ -1965,6 +2026,7 @@ export default function App() {
         await signInWithEmailAndPassword(auth, normalizedEmail, normalizedPassword);
       }
 
+      setIsDarkMode(true);
       setLoginPassword('');
       setLoginPasswordConfirm('');
       if (authMode === 'register') {
@@ -2144,9 +2206,9 @@ export default function App() {
       isTimerActive: true
     }));
 
-    // SorularÄ± karÄ±ÅŸtÄ±r ve seÃ§
+    // Soruları karıştır ve seç
     
-    // Basit karÄ±ÅŸtÄ±rma algoritmasÄ± (Fisher-Yates)
+    // Basit karıştırma algoritması (Fisher-Yates)
     
 
     setTimeout(() => {
@@ -2513,7 +2575,7 @@ export default function App() {
     downloadJsonFile(`sorular_konu_konu_${dateText}.json`, payload);
   };
 
-  // --- Admin Handlers (GÃœNCELLENDÄ°) ---
+  // --- Admin Handlers (GÜNCELLENDİ) ---
 
   const handleDeleteQuestion = async (questionId: string) => {
     if (!user || user.role !== 'admin') return;
@@ -2524,10 +2586,10 @@ export default function App() {
       if (adminPreviewQuestion?.id === questionId) {
         handleCloseAdminPreview();
       }
-      // Manuel state gÃ¼ncellemesine gerek yok, onSnapshot halledecek
+      // Manuel state güncellemesine gerek yok, onSnapshot halledecek
     } catch (error) {
-      console.error("Silme hatasÄ±:", error);
-      alert("Soru silinirken hata oluÅŸtu.");
+      console.error("Silme hatası:", error);
+      alert("Soru silinirken hata oluştu.");
     }
   };
   const handleReportQuestion = (question: Question) => {
@@ -2629,21 +2691,21 @@ export default function App() {
     if (!window.confirm(`Bu konudaki ${count} sorunun tamamini silmek istediginize emin misiniz?`)) return;
 
     try {
-      // Ã–nce bu konuya ait tÃ¼m sorularÄ± bul
+      // Önce bu konuya ait tüm soruları bul
       const q = query(collection(db, "questions"), where("topicId", "==", adminSelectedTopicId));
       const snapshot = await getDocs(q);
 
-      // Hepsini silmek iÃ§in batch oluÅŸtur
+      // Hepsini silmek için batch oluştur
       const batch = writeBatch(db);
       snapshot.forEach((doc) => {
         batch.delete(doc.ref);
       });
 
       await batch.commit();
-      // Manuel state gÃ¼ncellemesine gerek yok
+      // Manuel state güncellemesine gerek yok
     } catch (error) {
-      console.error("Toplu silme hatasÄ±:", error);
-      alert("Toplu silme sÄ±rasÄ±nda hata oluÅŸtu.");
+      console.error("Toplu silme hatası:", error);
+      alert("Toplu silme sırasında hata oluştu.");
     }
   };
 
@@ -2677,8 +2739,8 @@ export default function App() {
       });
       setIsAdminActionsOpen(false);
     } catch (error) {
-      console.error("Son sorulari silme hatasÄ±:", error);
-      alert("Son eklenen sorular silinirken bir hata oluÅŸtu.");
+      console.error("Son sorulari silme hatası:", error);
+      alert("Son eklenen sorular silinirken bir hata oluştu.");
     }
   };
 
@@ -2721,8 +2783,8 @@ export default function App() {
       });
       setIsAdminActionsOpen(false);
     } catch (error) {
-      console.error("Son sorulari etiketleme hatasÄ±:", error);
-      alert("Son sorular etiketlenirken bir hata oluÅŸtu.");
+      console.error("Son sorulari etiketleme hatası:", error);
+      alert("Son sorular etiketlenirken bir hata oluştu.");
     }
   };
 
@@ -2761,15 +2823,15 @@ export default function App() {
       options,
       correctOptionIndex: editForm.correctOption,
       explanation: editForm.explanation,
-      // topicId deÄŸiÅŸmiyor
+      // topicId değişmiyor
     };
 
     try {
       await updateDoc(doc(db, "questions", editingQuestion.question.id!), updatedData);
       setEditingQuestion(null);
     } catch (error) {
-      console.error("GÃ¼ncelleme hatasÄ±:", error);
-      alert("GÃ¼ncelleme sÄ±rasÄ±nda hata oluÅŸtu.");
+      console.error("Güncelleme hatası:", error);
+      alert("Güncelleme sırasında hata oluştu.");
     }
   };
 
@@ -3068,7 +3130,7 @@ export default function App() {
 
     const questionText = questionForm.questionRoot.trim();
     if (!questionText) {
-      alert("Soru kÃ¶kÃ¼ boÅŸ bÄ±rakÄ±lamaz.");
+      alert("Soru kökü boş bırakılamaz.");
       return null;
     }
 
@@ -3099,7 +3161,7 @@ export default function App() {
 
   const handleSaveQuestion = async () => {
     if (pendingQuestions.length === 0) {
-      alert("Kaydetmeden Ã¶nce en az bir soruyu listeye ekleyin.");
+      alert("Kaydetmeden önce en az bir soruyu listeye ekleyin.");
       return;
     }
     try {
@@ -3118,7 +3180,7 @@ export default function App() {
       setIsQuestionModalOpen(false);
     } catch (error) {
       console.error("Soru eklenirken hata:", error);
-      alert("Soru eklenirken bir hata oluÅŸtu. Ä°nternet baÄŸlantÄ±nÄ±zÄ± kontrol edin.");
+      alert("Soru eklenirken bir hata oluştu. İnternet bağlantınızı kontrol edin.");
     }
   };
 
@@ -3128,7 +3190,7 @@ export default function App() {
 
   const handleCloseQuestionModal = () => {
     if (pendingQuestions.length > 0) {
-      const confirmed = window.confirm(`Listede kaydedilmemiÅŸ ${pendingQuestions.length} soru var. KapatÄ±rsanÄ±z silinecek. Devam etmek istiyor musunuz?`);
+      const confirmed = window.confirm(`Listede kaydedilmemiş ${pendingQuestions.length} soru var. Kapatırsanız silinecek. Devam etmek istiyor musunuz?`);
       if (!confirmed) return;
     }
     setPendingQuestions([]);
@@ -3197,8 +3259,8 @@ export default function App() {
       setBulkStep('paste');
       setIsBulkImportOpen(false);
     } catch (error) {
-      console.error("Toplu kayÄ±t hatasÄ±:", error);
-      alert("Toplu kayÄ±t sÄ±rasÄ±nda bir hata oluÅŸtu.");
+      console.error("Toplu kayıt hatası:", error);
+      alert("Toplu kayıt sırasında bir hata oluştu.");
     }
   };
 
@@ -3386,6 +3448,124 @@ export default function App() {
     });
     return next;
   }, [allSeenQuestionStats]);
+  const statisticsTopicRows = useMemo(() => {
+    return categories.flatMap((cat) => {
+      return cat.subCategories.map((sub) => {
+        const topicStats = topicProgressStats[sub.id] || EMPTY_TOPIC_PROGRESS;
+        const seenStats = seenQuestionStatsByTopic[sub.id] || [];
+        const uniqueSolvedCount = persistSeenQuestionsToFirestore
+          ? seenStats.reduce((sum, stats) => (stats.answeredCount > 0 ? sum + 1 : sum), 0)
+          : topicStats.seenCount;
+        const totalAnsweredCount = persistSeenQuestionsToFirestore
+          ? seenStats.reduce((sum, stats) => sum + stats.answeredCount, 0)
+          : (topicStats.correctCount + topicStats.totalWrongAnswers);
+        const correctCount = topicStats.correctCount;
+        const wrongCount = topicStats.totalWrongAnswers;
+        const accuracyPercent = totalAnsweredCount > 0
+          ? Math.round((correctCount / totalAnsweredCount) * 100)
+          : 0;
+
+        return {
+          categoryId: cat.id,
+          categoryName: cat.name,
+          categoryIconName: cat.iconName,
+          topicId: sub.id,
+          topicName: sub.name,
+          uniqueSolvedCount,
+          totalAnsweredCount,
+          correctCount,
+          wrongCount,
+          accuracyPercent,
+          hasProgress:
+            uniqueSolvedCount > 0 ||
+            totalAnsweredCount > 0 ||
+            correctCount > 0 ||
+            wrongCount > 0 ||
+            topicStats.wrongCount > 0 ||
+            topicStats.seenCount > 0,
+        };
+      });
+    });
+  }, [categories, persistSeenQuestionsToFirestore, seenQuestionStatsByTopic, topicProgressStats]);
+  const statisticsCategoryRows = useMemo(() => {
+    return categories
+      .map((cat) => {
+        const rows = statisticsTopicRows.filter((row) => row.categoryId === cat.id);
+        const totals = rows.reduce(
+          (acc, row) => {
+            acc.uniqueSolvedCount += row.uniqueSolvedCount;
+            acc.totalAnsweredCount += row.totalAnsweredCount;
+            acc.correctCount += row.correctCount;
+            acc.wrongCount += row.wrongCount;
+            return acc;
+          },
+          { uniqueSolvedCount: 0, totalAnsweredCount: 0, correctCount: 0, wrongCount: 0 }
+        );
+        const accuracyPercent = totals.totalAnsweredCount > 0
+          ? Math.round((totals.correctCount / totals.totalAnsweredCount) * 100)
+          : 0;
+        return {
+          categoryId: cat.id,
+          categoryName: cat.name,
+          categoryIconName: cat.iconName,
+          topicCount: cat.subCategories.length,
+          ...totals,
+          accuracyPercent,
+          hasProgress: rows.some((row) => row.hasProgress),
+        };
+      })
+      .sort((a, b) => {
+        if (b.totalAnsweredCount !== a.totalAnsweredCount) {
+          return b.totalAnsweredCount - a.totalAnsweredCount;
+        }
+        return a.categoryName.localeCompare(b.categoryName, 'tr');
+      });
+  }, [categories, statisticsTopicRows]);
+  const statisticsScopeCategory = statisticsScopeCategoryId === 'all'
+    ? null
+    : (categories.find((cat) => cat.id === statisticsScopeCategoryId) || null);
+  const statisticsFilteredCategoryRows = useMemo(() => {
+    if (statisticsScopeCategoryId === 'all') return statisticsCategoryRows;
+    return statisticsCategoryRows.filter((row) => row.categoryId === statisticsScopeCategoryId);
+  }, [statisticsCategoryRows, statisticsScopeCategoryId]);
+  const statisticsFilteredTopicRows = useMemo(() => {
+    const rows = statisticsScopeCategoryId === 'all'
+      ? statisticsTopicRows
+      : statisticsTopicRows.filter((row) => row.categoryId === statisticsScopeCategoryId);
+    return [...rows].sort((a, b) => {
+      if (b.totalAnsweredCount !== a.totalAnsweredCount) {
+        return b.totalAnsweredCount - a.totalAnsweredCount;
+      }
+      if (b.correctCount !== a.correctCount) {
+        return b.correctCount - a.correctCount;
+      }
+      return a.topicName.localeCompare(b.topicName, 'tr');
+    });
+  }, [statisticsScopeCategoryId, statisticsTopicRows]);
+  const statisticsSummary = useMemo(() => {
+    const baseRows = statisticsScopeCategoryId === 'all'
+      ? statisticsCategoryRows
+      : statisticsCategoryRows.filter((row) => row.categoryId === statisticsScopeCategoryId);
+    const totals = baseRows.reduce(
+      (acc, row) => {
+        acc.uniqueSolvedCount += row.uniqueSolvedCount;
+        acc.totalAnsweredCount += row.totalAnsweredCount;
+        acc.correctCount += row.correctCount;
+        acc.wrongCount += row.wrongCount;
+        return acc;
+      },
+      { uniqueSolvedCount: 0, totalAnsweredCount: 0, correctCount: 0, wrongCount: 0 }
+    );
+    const accuracyPercent = totals.totalAnsweredCount > 0
+      ? Math.round((totals.correctCount / totals.totalAnsweredCount) * 100)
+      : 0;
+    return {
+      ...totals,
+      accuracyPercent,
+    };
+  }, [statisticsCategoryRows, statisticsScopeCategoryId]);
+  const statisticsScopeLabel = statisticsScopeCategory?.name || 'Tum Dersler';
+  const isStatisticsTopicView = statisticsScopeCategoryId !== 'all';
   const hasProgressForTopic = (topicId: string): boolean => {
     const stats = getTopicProgress(topicId);
     const activeWrongCount = (wrongQuestionIdsByTopic[topicId] || []).length;
@@ -3521,7 +3701,7 @@ export default function App() {
               <h1 className="text-5xl font-black text-white mb-3 tracking-tight bg-gradient-to-r from-white via-white to-white/80 bg-clip-text">
                 KPSS Pro
               </h1>
-              <p className="text-surface-400 text-base font-medium">AkÄ±llÄ± hazÄ±rlÄ±k ile baÅŸarÄ±ya bir adÄ±m daha yakÄ±n.</p>
+              <p className="text-surface-400 text-base font-medium">Akıllı hazırlık ile başarıya bir adım daha yakın.</p>
             </div>
 
             {/* Login Card - Premium Glassmorphic */}
@@ -3546,7 +3726,7 @@ export default function App() {
 
                 <div>
                   <label className="block text-xs font-bold text-surface-700 dark:text-surface-300 uppercase tracking-wider mb-2.5 ml-1">
-                    Åifre
+                    Şifre
                   </label>
                   <div className="relative group">
                     <input
@@ -3554,7 +3734,7 @@ export default function App() {
                       value={loginPassword}
                       onChange={(e) => setLoginPassword(e.target.value)}
                       className="w-full pl-12 pr-4 py-4 bg-surface-50/50 dark:bg-white/[0.04] border-2 border-surface-200/50 dark:border-white/[0.06] rounded-2xl focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500/60 text-surface-900 dark:text-white placeholder-surface-400 dark:placeholder-surface-500 outline-none transition-all text-sm font-medium hover:border-surface-300 dark:hover:border-white/[0.12] focus:bg-white dark:focus:bg-white/[0.06]"
-                      placeholder="Åifrenizi giriniz"
+                      placeholder="Şifrenizi giriniz"
                       autoComplete={authMode === 'register' ? 'new-password' : 'current-password'}
                     />
                     <div className="absolute left-4 top-1/2 -translate-y-1/2 text-surface-400 dark:text-surface-500 transition-colors group-focus-within:text-brand-500">
@@ -3566,7 +3746,7 @@ export default function App() {
                 {authMode === 'register' && (
                   <div>
                     <label className="block text-xs font-bold text-surface-700 dark:text-surface-300 uppercase tracking-wider mb-2.5 ml-1">
-                      Åifre Tekrar
+                      Şifre Tekrar
                     </label>
                     <div className="relative group">
                       <input
@@ -3574,7 +3754,7 @@ export default function App() {
                         value={loginPasswordConfirm}
                         onChange={(e) => setLoginPasswordConfirm(e.target.value)}
                         className="w-full pl-12 pr-4 py-4 bg-surface-50/50 dark:bg-white/[0.04] border-2 border-surface-200/50 dark:border-white/[0.06] rounded-2xl focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500/60 text-surface-900 dark:text-white placeholder-surface-400 dark:placeholder-surface-500 outline-none transition-all text-sm font-medium hover:border-surface-300 dark:hover:border-white/[0.12] focus:bg-white dark:focus:bg-white/[0.06]"
-                        placeholder="Åifrenizi tekrar giriniz"
+                        placeholder="Şifrenizi tekrar giriniz"
                         autoComplete="new-password"
                       />
                       <div className="absolute left-4 top-1/2 -translate-y-1/2 text-surface-400 dark:text-surface-500 transition-colors group-focus-within:text-brand-500">
@@ -3597,7 +3777,7 @@ export default function App() {
                   className="w-full py-4 px-6 bg-gradient-to-r from-brand-600 via-violet-600 to-purple-600 text-white font-bold rounded-2xl hover:shadow-2xl hover:shadow-brand-600/30 transition-all duration-300 transform hover:-translate-y-1 hover:scale-[1.02] active:translate-y-0 active:scale-100 flex items-center justify-center gap-2.5 mt-3 disabled:opacity-60 disabled:cursor-not-allowed disabled:transform-none text-base relative overflow-hidden group/btn"
                 >
                   <div className="absolute inset-0 bg-gradient-to-r from-white/20 to-transparent opacity-0 group-hover/btn:opacity-100 transition-opacity duration-300"></div>
-                  <span className="relative z-10">{isAuthLoading ? 'Bekleyin...' : authMode === 'register' ? 'KayÄ±t Ol' : 'GiriÅŸ Yap'}</span>
+                  <span className="relative z-10">{isAuthLoading ? 'Bekleyin...' : authMode === 'register' ? 'Kayıt Ol' : 'Giriş Yap'}</span>
                   {!isAuthLoading && <Icon name="ChevronRight" className="w-5 h-5 relative z-10 transition-transform group-hover/btn:translate-x-1" />}
                 </button>
               </form>
@@ -3613,7 +3793,7 @@ export default function App() {
                   }}
                   className="text-sm text-surface-600 dark:text-surface-400 hover:text-brand-600 dark:hover:text-brand-400 transition-colors font-semibold"
                 >
-                  {authMode === 'login' ? 'HesabÄ±n yok mu? KayÄ±t ol' : 'Zaten hesabÄ±n var mÄ±? GiriÅŸ yap'}
+                  {authMode === 'login' ? 'Hesabın yok mu? Kayıt ol' : 'Zaten hesabın var mı? Giriş yap'}
                 </button>
               </div>
             </div>
@@ -3750,6 +3930,19 @@ export default function App() {
       });
     };
 
+    const applyQuestionCount = (nextRawQuestionCount: number) => {
+      const normalizedQuestionCount = Math.min(
+        Math.max(0, Math.floor(Number.isFinite(nextRawQuestionCount) ? nextRawQuestionCount : 0)),
+        Math.max(0, questionCountMax)
+      );
+      setQuizConfig((prev) => ({
+        ...prev,
+        questionCount: normalizedQuestionCount,
+        durationSeconds: getAutoDurationForQuestionCount(normalizedQuestionCount),
+      }));
+      setQuizTagQuestionCounts((prev) => clampTagQuestionCountsToLimit(prev, normalizedQuestionCount));
+    };
+
     return (
       <div className="min-h-screen bg-surface-50 dark:bg-surface-900 flex items-start justify-center p-3 sm:p-4 md:py-8">
         <div className="w-full max-w-lg animate-fade-in-scale">
@@ -3848,20 +4041,37 @@ export default function App() {
                     max={questionCountMax}
                     value={quizConfig.questionCount}
                     onChange={(e) => {
-                      const nextQuestionCount = parseInt(e.target.value, 10);
-                      setQuizConfig({
-                        ...quizConfig,
-                        questionCount: nextQuestionCount,
-                        durationSeconds: getAutoDurationForQuestionCount(nextQuestionCount),
-                      });
-                      setQuizTagQuestionCounts((prev) => clampTagQuestionCountsToLimit(prev, nextQuestionCount));
+                      const nextQuestionCount = parseInt(e.target.value, 10) || 0;
+                      applyQuestionCount(nextQuestionCount);
                     }}
                     disabled={questionCountMax === 0}
                     className="w-full h-2 bg-surface-200 dark:bg-surface-700 rounded-lg cursor-pointer"
                   />
-                  <div className="w-14 h-10 flex items-center justify-center bg-white dark:bg-surface-800 border border-surface-200 dark:border-surface-600 rounded-xl font-extrabold text-lg text-surface-800 dark:text-white flex-shrink-0">
-                    {quizConfig.questionCount}
-                  </div>
+                  <input
+                    type="number"
+                    min={0}
+                    max={questionCountMax}
+                    value={questionCountInputValue}
+                    onFocus={() => {
+                      setQuestionCountInputValue('');
+                      applyQuestionCount(0);
+                    }}
+                    onChange={(e) => {
+                      const sanitized = e.target.value.replace(/[^\d]/g, '');
+                      setQuestionCountInputValue(sanitized);
+                      if (sanitized === '') {
+                        applyQuestionCount(0);
+                        return;
+                      }
+                      applyQuestionCount(parseInt(sanitized, 10) || 0);
+                    }}
+                    onBlur={() => {
+                      if (questionCountInputValue.trim() !== '') return;
+                      setQuestionCountInputValue('0');
+                    }}
+                    disabled={questionCountMax === 0}
+                    className="w-14 h-10 bg-white dark:bg-surface-800 border border-surface-200 dark:border-surface-600 rounded-xl font-extrabold text-lg text-surface-800 dark:text-white text-center outline-none focus:border-brand-500 disabled:opacity-50"
+                  />
                 </div>
                 {questionCountMax === 0 && <p className="text-red-500 text-xs mt-2 font-medium">Bu konuda henuz soru bulunmuyor.</p>}
                 {isTagDistributionActive && (
@@ -4068,7 +4278,7 @@ export default function App() {
     const quizConfirmMeta = quizConfirmAction === 'exit'
       ? {
           title: 'Sinavdan cikmak istiyor musunuz?',
-          message: 'Mevcut sinav ilerlemeniz sifirlanacak ve ana menÃ¼ye doneceksiniz.',
+          message: 'Mevcut sinav ilerlemeniz sifirlanacak ve ana menüye doneceksiniz.',
           actionLabel: 'Sinavdan Cik',
           actionStyle: 'from-red-500 to-rose-500 hover:shadow-red-500/30',
         }
@@ -4149,6 +4359,16 @@ export default function App() {
           {/* Timer + Size Control */}
           {!quizState.showResults && (
             <div className="flex items-center gap-1.5 sm:gap-2">
+              <button
+                onClick={() => setIsDarkMode((prev) => !prev)}
+                className={`flex items-center justify-center rounded-xl bg-surface-100 dark:bg-surface-700 text-surface-500 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-600 transition-colors border border-surface-200 dark:border-surface-600 ${
+                  quizSize === 0 ? 'w-9 h-9' : 'w-10 h-10'
+                }`}
+                title={isDarkMode ? 'Açık tema' : 'Koyu tema'}
+                aria-label={isDarkMode ? 'Açık temaya geç' : 'Koyu temaya geç'}
+              >
+                <Icon name={isDarkMode ? 'Sun' : 'Moon'} className="w-4 h-4" />
+              </button>
               {/* Size Toggle */}
               <button
                 onClick={() => setQuizSize(prev => ((prev + 1) % 3) as 0 | 1 | 2)}
@@ -4650,10 +4870,15 @@ export default function App() {
   }
 
   // 4. DASHBOARD & ADMIN LAYOUT
+  const isDashboardLayoutView = currentView === 'dashboard' || currentView === 'statistics';
   return (
-    <div className="min-h-screen flex bg-gradient-to-br from-[#dce7ff] via-[#f0f4ff] to-[#e4edff] dark:from-[#050a1a] dark:via-[#0b1533] dark:to-[#040814] transition-colors duration-300 relative overflow-hidden">
+    <div className={`min-h-screen flex bg-gradient-to-br ${
+      lightThemeVariant === 'clean'
+        ? 'from-[#f5f7fb] via-[#fafcff] to-[#f1f4f9]'
+        : 'from-[#edf3ff] via-[#f7faff] to-[#eef4ff]'
+    } dark:from-[#050a1a] dark:via-[#0b1533] dark:to-[#040814] transition-colors duration-300 relative overflow-hidden`}>
       {/* Background mesh gradient */}
-      <div className="fixed inset-0 mesh-gradient pointer-events-none opacity-60 dark:opacity-90"></div>
+      <div className={`fixed inset-0 mesh-gradient pointer-events-none ${lightThemeVariant === 'clean' ? 'opacity-45' : 'opacity-80'} dark:opacity-90`}></div>
 
       {/* Mobile Header */}
       <div className="lg:hidden mobile-top-header fixed top-0 inset-x-0 z-50 px-3 h-[68px] flex justify-between items-center kpss-neon-mobile-header">
@@ -4662,20 +4887,28 @@ export default function App() {
             <div className="absolute inset-0 bg-gradient-to-br from-white/20 to-transparent"></div>
             <Icon name="Brain" className="w-5 h-5 text-white relative z-10" />
           </div>
-          <span className="text-white">
+          <span className="text-slate-900 dark:text-white">
             KPSS Pro
           </span>
         </div>
         <div className="flex items-center gap-2">
           <button
             onClick={() => setIsDarkMode(!isDarkMode)}
-            className="p-2 text-slate-300 hover:text-cyan-200 bg-slate-900/45 rounded-xl border border-slate-500/35 transition-all active:scale-95"
+            className={`p-2 rounded-xl border transition-all active:scale-95 ${
+              isDarkMode
+                ? 'text-slate-300 hover:text-cyan-200 bg-slate-900/45 border-slate-500/35'
+                : 'text-slate-700 hover:text-brand-600 bg-white/85 border-slate-200 shadow-sm'
+            }`}
           >
             <Icon name={isDarkMode ? "Sun" : "Moon"} className="w-5 h-5" />
           </button>
           <button
             onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-            className="p-2 text-slate-200 bg-slate-900/45 rounded-xl border border-slate-500/35 transition-all active:scale-95"
+            className={`p-2 rounded-xl border transition-all active:scale-95 ${
+              isDarkMode
+                ? 'text-slate-200 bg-slate-900/45 border-slate-500/35'
+                : 'text-slate-700 bg-white/85 border-slate-200 shadow-sm'
+            }`}
           >
             <Icon name={isMobileMenuOpen ? "X" : "Menu"} className="w-5 h-5" />
           </button>
@@ -4700,23 +4933,31 @@ export default function App() {
               <div className="absolute inset-0 bg-gradient-to-br from-white/20 to-transparent"></div>
               <Icon name="Brain" className="w-6 h-6 text-white relative z-10" />
             </div>
-            <span className="text-2xl font-black text-white tracking-tight">
+            <span className="text-2xl font-black text-slate-900 dark:text-white tracking-tight">
               KPSS Pro
             </span>
           </div>
 
           {/* User Card */}
-          <div className="p-4 md:p-5 rounded-2xl kpss-neon-usercard text-white mb-6 relative overflow-hidden group hover:scale-[1.02] transition-all duration-300">
+          <div className={`p-4 md:p-5 rounded-2xl kpss-neon-usercard mb-6 relative overflow-hidden group hover:scale-[1.02] transition-all duration-300 ${
+            isDarkMode ? 'text-white' : 'text-slate-900'
+          }`}>
             <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full blur-[60px] -mr-10 -mt-10"></div>
             <div className="absolute inset-0 bg-gradient-to-br from-white/10 to-transparent opacity-50"></div>
             <div className="relative z-10">
               <div className="flex items-center gap-3.5">
-                <div className="w-11 h-11 bg-white/15 backdrop-blur-sm rounded-xl flex items-center justify-center ring-2 ring-white/20">
+                <div className={`w-11 h-11 backdrop-blur-sm rounded-xl flex items-center justify-center ring-2 ${
+                  isDarkMode
+                    ? 'bg-white/15 ring-white/20'
+                    : 'bg-white/70 ring-slate-200/80 shadow-sm'
+                }`}>
                   <Icon name="User" className="w-5 h-5" />
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="font-bold text-base truncate mb-0.5">{user.username}</div>
-                  <div className="text-xs text-white/70 font-medium">{user.role === 'admin' ? 'Yonetici' : 'Premium Uye'}</div>
+                  <div className={`text-xs font-medium ${isDarkMode ? 'text-white/70' : 'text-slate-600'}`}>
+                    {user.role === 'admin' ? 'Yonetici' : 'Premium Uye'}
+                  </div>
                 </div>
               </div>
             </div>
@@ -4728,12 +4969,37 @@ export default function App() {
               onClick={() => { setCurrentView('dashboard'); setActiveCategory(null); setMobileDashboardTab('stats'); setIsMobileMenuOpen(false); }}
               className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 font-semibold text-sm border
                 ${currentView === 'dashboard' && !activeCategory
-                  ? 'bg-fuchsia-500/10 border-fuchsia-400/55 text-fuchsia-100 shadow-[0_0_18px_rgba(217,70,239,0.32)]'
-                  : 'border-slate-500/20 text-slate-300 hover:border-slate-400/35 hover:bg-slate-900/35 hover:text-white'}
+                  ? (isDarkMode
+                      ? 'bg-fuchsia-500/10 border-fuchsia-400/55 text-fuchsia-100 shadow-[0_0_18px_rgba(217,70,239,0.32)]'
+                      : 'bg-fuchsia-50 border-fuchsia-200 text-fuchsia-700 shadow-[0_8px_18px_rgba(217,70,239,0.18)]')
+                  : (isDarkMode
+                      ? 'border-slate-500/20 text-slate-300 hover:border-slate-400/35 hover:bg-slate-900/35 hover:text-white'
+                      : 'border-slate-200 text-slate-700 hover:border-slate-300 hover:bg-white/80 hover:text-slate-900')}
               `}
             >
               <Icon name="Home" className="w-5 h-5" />
               Ana Sayfa
+            </button>
+
+            <button
+              onClick={() => {
+                setCurrentView('statistics');
+                setActiveCategory(null);
+                setMobileDashboardTab('stats');
+                setIsMobileMenuOpen(false);
+              }}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 font-semibold text-sm border
+                ${currentView === 'statistics'
+                  ? (isDarkMode
+                      ? 'bg-amber-500/10 border-amber-400/55 text-amber-100 shadow-[0_0_18px_rgba(251,191,36,0.32)]'
+                      : 'bg-amber-50 border-amber-200 text-amber-700 shadow-[0_8px_18px_rgba(251,191,36,0.16)]')
+                  : (isDarkMode
+                      ? 'border-slate-500/20 text-slate-300 hover:border-slate-400/35 hover:bg-slate-900/35 hover:text-white'
+                      : 'border-slate-200 text-slate-700 hover:border-slate-300 hover:bg-white/80 hover:text-slate-900')}
+              `}
+            >
+              <Icon name="BarChart3" className="w-5 h-5" />
+              Istatistikler
             </button>
 
             <div className="pt-3 pb-1 px-4">
@@ -4748,8 +5014,12 @@ export default function App() {
                   onClick={() => { setCurrentView('dashboard'); setActiveCategory(cat); setMobileDashboardTab('categories'); setIsMobileMenuOpen(false); }}
                   className={`w-full flex items-center justify-between gap-3 px-4 py-2.5 rounded-xl text-sm font-medium transition-all border
                     ${activeCategory?.id === cat.id && currentView === 'dashboard'
-                      ? 'border-cyan-400/55 bg-cyan-500/10 text-cyan-100 shadow-[0_0_16px_rgba(34,211,238,0.25)]'
-                      : 'border-slate-500/20 text-slate-300 hover:border-slate-400/35 hover:bg-slate-900/35 hover:text-slate-100'
+                      ? (isDarkMode
+                          ? 'border-cyan-400/55 bg-cyan-500/10 text-cyan-100 shadow-[0_0_16px_rgba(34,211,238,0.25)]'
+                          : 'border-cyan-200 bg-cyan-50 text-cyan-700 shadow-[0_8px_16px_rgba(34,211,238,0.14)]')
+                      : (isDarkMode
+                          ? 'border-slate-500/20 text-slate-300 hover:border-slate-400/35 hover:bg-slate-900/35 hover:text-slate-100'
+                          : 'border-slate-200 text-slate-700 hover:border-slate-300 hover:bg-white/80 hover:text-slate-900')
                     }
                   `}
                 >
@@ -4771,8 +5041,12 @@ export default function App() {
                   onClick={() => { setCurrentView('admin'); setIsMobileMenuOpen(false); }}
                   className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 font-semibold text-sm border
                     ${currentView === 'admin'
-                      ? 'bg-fuchsia-500/10 border-fuchsia-400/55 text-fuchsia-100 shadow-[0_0_18px_rgba(217,70,239,0.32)]'
-                      : 'border-slate-500/20 text-slate-300 hover:border-slate-400/35 hover:bg-slate-900/35 hover:text-white'}
+                      ? (isDarkMode
+                          ? 'bg-fuchsia-500/10 border-fuchsia-400/55 text-fuchsia-100 shadow-[0_0_18px_rgba(217,70,239,0.32)]'
+                          : 'bg-fuchsia-50 border-fuchsia-200 text-fuchsia-700 shadow-[0_8px_18px_rgba(217,70,239,0.18)]')
+                      : (isDarkMode
+                          ? 'border-slate-500/20 text-slate-300 hover:border-slate-400/35 hover:bg-slate-900/35 hover:text-white'
+                          : 'border-slate-200 text-slate-700 hover:border-slate-300 hover:bg-white/80 hover:text-slate-900')}
                   `}
                 >
                   <Icon name="Settings" className="w-5 h-5" />
@@ -4783,17 +5057,54 @@ export default function App() {
           </nav>
 
           {/* Bottom Actions */}
-          <div className="mt-auto pt-4 space-y-1 border-t border-slate-500/20">
+          <div className={`mt-auto pt-4 space-y-1 border-t ${isDarkMode ? 'border-slate-500/20' : 'border-slate-200/90'}`}>
             <button
               onClick={() => setIsDarkMode(!isDarkMode)}
-              className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-slate-300 hover:bg-slate-900/35 hover:text-white font-medium text-sm transition-colors border border-transparent hover:border-slate-400/35"
+              className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl font-medium text-sm transition-colors border border-transparent ${
+                isDarkMode
+                  ? 'text-slate-300 hover:bg-slate-900/35 hover:text-white hover:border-slate-400/35'
+                  : 'text-slate-700 hover:bg-white/80 hover:text-slate-900 hover:border-slate-300'
+              }`}
             >
               <Icon name={isDarkMode ? "Sun" : "Moon"} className="w-4 h-4" />
               {isDarkMode ? 'Acik Tema' : 'Koyu Tema'}
             </button>
+            {!isDarkMode && (
+              <div className="px-1 pt-1">
+                <p className="px-3 mb-1 text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                  Acik Tema Stili
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => setLightThemeVariant('aura')}
+                    className={`h-9 rounded-lg text-xs font-semibold border transition-colors ${
+                      lightThemeVariant === 'aura'
+                        ? 'bg-brand-50 text-brand-700 border-brand-200'
+                        : 'bg-white/80 text-slate-600 border-slate-200 hover:border-slate-300'
+                    }`}
+                  >
+                    Aura
+                  </button>
+                  <button
+                    onClick={() => setLightThemeVariant('clean')}
+                    className={`h-9 rounded-lg text-xs font-semibold border transition-colors ${
+                      lightThemeVariant === 'clean'
+                        ? 'bg-cyan-50 text-cyan-700 border-cyan-200'
+                        : 'bg-white/80 text-slate-600 border-slate-200 hover:border-slate-300'
+                    }`}
+                  >
+                    Sade
+                  </button>
+                </div>
+              </div>
+            )}
             <button
               onClick={handleLogout}
-              className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-red-300 hover:bg-red-500/10 hover:text-red-100 font-medium text-sm transition-colors border border-transparent hover:border-red-400/45"
+              className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl font-medium text-sm transition-colors border border-transparent ${
+                isDarkMode
+                  ? 'text-red-300 hover:bg-red-500/10 hover:text-red-100 hover:border-red-400/45'
+                  : 'text-red-600 hover:bg-red-50 hover:text-red-700 hover:border-red-200'
+              }`}
             >
               <Icon name="LogOut" className="w-4 h-4" />
               Cikis Yap
@@ -4803,12 +5114,12 @@ export default function App() {
       </aside>
 
       {/* Main Panel */}
-      <main className={`flex-1 lg:ml-0 pt-[76px] lg:pt-0 min-h-screen pb-[88px] lg:pb-0 ${
-        currentView === 'dashboard' ? 'overflow-hidden' : 'overflow-y-auto custom-scrollbar'
+      <main className={`flex-1 min-w-0 lg:ml-0 pt-[calc(68px+max(env(safe-area-inset-top,0px),6px)+4px)] lg:pt-0 min-h-screen pb-[88px] lg:pb-0 ${
+        isDashboardLayoutView ? 'overflow-hidden' : 'overflow-y-auto custom-scrollbar'
       }`}>
         <div className={`mx-auto ${
-          currentView === 'dashboard'
-            ? 'max-w-[1320px] h-[calc(100vh-76px)] lg:h-screen px-3 pb-2 pt-2 md:px-4 md:pb-3 md:pt-3 lg:px-5 lg:pb-4 lg:pt-5 flex flex-col overflow-hidden'
+          isDashboardLayoutView
+            ? 'max-w-[1320px] min-w-0 h-[calc(100vh-(68px+max(env(safe-area-inset-top,0px),6px)+4px))] lg:h-screen px-3 pb-2 pt-2 md:px-4 md:pb-3 md:pt-3 lg:px-5 lg:pb-4 lg:pt-5 flex flex-col overflow-hidden mobile-safe-x'
             : 'max-w-5xl p-5 md:p-8 lg:p-10'
         }`}>
 
@@ -5198,7 +5509,7 @@ export default function App() {
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center gap-2 mb-2">
                                 <span className="px-2 py-0.5 bg-white dark:bg-surface-800 text-[10px] font-bold rounded text-surface-500 border border-surface-100 dark:border-surface-700">#{adminPageStart + idx + 1}</span>
-                                <span title="DoÄŸru cevap" className="text-[9px] text-emerald-600 dark:text-emerald-400 font-black bg-emerald-50 dark:bg-emerald-900/20 px-1 py-0.5 rounded min-w-[18px] text-center">{String.fromCharCode(65 + q.correctOptionIndex)}</span>
+                                <span title="Doğru cevap" className="text-[9px] text-emerald-600 dark:text-emerald-400 font-black bg-emerald-50 dark:bg-emerald-900/20 px-1 py-0.5 rounded min-w-[18px] text-center">{String.fromCharCode(65 + q.correctOptionIndex)}</span>
                                 {q.sourceTag && (
                                   <span className="text-[10px] text-slate-600 dark:text-slate-200 font-semibold bg-slate-100 dark:bg-slate-700 px-1.5 py-0.5 rounded truncate max-w-[160px]">
                                     {q.sourceTag}
@@ -5248,9 +5559,190 @@ export default function App() {
             </div>
           )}
 
+          {/* ===== STATISTICS VIEW ===== */}
+          {currentView === 'statistics' && (
+            <div className="animate-fade-in h-full w-full min-w-0 flex flex-col gap-2 md:gap-3 overflow-hidden">
+              <div className="shrink-0 flex flex-wrap items-center justify-between gap-2">
+                <h1 className="text-[26px] md:text-[36px] font-black text-slate-800 dark:text-white tracking-tight">Istatistikler</h1>
+                <span className="inline-flex items-center h-8 px-3 rounded-full text-[11px] font-semibold text-slate-600 dark:text-slate-200 bg-white/60 dark:bg-slate-900/40 border border-white/70 dark:border-slate-600/30">
+                  {statisticsScopeLabel}
+                </span>
+              </div>
+
+              <section className="kpss-neon-panel rounded-2xl p-3 md:p-4 shrink-0">
+                <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3 md:items-center mb-3">
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-300">Genel Istatistik</p>
+                    <p className="text-lg md:text-xl font-black text-slate-900 dark:text-white">{statisticsScopeLabel}</p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="min-w-0 w-full sm:w-[240px]" ref={statisticsScopeMenuRef}>
+                      <button
+                        type="button"
+                        onClick={() => setIsStatisticsScopeMenuOpen((prev) => !prev)}
+                        className={`h-10 w-full px-3 rounded-xl text-[12px] font-semibold outline-none flex items-center justify-between transition border ${
+                          isDarkMode
+                            ? 'border-slate-400/35 bg-slate-900/35 text-slate-100 hover:border-slate-300/55'
+                            : 'border-slate-200 bg-white/90 text-slate-700 hover:border-slate-300'
+                        }`}
+                        aria-haspopup="listbox"
+                        aria-expanded={isStatisticsScopeMenuOpen}
+                        aria-label="Istatistik ders secimi"
+                      >
+                        <span className="truncate text-left">{statisticsScopeLabel}</span>
+                        <Icon
+                          name="ChevronRight"
+                          className={`w-4 h-4 shrink-0 transition-transform ${isStatisticsScopeMenuOpen ? 'rotate-90' : ''}`}
+                        />
+                      </button>
+                      {isStatisticsScopeMenuOpen && (
+                        <div
+                          className={`mt-2 rounded-xl border p-1 shadow-xl ${
+                            isDarkMode
+                              ? 'bg-slate-900/98 border-slate-500/35'
+                              : 'bg-white border-slate-200'
+                          }`}
+                          role="listbox"
+                          aria-label="Istatistik ders secenekleri"
+                        >
+                          <div className="max-h-56 overflow-y-auto custom-scrollbar">
+                            {[
+                              { id: 'all', name: 'Tum Dersler' },
+                              ...categories.map((cat) => ({ id: cat.id, name: cat.name })),
+                            ].map((option) => (
+                            <button
+                              key={option.id}
+                              type="button"
+                              onClick={() => setStatisticsScopeCategoryId(option.id)}
+                              className={`w-full text-left px-3 py-2 rounded-lg text-[12px] font-semibold transition flex items-center justify-between gap-2 ${
+                                statisticsScopeCategoryId === option.id
+                                  ? (isDarkMode
+                                      ? 'bg-cyan-500/18 text-cyan-100'
+                                      : 'bg-cyan-50 text-cyan-700')
+                                  : (isDarkMode
+                                      ? 'text-slate-100 hover:bg-slate-800/70'
+                                      : 'text-slate-700 hover:bg-slate-50')
+                              }`}
+                              role="option"
+                              aria-selected={statisticsScopeCategoryId === option.id}
+                            >
+                              <span className="truncate">{option.name}</span>
+                              {statisticsScopeCategoryId === option.id && (
+                                <Icon name="CircleCheck" className={`w-4 h-4 shrink-0 ${isDarkMode ? 'text-cyan-300' : 'text-cyan-600'}`} />
+                              )}
+                            </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-4 gap-1.5 md:gap-2">
+                  {[
+                    { id: 'total_answered', label: 'Toplam Cevap', mobileLabel: 'Cevap', value: statisticsSummary.totalAnsweredCount, tone: 'kpss-neon-mini-blue' },
+                    { id: 'unique_solved', label: 'Farkli Cozulen', mobileLabel: 'Farkli', value: statisticsSummary.uniqueSolvedCount, tone: 'kpss-neon-mini-fuchsia' },
+                    { id: 'correct', label: 'Toplam Dogru', mobileLabel: 'Dogru', value: statisticsSummary.correctCount, tone: 'kpss-neon-mini-amber' },
+                    { id: 'wrong', label: 'Toplam Yanlis', mobileLabel: 'Yanlis', value: statisticsSummary.wrongCount, tone: 'kpss-neon-mini-cyan' },
+                  ].map((card) => (
+                    <div key={card.id} className={`kpss-neon-mini-card statistics-summary-mini-card min-w-0 ${card.tone}`}>
+                      <p className="kpss-neon-mini-label">
+                        <span className="md:hidden">{card.mobileLabel}</span>
+                        <span className="hidden md:inline">{card.label}</span>
+                      </p>
+                      <p className="kpss-neon-mini-value">{card.value}</p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-300 font-medium">
+                  <span className={`px-2 py-1 rounded-md ${
+                    isDarkMode
+                      ? 'bg-slate-900/30 border border-slate-400/25'
+                      : 'bg-white border border-slate-200'
+                  }`}>
+                    Basari Orani: %{statisticsSummary.accuracyPercent}
+                  </span>
+                </div>
+              </section>
+
+              {isStatisticsTopicView && (
+                <section className="kpss-neon-panel rounded-2xl p-3 md:p-4 flex-1 min-h-0 overflow-hidden">
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                    <h2 className="text-base md:text-lg font-extrabold text-slate-900 dark:text-white">
+                      {statisticsScopeLabel} Konulari
+                    </h2>
+                  </div>
+
+                  <div className="h-full overflow-y-auto custom-scrollbar pr-0.5 pb-24 md:pb-2">
+                    {statisticsFilteredTopicRows.length > 0 ? (
+                      <div className="space-y-2">
+                        {statisticsFilteredTopicRows.map((row) => (
+                          <div
+                            key={row.topicId}
+                            className={`rounded-2xl p-3 border ${
+                              isDarkMode
+                                ? 'border-slate-500/30 bg-slate-900/45'
+                                : 'border-slate-200 bg-white/90'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-2 mb-2">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-500 flex items-center justify-center shadow-[0_0_16px_rgba(34,211,238,0.3)]">
+                                  <Icon name="BookOpen" className="w-4 h-4 text-white" />
+                                </div>
+                                <div className="min-w-0">
+                                  <p className="text-sm font-black text-slate-900 dark:text-white truncate">{row.topicName}</p>
+                                  <p className="text-[11px] text-slate-500 dark:text-slate-300">{(allQuestions[row.topicId] || []).length} soru</p>
+                                </div>
+                              </div>
+                              <div className="text-right">
+                                <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-300">%{row.accuracyPercent}</p>
+                                <p className="text-[10px] font-semibold text-cyan-600 dark:text-cyan-300">Konu</p>
+                              </div>
+                            </div>
+                            <div className="grid grid-cols-4 md:grid-cols-2 gap-1 md:gap-1.5 text-[10px] md:text-[11px]">
+                              <div className="rounded-lg px-1.5 py-1 md:px-2 md:py-1.5 bg-slate-100/70 dark:bg-slate-800/60 min-w-0">
+                                <p className="font-semibold text-slate-500 dark:text-slate-300 truncate">
+                                  <span className="md:hidden">Cevap</span>
+                                  <span className="hidden md:inline">Toplam Cevap</span>
+                                </p>
+                                <p className="font-black text-slate-900 dark:text-white leading-none mt-0.5">{row.totalAnsweredCount}</p>
+                              </div>
+                              <div className="rounded-lg px-1.5 py-1 md:px-2 md:py-1.5 bg-slate-100/70 dark:bg-slate-800/60 min-w-0">
+                                <p className="font-semibold text-slate-500 dark:text-slate-300 truncate">
+                                  <span className="md:hidden">Farkli</span>
+                                  <span className="hidden md:inline">Farkli Soru</span>
+                                </p>
+                                <p className="font-black text-slate-900 dark:text-white leading-none mt-0.5">{row.uniqueSolvedCount}</p>
+                              </div>
+                              <div className="rounded-lg px-1.5 py-1 md:px-2 md:py-1.5 bg-emerald-50 dark:bg-emerald-900/20 min-w-0">
+                                <p className="font-semibold text-emerald-700 dark:text-emerald-300 truncate">Dogru</p>
+                                <p className="font-black text-emerald-700 dark:text-emerald-300 leading-none mt-0.5">{row.correctCount}</p>
+                              </div>
+                              <div className="rounded-lg px-1.5 py-1 md:px-2 md:py-1.5 bg-red-50 dark:bg-red-900/20 min-w-0">
+                                <p className="font-semibold text-red-700 dark:text-red-300 truncate">Yanlis</p>
+                                <p className="font-black text-red-700 dark:text-red-300 leading-none mt-0.5">{row.wrongCount}</p>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="h-full min-h-[160px] flex items-center justify-center rounded-2xl border border-dashed border-slate-300/60 dark:border-slate-600/60 text-[13px] font-semibold text-slate-500 dark:text-slate-300">
+                        Bu derste gosterilecek konu istatistigi yok.
+                      </div>
+                    )}
+                  </div>
+                </section>
+              )}
+            </div>
+          )}
+
           {/* ===== DASHBOARD - HOME ===== */}
           {currentView === 'dashboard' && !activeCategory && (
-            <div className="animate-fade-in h-full w-full flex flex-col gap-2 md:gap-3 overflow-hidden">
+            <div className="animate-fade-in h-full w-full min-w-0 flex flex-col gap-2 md:gap-3 overflow-hidden">
               <div className={`${mobileDashboardTab === 'categories' ? 'hidden lg:flex' : 'flex'} shrink-0 items-center justify-between gap-2`}>
                 <h1 className="text-[26px] md:text-[36px] font-black text-slate-800 dark:text-white tracking-tight">Dashboard</h1>
                 <span className="hidden sm:inline-flex items-center h-8 px-3 rounded-full text-[11px] font-semibold text-slate-600 dark:text-slate-200 bg-white/60 dark:bg-slate-900/40 border border-white/70 dark:border-slate-600/30">
@@ -5274,7 +5766,7 @@ export default function App() {
                     </div>
                   </div>
                   <p className="text-xl font-black text-surface-800 dark:text-white leading-none mb-1">{overallProgressStats.correctCount}</p>
-                  <p className="text-[10px] text-surface-500 dark:text-surface-400 font-bold uppercase tracking-wide">DoÄŸru</p>
+                  <p className="text-[10px] text-surface-500 dark:text-surface-400 font-bold uppercase tracking-wide">Doğru</p>
                 </div>
                 <div className="glass-card rounded-xl p-3 border border-red-100 dark:border-red-900/30 shadow-premium hover-lift">
                   <div className="flex items-center gap-2 mb-1.5">
@@ -5283,7 +5775,7 @@ export default function App() {
                     </div>
                   </div>
                   <p className="text-xl font-black text-surface-800 dark:text-white leading-none mb-1">{overallProgressStats.wrongCount}</p>
-                  <p className="text-[10px] text-surface-500 dark:text-surface-400 font-bold uppercase tracking-wide">YanlÄ±ÅŸ</p>
+                  <p className="text-[10px] text-surface-500 dark:text-surface-400 font-bold uppercase tracking-wide">Yanlış</p>
                 </div>
                 <div className="glass-card rounded-xl p-3 border border-slate-100 dark:border-slate-700/50 shadow-premium hover-lift">
                   <div className="flex items-center gap-2 mb-1.5">
@@ -5292,11 +5784,11 @@ export default function App() {
                     </div>
                   </div>
                   <p className="text-xl font-black text-surface-800 dark:text-white leading-none mb-1">{overallProgressStats.wrongCount}</p>
-                  <p className="text-[10px] text-surface-500 dark:text-surface-400 font-bold uppercase tracking-wide">YanlÄ±ÅŸ (Aktif)</p>
+                  <p className="text-[10px] text-surface-500 dark:text-surface-400 font-bold uppercase tracking-wide">Yanlış (Aktif)</p>
                 </div>
               </div>
 
-              <div className={`${mobileDashboardTab === 'categories' ? 'hidden lg:grid' : 'grid'} grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 md:gap-2.5 shrink-0 stagger-children`}>
+              <div className={`${mobileDashboardTab === 'categories' ? 'hidden lg:grid' : 'grid'} w-full min-w-0 grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 md:gap-2.5 shrink-0 stagger-children`}>
                 {[
                   { id: 'kategori', label: 'KATEGORI', value: categories.length, icon: 'Layers', tone: 'kpss-neon-stat-fuchsia' },
                   { id: 'konu', label: 'KONU', value: categories.reduce((sum, c) => sum + c.subCategories.length, 0), icon: 'BookOpen', tone: 'kpss-neon-stat-blue' },
@@ -5306,15 +5798,15 @@ export default function App() {
                 ].map((card) => (
                   <div
                     key={card.id}
-                    className={`kpss-neon-stat-card ${card.tone} animate-fade-in-scale ${card.id === 'toplam_dogru' ? 'col-span-2 sm:col-span-1' : ''}`}
+                    className={`kpss-neon-stat-card w-full min-w-0 ${card.tone} animate-fade-in-scale ${card.id === 'toplam_dogru' ? 'col-span-2 sm:col-span-1' : ''}`}
                   >
                     <div className="flex items-center gap-2.5">
                       <div className="kpss-neon-stat-icon w-10 h-10 md:w-11 md:h-11 rounded-xl md:rounded-2xl flex items-center justify-center shrink-0">
-                        <Icon name={card.icon} className="w-4 h-4 text-white" />
+                        <Icon name={card.icon} className="w-4 h-4 text-slate-800 dark:text-white" />
                       </div>
                       <div className="min-w-0">
-                        <p className="text-[10px] md:text-[11px] text-slate-200/80 font-bold uppercase tracking-[0.12em] leading-none">{card.label}</p>
-                        <p className="text-[30px] sm:text-[34px] md:text-[36px] font-black text-white leading-none mt-0">{card.value}</p>
+                        <p className="text-[10px] md:text-[11px] text-slate-600 dark:text-slate-200/80 font-bold uppercase tracking-[0.12em] leading-none">{card.label}</p>
+                        <p className="text-[30px] sm:text-[34px] md:text-[36px] font-black text-slate-900 dark:text-white leading-none mt-0">{card.value}</p>
                       </div>
                     </div>
                   </div>
@@ -5325,8 +5817,12 @@ export default function App() {
                 <div className="lg:hidden flex-1 min-h-0 overflow-hidden pr-0.5 pb-0.5">
                 <section className="kpss-neon-panel h-full mb-0 rounded-2xl p-2">
                   <div className="flex items-center justify-between gap-2 mb-2">
-                    <h2 className="text-base font-extrabold text-white">Istatistiklerim</h2>
-                    <span className="px-2.5 py-1 rounded-lg bg-slate-900/35 border border-slate-400/35 text-[10px] font-bold text-slate-200">
+                    <h2 className="text-base font-extrabold text-slate-900 dark:text-white">Istatistiklerim</h2>
+                    <span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold ${
+                      isDarkMode
+                        ? 'bg-slate-900/35 border border-slate-400/35 text-slate-200'
+                        : 'bg-white border border-slate-200 text-slate-600'
+                    }`}>
                       Bugun
                     </span>
                   </div>
@@ -5339,10 +5835,6 @@ export default function App() {
                       <p className="kpss-neon-mini-label">Toplam Cevap</p>
                       <p className="kpss-neon-mini-value">{homeStats.totalAnsweredCount}</p>
                     </div>
-                    <div className="kpss-neon-mini-card kpss-neon-mini-cyan">
-                      <p className="kpss-neon-mini-label">Yanlis Cevap</p>
-                      <p className="kpss-neon-mini-value">{homeStats.totalWrongAnswers}</p>
-                    </div>
                     <div className="kpss-neon-mini-card kpss-neon-mini-emerald">
                       <p className="kpss-neon-mini-label">Favori Soru</p>
                       <p className="kpss-neon-mini-value">{homeStats.filteredFavoriteCount}</p>
@@ -5350,6 +5842,10 @@ export default function App() {
                     <div className="kpss-neon-mini-card kpss-neon-mini-amber">
                       <p className="kpss-neon-mini-label">Toplam Dogru</p>
                       <p className="kpss-neon-mini-value">{homeStats.progressStats.correctCount}</p>
+                    </div>
+                    <div className="kpss-neon-mini-card kpss-neon-mini-cyan">
+                      <p className="kpss-neon-mini-label">Yanlis Cevap</p>
+                      <p className="kpss-neon-mini-value">{homeStats.totalWrongAnswers}</p>
                     </div>
                     <div className="kpss-neon-mini-card kpss-neon-mini-red">
                       <p className="kpss-neon-mini-label">Basari Orani</p>
@@ -5362,13 +5858,13 @@ export default function App() {
 
               <section className="hidden lg:block shrink-0 kpss-neon-panel rounded-2xl p-4 md:p-5">
                 <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2.5 mb-2.5 sm:items-center">
-                  <h2 className="text-[34px] leading-none font-black text-white tracking-tight">Istatistiklerim</h2>
+                  <h2 className="text-[34px] leading-none font-black text-slate-900 dark:text-white tracking-tight">Istatistiklerim</h2>
                   <div className="flex flex-wrap sm:flex-nowrap items-center justify-start sm:justify-end gap-2">
-                    <span className="hidden md:inline text-[12px] font-semibold text-slate-300">Kapsam:</span>
+                    <span className="hidden md:inline text-[12px] font-semibold text-slate-500 dark:text-slate-300">Kapsam:</span>
                     <select
                       value={homeStatsCategoryFilter}
                       onChange={(e) => setHomeStatsCategoryFilter(e.target.value)}
-                      className="kpss-neon-select h-10 min-w-0 flex-1 sm:flex-none sm:w-[220px] max-w-full px-3 rounded-xl text-[12px] font-semibold text-slate-100 outline-none"
+                      className="kpss-neon-select h-10 min-w-0 flex-1 sm:flex-none sm:w-[220px] max-w-full px-3 rounded-xl text-[12px] font-semibold text-slate-700 dark:text-slate-100 outline-none"
                     >
                       <option value="all">Toplam (Tum Dersler)</option>
                       {categories.map((cat) => (
@@ -5378,7 +5874,11 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => setIsHomeStatsExpanded((prev) => !prev)}
-                      className="inline-flex items-center gap-1.5 h-10 px-3 rounded-xl border border-slate-400/35 bg-slate-900/30 text-[12px] font-semibold text-slate-200 hover:border-slate-300/55 transition-colors"
+                      className={`inline-flex items-center gap-1.5 h-10 px-3 rounded-xl text-[12px] font-semibold transition-colors ${
+                        isDarkMode
+                          ? 'border border-slate-400/35 bg-slate-900/30 text-slate-200 hover:border-slate-300/55'
+                          : 'border border-slate-200 bg-white/90 text-slate-700 hover:border-slate-300'
+                      }`}
                       aria-expanded={isHomeStatsExpanded}
                       aria-label={isHomeStatsExpanded ? 'Istatistikler bolumunu kapat' : 'Istatistikler bolumunu ac'}
                     >
@@ -5388,15 +5888,19 @@ export default function App() {
                       />
                       {isHomeStatsExpanded ? 'Kapat' : 'Ac'}
                     </button>
-                    <span className="inline-flex items-center gap-1.5 h-10 px-3 rounded-xl bg-emerald-500/10 text-[12px] font-semibold text-emerald-200 whitespace-nowrap border border-emerald-400/45">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.8)]" />
+                    <span className={`inline-flex items-center gap-1.5 h-10 px-3 rounded-xl text-[12px] font-semibold whitespace-nowrap ${
+                      isDarkMode
+                        ? 'bg-emerald-500/10 text-emerald-200 border border-emerald-400/45'
+                        : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                    }`}>
+                      <span className={`w-1.5 h-1.5 rounded-full ${isDarkMode ? 'bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.8)]' : 'bg-emerald-500'}`} />
                       Canli takip
                     </span>
                   </div>
                 </div>
                 {isHomeStatsExpanded && (
                   <>
-                    <p className="text-[11px] font-semibold text-slate-300 mb-3">
+                    <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-300 mb-3">
                       {homeStatsCategoryFilter === 'all' ? 'Gorunum: Tum Dersler' : `Gorunum: ${selectedHomeStatsCategory?.name || 'Secili Ders'}`}
                     </p>
                     <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 md:gap-3">
@@ -5412,30 +5916,40 @@ export default function App() {
                         <p className="kpss-neon-mini-label">Favori Soru</p>
                         <p className="kpss-neon-mini-value">{homeStats.filteredFavoriteCount}</p>
                       </div>
-                      <div className="kpss-neon-mini-card kpss-neon-mini-cyan">
-                        <p className="kpss-neon-mini-label">Yanlis Cevap</p>
-                        <p className="kpss-neon-mini-value">{homeStats.totalWrongAnswers}</p>
-                      </div>
                       <div className="kpss-neon-mini-card kpss-neon-mini-amber">
                         <p className="kpss-neon-mini-label">Toplam Dogru</p>
                         <p className="kpss-neon-mini-value">{homeStats.progressStats.correctCount}</p>
+                      </div>
+                      <div className="kpss-neon-mini-card kpss-neon-mini-cyan">
+                        <p className="kpss-neon-mini-label">Yanlis Cevap</p>
+                        <p className="kpss-neon-mini-value">{homeStats.totalWrongAnswers}</p>
                       </div>
                       <div className="kpss-neon-mini-card kpss-neon-mini-red">
                         <p className="kpss-neon-mini-label">Basari Orani</p>
                         <p className="kpss-neon-mini-value">%{homeStats.accuracyPercent}</p>
                       </div>
                     </div>
-                    <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-300 font-medium">
-                      <span className="px-1.5 py-0.5 rounded-md bg-slate-900/30 border border-slate-400/25">Yanlis cevap: {homeStats.totalWrongAnswers}</span>
+                    <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-300 font-medium">
+                      <span className={`px-1.5 py-0.5 rounded-md ${
+                        isDarkMode
+                          ? 'bg-slate-900/30 border border-slate-400/25'
+                          : 'bg-white border border-slate-200'
+                      }`}>
+                        Yanlis cevap: {homeStats.totalWrongAnswers}
+                      </span>
                     </div>
                   </>
                 )}
               </section>
 
               {mobileDashboardTab === 'categories' && (
-                <div className="lg:hidden mb-0.5 flex items-center justify-between rounded-xl border border-slate-400/30 bg-slate-900/45 px-3 py-2.5">
-                  <p className="text-[12px] font-extrabold text-white">Dersler</p>
-                  <span className="text-[10px] font-bold text-slate-300">{categories.length} ders</span>
+                <div className={`lg:hidden mb-0.5 flex items-center justify-between rounded-xl px-3 py-2.5 ${
+                  isDarkMode
+                    ? 'border border-slate-400/30 bg-slate-900/45'
+                    : 'border border-slate-200 bg-white/85 shadow-sm'
+                }`}>
+                  <p className="text-[12px] font-extrabold text-slate-900 dark:text-white">Dersler</p>
+                  <span className="text-[10px] font-bold text-slate-500 dark:text-slate-300">{categories.length} ders</span>
                 </div>
               )}
 
@@ -5447,7 +5961,11 @@ export default function App() {
                     <button
                       key={cat.id}
                       onClick={() => setActiveCategory(cat)}
-                      className="group relative w-full min-h-[76px] rounded-2xl border border-slate-500/30 bg-slate-900/45 px-3 py-2.5 md:px-4 md:py-3 shadow-[0_10px_24px_rgba(2,6,23,0.42)] hover:-translate-y-0.5 transition-all duration-300 text-left overflow-hidden animate-fade-in-scale flex items-center justify-between cursor-pointer"
+                      className={`group relative w-full min-h-[76px] rounded-2xl px-3 py-2.5 md:px-4 md:py-3 hover:-translate-y-0.5 transition-all duration-300 text-left overflow-hidden animate-fade-in-scale flex items-center justify-between cursor-pointer ${
+                        isDarkMode
+                          ? 'border border-slate-500/30 bg-slate-900/45 shadow-[0_10px_24px_rgba(2,6,23,0.42)]'
+                          : 'border border-slate-200 bg-white/85 shadow-[0_10px_24px_rgba(15,23,42,0.1)]'
+                      }`}
                       style={{ animationDelay: `${index * 60}ms` }}
                     >
                       {/* Animated gradient background blob */}
@@ -5457,10 +5975,14 @@ export default function App() {
                         <div className={`w-10 h-10 rounded-xl bg-gradient-to-br ${color.gradient} flex items-center justify-center shadow-[0_0_20px_rgba(59,130,246,0.35)]`}>
                           <Icon name={cat.iconName} className="w-5 h-5 text-white" />
                         </div>
-                        <h3 className="text-[22px] leading-[1.15] font-black text-white truncate tracking-tight py-[1px]">{cat.name}</h3>
+                        <h3 className="text-[22px] leading-[1.15] font-black text-slate-900 dark:text-white truncate tracking-tight py-[1px]">{cat.name}</h3>
                       </div>
 
-                      <div className="relative z-10 w-8 h-8 rounded-lg bg-slate-800/70 border border-slate-500/35 flex items-center justify-center text-slate-300 lg:group-hover:text-white lg:group-hover:border-slate-300/40 transition-colors">
+                      <div className={`relative z-10 w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
+                        isDarkMode
+                          ? 'bg-slate-800/70 border border-slate-500/35 text-slate-300 lg:group-hover:text-white lg:group-hover:border-slate-300/40'
+                          : 'bg-slate-100 border border-slate-200 text-slate-500 lg:group-hover:text-slate-800 lg:group-hover:border-slate-300'
+                      }`}>
                         <Icon name="ChevronRight" className="w-4 h-4 lg:transition-transform lg:duration-300 lg:group-hover:translate-x-0.5" />
                       </div>
                     </button>
@@ -5790,39 +6312,39 @@ export default function App() {
             </div>
             <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar">
               <div>
-                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">GÃ¶rsel URL</label>
+                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Görsel URL</label>
                 <input type="text" className="w-full px-4 py-3 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white text-sm" value={questionForm.imageUrl} onChange={e => setQuestionForm({...questionForm, imageUrl: e.target.value})} placeholder="https://..." />
               </div>
               <div>
-                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">GiriÅŸ Metni <span className="normal-case font-medium text-surface-300">(Opsiyonel)</span></label>
-                <textarea className="w-full px-4 py-3 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white h-16 resize-none text-sm" value={questionForm.contextText} onChange={e => setQuestionForm({...questionForm, contextText: e.target.value})} placeholder="Ã–ncÃ¼llerin Ã¼stÃ¼nde yer alan giriÅŸ metni..." />
+                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Giriş Metni <span className="normal-case font-medium text-surface-300">(Opsiyonel)</span></label>
+                <textarea className="w-full px-4 py-3 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white h-16 resize-none text-sm" value={questionForm.contextText} onChange={e => setQuestionForm({...questionForm, contextText: e.target.value})} placeholder="Öncüllerin üstünde yer alan giriş metni..." />
               </div>
               <div>
-                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Ã–ncÃ¼ller <span className="normal-case font-medium text-surface-300">(Opsiyonel)</span></label>
+                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Öncüller <span className="normal-case font-medium text-surface-300">(Opsiyonel)</span></label>
                 <textarea
                   className="w-full px-4 py-3 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white h-20 resize-none text-sm"
-                  placeholder={"I. Madde Bir\nII. Madde Ä°ki\nIII. Madde ÃœÃ§"}
+                  placeholder={"I. Madde Bir\nII. Madde İki\nIII. Madde Üç"}
                   value={questionForm.itemsText}
                   onChange={e => setQuestionForm({...questionForm, itemsText: e.target.value})}
                 />
               </div>
               <div>
-                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Soru KÃ¶kÃ¼</label>
-                <textarea className="w-full px-4 py-3 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white h-24 text-sm font-medium" value={questionForm.questionRoot} onChange={e => setQuestionForm({...questionForm, questionRoot: e.target.value})} placeholder="AÅŸaÄŸÄ±dakilerden hangisi...?" />
+                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Soru Kökü</label>
+                <textarea className="w-full px-4 py-3 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white h-24 text-sm font-medium" value={questionForm.questionRoot} onChange={e => setQuestionForm({...questionForm, questionRoot: e.target.value})} placeholder="Aşağıdakilerden hangisi...?" />
               </div>
               <div>
-                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">ÅIKLAR (Her satÄ±ra bir ÅŸÄ±k)</label>
+                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">ŞIKLAR (Her satıra bir şık)</label>
                 <textarea className="w-full px-4 py-3 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white h-28 font-mono text-xs" value={questionForm.optionsText} onChange={e => setQuestionForm({...questionForm, optionsText: e.target.value})} placeholder={"A) ...\nB) ...\nC) ...\nD) ...\nE) ..."} />
               </div>
               <div className="grid grid-cols-[88px_minmax(0,1fr)_minmax(0,1fr)] gap-4">
                 <div>
-                  <label className="block text-[10px] font-bold text-surface-400 uppercase tracking-wider mb-1.5">DoÄŸru</label>
+                  <label className="block text-[10px] font-bold text-surface-400 uppercase tracking-wider mb-1.5">Doğru</label>
                   <select className="w-full px-2 py-2.5 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white font-extrabold text-center text-xs" value={questionForm.correctOption} onChange={e => setQuestionForm({...questionForm, correctOption: parseInt(e.target.value)})}>
                     <option value={0}>A</option><option value={1}>B</option><option value={2}>C</option><option value={3}>D</option><option value={4}>E</option>
                   </select>
                 </div>
                 <div>
-                  <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">AÃ§Ä±klama</label>
+                  <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Açıklama</label>
                   <input type="text" className="w-full px-4 py-3 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white text-sm" value={questionForm.explanation} onChange={e => setQuestionForm({...questionForm, explanation: e.target.value})} />
                 </div>
                 <div>
@@ -5832,18 +6354,18 @@ export default function App() {
                     className="w-full px-4 py-3 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white text-sm"
                     value={questionForm.sourceTag}
                     onChange={e => setQuestionForm({...questionForm, sourceTag: e.target.value})}
-                    placeholder="Ã–rn: 2024 KPSS Deneme 3"
+                    placeholder="Örn: 2024 KPSS Deneme 3"
                   />
                 </div>
               </div>
 
               <div className="rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-50/70 dark:bg-surface-900/40 p-4">
                 <div className="flex items-center justify-between mb-2">
-                  <p className="text-xs font-bold uppercase tracking-wider text-surface-400">KayÄ±t Listesi</p>
+                  <p className="text-xs font-bold uppercase tracking-wider text-surface-400">Kayıt Listesi</p>
                   <span className="text-xs font-bold text-brand-600 dark:text-brand-400">{pendingQuestions.length} soru</span>
                 </div>
                 {pendingQuestions.length === 0 ? (
-                  <p className="text-xs text-surface-400">Sorular Ã¶nce listeye eklenir, sonra tek seferde kaydedilir.</p>
+                  <p className="text-xs text-surface-400">Sorular önce listeye eklenir, sonra tek seferde kaydedilir.</p>
                 ) : (
                   <div className="space-y-2 max-h-36 overflow-y-auto pr-1 custom-scrollbar">
                     {pendingQuestions.map((q, idx) => (
@@ -5869,7 +6391,7 @@ export default function App() {
               </div>
             </div>
             <div className="flex gap-3 mt-6 pt-5 border-t border-surface-100 dark:border-surface-700">
-              <button onClick={handleCloseQuestionModal} className="flex-1 py-3 font-bold text-sm text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-700 rounded-xl transition">Ä°ptal</button>
+              <button onClick={handleCloseQuestionModal} className="flex-1 py-3 font-bold text-sm text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-700 rounded-xl transition">İptal</button>
               <button onClick={handleAddQuestionToQueue} className="flex-1 py-3 bg-amber-500 text-white font-bold text-sm rounded-xl hover:bg-amber-600 shadow-lg shadow-amber-500/20 transition">Listeye Ekle</button>
               <button
                 onClick={handleSaveQuestion}
@@ -5892,7 +6414,7 @@ export default function App() {
                 <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center">
                   <Icon name="PenLine" className="w-4 h-4 text-white" />
                 </div>
-                <h3 className="text-xl font-extrabold text-surface-800 dark:text-white">Soruyu DÃ¼zenle</h3>
+                <h3 className="text-xl font-extrabold text-surface-800 dark:text-white">Soruyu Düzenle</h3>
               </div>
               <button onClick={() => setEditingQuestion(null)} className="p-2 bg-surface-100 dark:bg-surface-700 rounded-lg hover:bg-surface-200 dark:hover:bg-surface-600 transition">
                 <Icon name="X" className="w-4 h-4 text-surface-500" />
@@ -5900,39 +6422,39 @@ export default function App() {
             </div>
             <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar">
               <div>
-                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">GÃ¶rsel URL</label>
+                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Görsel URL</label>
                 <input type="text" className="w-full px-4 py-3 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white text-sm" value={editForm.imageUrl} onChange={e => setEditForm({...editForm, imageUrl: e.target.value})} placeholder="https://..." />
               </div>
               <div>
-                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">GiriÅŸ Metni <span className="normal-case font-medium text-surface-300">(Opsiyonel)</span></label>
-                <textarea className="w-full px-4 py-3 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white h-16 resize-none text-sm" value={editForm.contextText} onChange={e => setEditForm({...editForm, contextText: e.target.value})} placeholder="Ã–ncÃ¼llerin Ã¼stÃ¼nde yer alan giriÅŸ metni..." />
+                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Giriş Metni <span className="normal-case font-medium text-surface-300">(Opsiyonel)</span></label>
+                <textarea className="w-full px-4 py-3 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white h-16 resize-none text-sm" value={editForm.contextText} onChange={e => setEditForm({...editForm, contextText: e.target.value})} placeholder="Öncüllerin üstünde yer alan giriş metni..." />
               </div>
               <div>
-                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Ã–ncÃ¼ller <span className="normal-case font-medium text-surface-300">(Opsiyonel)</span></label>
+                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Öncüller <span className="normal-case font-medium text-surface-300">(Opsiyonel)</span></label>
                 <textarea
                   className="w-full px-4 py-3 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white h-20 resize-none text-sm"
-                  placeholder={"I. Madde Bir\nII. Madde Ä°ki\nIII. Madde ÃœÃ§"}
+                  placeholder={"I. Madde Bir\nII. Madde İki\nIII. Madde Üç"}
                   value={editForm.itemsText}
                   onChange={e => setEditForm({...editForm, itemsText: e.target.value})}
                 />
               </div>
               <div>
-                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Soru KÃ¶kÃ¼</label>
-                <textarea className="w-full px-4 py-3 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white h-24 text-sm font-medium" value={editForm.questionRoot} onChange={e => setEditForm({...editForm, questionRoot: e.target.value})} placeholder="AÅŸaÄŸÄ±dakilerden hangisi...?" />
+                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Soru Kökü</label>
+                <textarea className="w-full px-4 py-3 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white h-24 text-sm font-medium" value={editForm.questionRoot} onChange={e => setEditForm({...editForm, questionRoot: e.target.value})} placeholder="Aşağıdakilerden hangisi...?" />
               </div>
               <div>
-                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">ÅIKLAR</label>
+                <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">ŞIKLAR</label>
                 <textarea className="w-full px-4 py-3 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white h-28 font-mono text-xs" value={editForm.optionsText} onChange={e => setEditForm({...editForm, optionsText: e.target.value})} placeholder={"A) ...\nB) ...\nC) ...\nD) ...\nE) ..."} />
               </div>
               <div className="grid grid-cols-[88px_minmax(0,1fr)_minmax(0,1fr)] gap-4">
                 <div>
-                  <label className="block text-[10px] font-bold text-surface-400 uppercase tracking-wider mb-1.5">DoÄŸru</label>
+                  <label className="block text-[10px] font-bold text-surface-400 uppercase tracking-wider mb-1.5">Doğru</label>
                   <select className="w-full px-2 py-2.5 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white font-extrabold text-center text-xs" value={editForm.correctOption} onChange={e => setEditForm({...editForm, correctOption: parseInt(e.target.value)})}>
                     <option value={0}>A</option><option value={1}>B</option><option value={2}>C</option><option value={3}>D</option><option value={4}>E</option>
                   </select>
                 </div>
                 <div>
-                  <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">AÃ§Ä±klama</label>
+                  <label className="block text-xs font-bold text-surface-400 uppercase tracking-wider mb-1.5">Açıklama</label>
                   <input type="text" className="w-full px-4 py-3 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white text-sm" value={editForm.explanation} onChange={e => setEditForm({...editForm, explanation: e.target.value})} />
                 </div>
                 <div>
@@ -5942,16 +6464,16 @@ export default function App() {
                     className="w-full px-4 py-3 rounded-xl bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 outline-none focus:border-brand-500 dark:text-white text-sm"
                     value={editForm.sourceTag}
                     onChange={e => setEditForm({...editForm, sourceTag: e.target.value})}
-                    placeholder="Ã–rn: 2024 KPSS Deneme 3"
+                    placeholder="Örn: 2024 KPSS Deneme 3"
                   />
                 </div>
               </div>
             </div>
             <div className="flex gap-3 mt-6 pt-5 border-t border-surface-100 dark:border-surface-700">
-              <button onClick={() => setEditingQuestion(null)} className="flex-1 py-3 font-bold text-sm text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-700 rounded-xl transition">Ä°ptal</button>
+              <button onClick={() => setEditingQuestion(null)} className="flex-1 py-3 font-bold text-sm text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-700 rounded-xl transition">İptal</button>
               <button onClick={handleSaveEditQuestion} className="flex-[2] py-3 bg-gradient-to-r from-amber-500 to-orange-500 text-white font-bold text-sm rounded-xl hover:shadow-lg hover:shadow-amber-500/20 transition flex items-center justify-center gap-2">
                 <Icon name="CircleCheck" className="w-4 h-4" />
-                GÃ¼ncelle
+                Güncelle
               </button>
             </div>
           </div>
@@ -6305,53 +6827,67 @@ export default function App() {
       )}
 
       {/* Mobile Bottom Nav */}
-      <div className="lg:hidden fixed bottom-2 left-2 right-2 rounded-2xl bg-slate-900/85 backdrop-blur-2xl border border-slate-400/30 shadow-[0_10px_26px_rgba(2,6,23,0.6)] z-50 mobile-safe-bottom">
-        <div className="flex items-center justify-around h-14 px-1">
-          <button
-            onClick={() => { setCurrentView('dashboard'); setActiveCategory(null); setMobileDashboardTab('stats'); }}
-            className={`flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-xl transition-all ${
-              currentView === 'dashboard' && !activeCategory && mobileDashboardTab === 'stats'
-                ? 'bg-fuchsia-500/15 border border-fuchsia-400/45 text-fuchsia-100 shadow-[0_0_14px_rgba(217,70,239,0.32)]'
-                : 'text-slate-400 hover:text-slate-100'
-            }`}
-          >
-            <Icon name="Home" className="w-5 h-5" />
-            <span className="mobile-nav-label text-[10px] font-semibold">Ana Sayfa</span>
-          </button>
-          <button
-            onClick={() => { setCurrentView('dashboard'); setActiveCategory(null); setMobileDashboardTab('categories'); }}
-            className={`flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-xl transition-all ${
-              currentView === 'dashboard' && (mobileDashboardTab === 'categories' || Boolean(activeCategory))
-                ? 'bg-cyan-500/15 border border-cyan-400/45 text-cyan-100 shadow-[0_0_14px_rgba(34,211,238,0.32)]'
-                : 'text-slate-400 hover:text-slate-100'
-            }`}
-          >
-            <Icon name="GraduationCap" className="w-5 h-5" />
-            <span className="mobile-nav-label text-[10px] font-semibold">Dersler</span>
-          </button>
-          {user.role === 'admin' && (
+      {(currentView === 'dashboard' || currentView === 'statistics') && (
+        <div className="lg:hidden fixed bottom-2 left-2 right-2 rounded-2xl bg-slate-900/85 backdrop-blur-2xl border border-slate-400/30 shadow-[0_10px_26px_rgba(2,6,23,0.6)] z-50 mobile-safe-bottom">
+          <div className="flex items-center justify-around h-14 px-1">
             <button
-              onClick={() => setCurrentView('admin')}
-              className={`flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-xl transition-all ${
-                currentView === 'admin'
+              onClick={() => { setCurrentView('dashboard'); setActiveCategory(null); setMobileDashboardTab('stats'); }}
+              className={`flex flex-col items-center gap-0.5 px-2.5 py-1.5 rounded-xl transition-all ${
+                currentView === 'dashboard' && !activeCategory && mobileDashboardTab === 'stats'
                   ? 'bg-fuchsia-500/15 border border-fuchsia-400/45 text-fuchsia-100 shadow-[0_0_14px_rgba(217,70,239,0.32)]'
                   : 'text-slate-400 hover:text-slate-100'
               }`}
             >
-              <Icon name="Settings" className="w-5 h-5" />
-              <span className="mobile-nav-label text-[10px] font-semibold">Yonetim</span>
+              <Icon name="Home" className="w-5 h-5" />
+              <span className="mobile-nav-label text-[10px] font-semibold">Ana Sayfa</span>
             </button>
-          )}
-          <button
-            onClick={handleLogout}
-            className="flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-xl text-slate-400 hover:text-red-300 hover:bg-red-500/10 transition-all"
-          >
-            <Icon name="LogOut" className="w-5 h-5" />
-            <span className="mobile-nav-label text-[10px] font-semibold">Cikis</span>
-          </button>
+            <button
+              onClick={() => { setCurrentView('statistics'); setActiveCategory(null); }}
+              className={`flex flex-col items-center gap-0.5 px-2.5 py-1.5 rounded-xl transition-all ${
+                currentView === 'statistics'
+                  ? 'bg-amber-500/15 border border-amber-400/45 text-amber-100 shadow-[0_0_14px_rgba(251,191,36,0.32)]'
+                  : 'text-slate-400 hover:text-slate-100'
+              }`}
+            >
+              <Icon name="BarChart3" className="w-5 h-5" />
+              <span className="mobile-nav-label text-[10px] font-semibold">Istatistik</span>
+            </button>
+            <button
+              onClick={() => { setCurrentView('dashboard'); setActiveCategory(null); setMobileDashboardTab('categories'); }}
+              className={`flex flex-col items-center gap-0.5 px-2.5 py-1.5 rounded-xl transition-all ${
+                currentView === 'dashboard' && (mobileDashboardTab === 'categories' || Boolean(activeCategory))
+                  ? 'bg-cyan-500/15 border border-cyan-400/45 text-cyan-100 shadow-[0_0_14px_rgba(34,211,238,0.32)]'
+                  : 'text-slate-400 hover:text-slate-100'
+              }`}
+            >
+              <Icon name="GraduationCap" className="w-5 h-5" />
+              <span className="mobile-nav-label text-[10px] font-semibold">Dersler</span>
+            </button>
+            {user.role === 'admin' && (
+              <button
+                onClick={() => setCurrentView('admin')}
+                className={`flex flex-col items-center gap-0.5 px-2.5 py-1.5 rounded-xl transition-all ${
+                  currentView === 'admin'
+                    ? 'bg-fuchsia-500/15 border border-fuchsia-400/45 text-fuchsia-100 shadow-[0_0_14px_rgba(217,70,239,0.32)]'
+                    : 'text-slate-400 hover:text-slate-100'
+                }`}
+              >
+                <Icon name="Settings" className="w-5 h-5" />
+                <span className="mobile-nav-label text-[10px] font-semibold">Yonetim</span>
+              </button>
+            )}
+            <button
+              onClick={handleLogout}
+              className="flex flex-col items-center gap-0.5 px-2.5 py-1.5 rounded-xl text-slate-400 hover:text-red-300 hover:bg-red-500/10 transition-all"
+            >
+              <Icon name="LogOut" className="w-5 h-5" />
+              <span className="mobile-nav-label text-[10px] font-semibold">Cikis</span>
+            </button>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
+
 
