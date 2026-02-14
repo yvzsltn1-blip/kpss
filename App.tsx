@@ -121,6 +121,8 @@ const DEFAULT_COLOR = {
 const getCatColor = (id: string) => CATEGORY_COLORS[id] || DEFAULT_COLOR;
 const ADMIN_QUESTIONS_PER_PAGE = 5;
 const QUESTION_JUMP_PICKER_ROW_HEIGHT = 40;
+const QUESTION_JUMP_PICKER_VIEWPORT_HEIGHT = 208;
+const QUESTION_JUMP_PICKER_VERTICAL_PADDING = (QUESTION_JUMP_PICKER_VIEWPORT_HEIGHT - QUESTION_JUMP_PICKER_ROW_HEIGHT) / 2;
 const WRONG_RECOVERY_STREAK_TARGET = 3;
 const RESOLVED_RETENTION_DAYS = 45;
 const RESOLVED_RETENTION_MS = RESOLVED_RETENTION_DAYS * 24 * 60 * 60 * 1000;
@@ -989,6 +991,7 @@ export default function App() {
   const [resetStatsTargetTopic, setResetStatsTargetTopic] = useState<{ id: string; name: string } | null>(null);
   const [quizStatusFilter, setQuizStatusFilter] = useState<QuizStatusFilter>({ wrong: false, favorite: false });
   const [topicSearchTerm, setTopicSearchTerm] = useState('');
+  const [selectedTopicFilterId, setSelectedTopicFilterId] = useState<string | null>(null);
   const [topicCardFilter, setTopicCardFilter] = useState<'all' | 'in_progress' | 'completed' | 'not_started'>('all');
   const [homeStatsCategoryFilter, setHomeStatsCategoryFilter] = useState<string>('all');
   const [statisticsScopeCategoryId, setStatisticsScopeCategoryId] = useState<string>('all');
@@ -1036,6 +1039,8 @@ export default function App() {
   // Mobile Menu
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [mobileDashboardTab, setMobileDashboardTab] = useState<'stats' | 'categories'>('stats');
+  const [isTopicPickerModalOpen, setIsTopicPickerModalOpen] = useState(false);
+  const [topicPickerCategory, setTopicPickerCategory] = useState<Category | null>(null);
   const [inlineNotice, setInlineNotice] = useState<{ message: string; tone: 'info' | 'warning' } | null>(null);
 
   // Timer Ref
@@ -1050,6 +1055,7 @@ export default function App() {
   const categoriesSeedAttemptedRef = useRef(false);
   const topicBloggerPagesSeedAttemptedRef = useRef(false);
   const deletedTopicIdsRef = useRef<string[]>(deletedTopicIds);
+  const preserveTopicFiltersRef = useRef(false);
 
   const showInlineNotice = (message: string, tone: 'info' | 'warning' = 'warning') => {
     if (inlineNoticeTimerRef.current) clearTimeout(inlineNoticeTimerRef.current);
@@ -2062,7 +2068,12 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (preserveTopicFiltersRef.current) {
+      preserveTopicFiltersRef.current = false;
+      return;
+    }
     setTopicSearchTerm('');
+    setSelectedTopicFilterId(null);
     setTopicCardFilter('all');
   }, [activeCategory?.id]);
 
@@ -2213,6 +2224,36 @@ export default function App() {
     setAllLessonsQuestionInputValue(String(initialQuestionCount));
     setCurrentView('all-quiz-setup');
     setIsMobileMenuOpen(false);
+  };
+
+  const openTopicPickerForCategory = (category: Category) => {
+    setTopicPickerCategory(category);
+    setIsTopicPickerModalOpen(true);
+  };
+
+  const handleSelectTopicFromPicker = (topic: SubCategory | null) => {
+    if (!topicPickerCategory) return;
+    preserveTopicFiltersRef.current = true;
+    setActiveCategory(topicPickerCategory);
+    if (topic) {
+      setTopicSearchTerm(topic.name);
+      setSelectedTopicFilterId(topic.id);
+    } else {
+      setTopicSearchTerm('');
+      setSelectedTopicFilterId(null);
+    }
+    setTopicCardFilter('all');
+    setMobileDashboardTab('categories');
+    setIsTopicPickerModalOpen(false);
+    setTopicPickerCategory(null);
+  };
+
+  const handleCategoryCardClick = (category: Category) => {
+    if (window.matchMedia('(max-width: 1023px)').matches) {
+      openTopicPickerForCategory(category);
+      return;
+    }
+    setActiveCategory(category);
   };
 
   const closeMixedQuizSetup = () => {
@@ -5526,7 +5567,11 @@ export default function App() {
                     <div
                       ref={questionJumpPickerRef}
                       onScroll={handleQuestionJumpPickerScroll}
-                      className="h-52 overflow-y-auto no-scrollbar snap-y snap-mandatory py-[68px] scroll-smooth"
+                      className="h-52 overflow-y-auto no-scrollbar snap-y snap-mandatory scroll-smooth"
+                      style={{
+                        paddingTop: QUESTION_JUMP_PICKER_VERTICAL_PADDING,
+                        paddingBottom: QUESTION_JUMP_PICKER_VERTICAL_PADDING,
+                      }}
                     >
                       {quizState.questions.map((_, index) => {
                         const isSelected = index === questionJumpTargetIndex;
@@ -5852,7 +5897,12 @@ export default function App() {
               return (
                 <button
                   key={cat.id}
-                  onClick={() => { setCurrentView('dashboard'); setActiveCategory(cat); setMobileDashboardTab('categories'); setIsMobileMenuOpen(false); }}
+                  onClick={() => {
+                    setCurrentView('dashboard');
+                    setMobileDashboardTab('categories');
+                    setIsMobileMenuOpen(false);
+                    openTopicPickerForCategory(cat);
+                  }}
                   className={`w-full flex items-center justify-between gap-3 px-4 py-2.5 rounded-xl text-sm font-medium transition-all border
                     ${activeCategory?.id === cat.id && currentView === 'dashboard'
                       ? (isDarkMode
@@ -6943,7 +6993,7 @@ export default function App() {
                   return (
                     <button
                       key={cat.id}
-                      onClick={() => setActiveCategory(cat)}
+                      onClick={() => handleCategoryCardClick(cat)}
                       className={`group relative w-full min-h-[76px] rounded-2xl px-3 py-2.5 md:px-4 md:py-3 hover:-translate-y-0.5 transition-all duration-300 text-left overflow-hidden animate-fade-in-scale flex items-center justify-between cursor-pointer ${
                         isDarkMode
                           ? 'border border-slate-500/30 bg-slate-900/45 shadow-[0_10px_24px_rgba(2,6,23,0.42)]'
@@ -6994,7 +7044,10 @@ export default function App() {
                     <Icon name="Search" className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-surface-400 pointer-events-none" />
                     <input
                       value={topicSearchTerm}
-                      onChange={(e) => setTopicSearchTerm(e.target.value)}
+                      onChange={(e) => {
+                        setSelectedTopicFilterId(null);
+                        setTopicSearchTerm(e.target.value);
+                      }}
                       placeholder="Konu ara..."
                       className="w-full h-full pl-9 pr-3 bg-transparent border-0 text-sm text-surface-700 dark:text-surface-200 placeholder:text-surface-400 outline-none"
                     />
@@ -7066,12 +7119,16 @@ export default function App() {
                 });
                 const normalizedSearch = topicSearchTerm.trim().toLocaleLowerCase('tr');
                 const filteredTopicCards = topicCards.filter((topicCard) => {
+                  if (selectedTopicFilterId && topicCard.sub.id !== selectedTopicFilterId) {
+                    return false;
+                  }
                   if (normalizedSearch && !topicCard.sub.name.toLocaleLowerCase('tr').includes(normalizedSearch)) {
                     return false;
                   }
                   if (topicCardFilter === 'all') return true;
                   return topicCard.status === topicCardFilter;
                 });
+                const isSingleTopicCardView = filteredTopicCards.length === 1;
                 const totalQuestionCount = topicCards.reduce((sum, topicCard) => sum + topicCard.questionCount, 0);
                 const categoryTotalAnsweredCount = topicCards.reduce((sum, topicCard) => sum + topicCard.totalAnsweredCount, 0);
                 const categoryCompletionPercent = totalQuestionCount > 0 ? Math.round((categoryTotalAnsweredCount / totalQuestionCount) * 100) : 0;
@@ -7155,7 +7212,9 @@ export default function App() {
                           return (
                             <article
                               key={sub.id}
-                              className="group bg-white dark:bg-surface-800 rounded-2xl border border-surface-200 dark:border-surface-700 p-4 md:p-5 hover:border-brand-300 dark:hover:border-brand-700/60 transition-all duration-200 shadow-card dark:shadow-card-dark flex flex-col"
+                              className={`group bg-white dark:bg-surface-800 rounded-2xl border border-surface-200 dark:border-surface-700 p-4 md:p-5 hover:border-brand-300 dark:hover:border-brand-700/60 transition-all duration-200 shadow-card dark:shadow-card-dark flex flex-col ${
+                                isSingleTopicCardView ? 'sm:col-span-2 xl:col-span-3' : ''
+                              }`}
                             >
                               <div className="flex items-center justify-between gap-3 mb-3">
                                 <div className="flex items-center gap-2.5 min-w-0 flex-1">
@@ -7665,6 +7724,105 @@ export default function App() {
                 >
                   Cevabi Kontrol Et
                 </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isTopicPickerModalOpen && topicPickerCategory && (
+        <div
+          className="fixed inset-0 z-[81] flex items-end sm:items-center justify-center bg-slate-950/60 backdrop-blur-sm p-0 sm:p-4 modal-backdrop"
+          onClick={() => {
+            setIsTopicPickerModalOpen(false);
+            setTopicPickerCategory(null);
+          }}
+        >
+          <div
+            className="w-full sm:max-w-md bg-white/95 dark:bg-surface-800/95 border border-surface-200 dark:border-surface-700 shadow-2xl rounded-t-3xl sm:rounded-3xl overflow-hidden modal-content animate-fade-in-scale"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="px-5 pt-4 pb-3 border-b border-surface-100 dark:border-surface-700">
+              <div className="w-10 h-1 rounded-full bg-surface-200 dark:bg-surface-600 mx-auto mb-3 sm:hidden"></div>
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-base font-extrabold text-surface-900 dark:text-white">{topicPickerCategory.name} Konulari</h3>
+                  <p className="text-[11px] text-surface-500 dark:text-surface-400">Konu secince mevcut detay ekrani acilir.</p>
+                </div>
+                <button
+                  onClick={() => {
+                    setIsTopicPickerModalOpen(false);
+                    setTopicPickerCategory(null);
+                  }}
+                  className="w-9 h-9 rounded-xl bg-surface-100 dark:bg-surface-700 text-surface-500 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-600 transition flex items-center justify-center"
+                  aria-label="Konu secim menusu kapat"
+                >
+                  <Icon name="X" className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            <div className="px-4 pt-3 pb-4">
+              <button
+                type="button"
+                onClick={() => handleSelectTopicFromPicker(null)}
+                className={`w-full mb-2.5 rounded-2xl px-3 py-2.5 flex items-center justify-between gap-2 transition ${
+                  isDarkMode
+                    ? 'border border-cyan-400/35 bg-slate-900/45 hover:border-cyan-300/60'
+                    : 'border border-cyan-200 bg-cyan-50/70 hover:border-cyan-300'
+                }`}
+                aria-label="Tum konulari goster"
+              >
+                <div className="min-w-0 text-left">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.08em] text-slate-500 dark:text-slate-300">Tum Konular</p>
+                  <p className="text-[13px] font-extrabold text-slate-900 dark:text-white truncate">Dersin tum konu kartlarini ac</p>
+                </div>
+                <div className={`shrink-0 w-8 h-8 rounded-xl flex items-center justify-center ${
+                  isDarkMode
+                    ? 'bg-cyan-500/15 text-cyan-200 border border-cyan-300/35'
+                    : 'bg-white text-cyan-600 border border-cyan-200'
+                }`}>
+                  <Icon name="Layers" className="w-4 h-4" />
+                </div>
+              </button>
+
+              <div className="max-h-[54vh] overflow-y-auto custom-scrollbar pr-0.5 space-y-2">
+                {topicPickerCategory.subCategories.map((sub) => {
+                  const color = getCatColor(topicPickerCategory.id);
+                  const questionCount = allQuestions[sub.id]?.length || 0;
+                  return (
+                    <button
+                      key={`topic_picker_${sub.id}`}
+                      type="button"
+                      onClick={() => handleSelectTopicFromPicker(sub)}
+                      className={`group w-full rounded-2xl px-3 py-2.5 text-left border transition ${
+                        isDarkMode
+                          ? 'border-slate-500/30 bg-slate-900/35 hover:border-slate-300/50'
+                          : 'border-slate-200 bg-white/90 hover:border-slate-300'
+                      }`}
+                      aria-label={`${sub.name} konusunu sec`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0 flex items-center gap-2.5">
+                          <div className={`w-9 h-9 rounded-xl bg-gradient-to-br ${color.gradient} text-white flex items-center justify-center shadow-md shrink-0`}>
+                            <Icon name={topicPickerCategory.iconName} className="w-4.5 h-4.5" />
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-[14px] font-extrabold text-slate-900 dark:text-white truncate">{sub.name}</p>
+                            <p className="text-[10px] font-semibold text-slate-500 dark:text-slate-300">{questionCount} soru</p>
+                          </div>
+                        </div>
+                        <div className={`shrink-0 w-8 h-8 rounded-xl flex items-center justify-center ${
+                          isDarkMode
+                            ? 'bg-slate-800/70 text-slate-200 border border-slate-400/35'
+                            : 'bg-slate-100 text-slate-600 border border-slate-200'
+                        }`}>
+                          <Icon name="ChevronRight" className="w-4 h-4" />
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
               </div>
             </div>
           </div>
