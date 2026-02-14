@@ -7253,8 +7253,8 @@ export default function App() {
         <button
           onClick={() => setIsRulesHelpModalOpen(true)}
           className="fixed right-3 md:right-4 lg:right-6 bottom-20 lg:bottom-6 z-[56] w-11 h-11 rounded-full bg-brand-600 text-white shadow-lg shadow-brand-600/30 hover:bg-brand-700 transition flex items-center justify-center"
-          title="Puanlama ve sayac kurallarini goster"
-          aria-label="Puanlama ve sayac kurallarini goster"
+          title="Puanlama ve sayaç kurallarını göster"
+          aria-label="Puanlama ve sayaç kurallarını göster"
         >
           <Icon name="Info" className="w-5 h-5" />
         </button>
@@ -7265,8 +7265,8 @@ export default function App() {
           <div className="w-full max-w-2xl bg-white dark:bg-surface-800 rounded-2xl shadow-2xl border border-surface-100 dark:border-surface-700 overflow-hidden modal-content">
             <div className="flex items-center justify-between p-4 border-b border-surface-100 dark:border-surface-700">
               <div>
-                <h3 className="text-base md:text-lg font-extrabold text-surface-800 dark:text-white">Puanlama ve Sayac Kurallari</h3>
-                <p className="text-xs text-surface-400">Istatistiklerin nasil hesaplandigi</p>
+                <h3 className="text-base md:text-lg font-extrabold text-surface-800 dark:text-white">Puanlama ve Sayaç Kuralları</h3>
+                <p className="text-xs text-surface-400">Yanlış havuzunun işleyişi</p>
               </div>
               <button
                 onClick={() => setIsRulesHelpModalOpen(false)}
@@ -7276,24 +7276,25 @@ export default function App() {
                 <Icon name="X" className="w-4 h-4 text-surface-500" />
               </button>
             </div>
-            <div className="p-4 md:p-5 space-y-3 md:space-y-4 text-[12px] text-surface-600 dark:text-surface-300 max-h-[72vh] overflow-y-auto custom-scrollbar">
-              <div className="rounded-xl border border-surface-200/80 dark:border-surface-700/80 bg-surface-50/80 dark:bg-surface-900/50 p-3">
-                <p className="text-[11px] font-bold uppercase tracking-wider text-surface-500 dark:text-surface-400 mb-1.5">Istatistik formulleri</p>
-                <ul className="space-y-1.5">
-                  <li><span className="font-bold text-surface-700 dark:text-surface-200">Basari Orani</span> = Toplam Dogru / (Toplam Dogru + Yanlis Deneme) x 100.</li>
-                  <li><span className="font-bold text-surface-700 dark:text-surface-200">Farkli Cozulen</span> = En az bir kez cevapladigin tekil soru sayisi. Ayni soruyu tekrar cozersen bu sayi artmaz.</li>
-                  <li><span className="font-bold text-surface-700 dark:text-surface-200">Toplam Cevap</span> = Tum cevaplama denemelerin. Ayni soruyu her cevaplayisinda bu sayi artar.</li>
-                  <li><span className="font-bold text-surface-700 dark:text-surface-200">Karsina Cikan</span> = Testte gosterilen toplam soru adedi. Tekrar gelen sorular dahildir.</li>
-                  <li><span className="font-bold text-surface-700 dark:text-surface-200">Yanlis Cevap</span> = Toplam yanlis cevap denemelerin.</li>
-                </ul>
-              </div>
-              <div className="rounded-xl border border-surface-200/80 dark:border-surface-700/80 bg-surface-50/80 dark:bg-surface-900/50 p-3">
-                <p className="text-[11px] font-bold uppercase tracking-wider text-surface-500 dark:text-surface-400 mb-1.5">Yanlis havuzu</p>
-                <ul className="space-y-1.5">
-                  <li>Soru yanlis cevaplanirsa <span className="font-bold text-red-600 dark:text-red-300">Yanlislarim</span> havuzuna eklenir.</li>
-                  <li>Ayni soru art arda dogru yapildikca toparlanma sayaci artar.</li>
-                  <li>Toparlanma sayaci <span className="font-bold text-surface-800 dark:text-white">3</span> olunca soru havuzdan cikar (cozulmus olur).</li>
-                  <li>Soru tekrar yanlis olursa sayac sifirlanir ve soru yeniden aktif olur.</li>
+            <div className="p-4 md:p-5 text-[12px] text-surface-600 dark:text-surface-300 max-h-[72vh] overflow-y-auto custom-scrollbar">
+              <div className={`rounded-2xl border p-3.5 md:p-4 ${
+                isDarkMode
+                  ? 'border-red-400/25 bg-gradient-to-br from-surface-900/70 via-surface-900/45 to-red-900/20 shadow-[0_0_0_1px_rgba(248,113,113,0.1),0_12px_26px_rgba(2,6,23,0.35)]'
+                  : 'border-rose-200/80 bg-gradient-to-br from-white via-rose-50/70 to-amber-50/60 shadow-[0_10px_22px_rgba(244,63,94,0.1)]'
+              }`}>
+                <div className="flex items-center gap-2 mb-2.5">
+                  <div className={`w-7 h-7 rounded-lg flex items-center justify-center ${
+                    isDarkMode ? 'bg-red-500/15 text-red-300 border border-red-400/30' : 'bg-rose-100 text-rose-600 border border-rose-200'
+                  }`}>
+                    <Icon name="CircleX" className="w-3.5 h-3.5" />
+                  </div>
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-surface-600 dark:text-surface-300">Yanlış Havuzu</p>
+                </div>
+                <ul className="space-y-2">
+                  <li>Soru yanlış cevaplanırsa <span className="font-bold text-red-600 dark:text-red-300">Yanlışlarım</span> havuzuna eklenir.</li>
+                  <li>Aynı soru art arda doğru yapıldıkça toparlanma sayacı artar.</li>
+                  <li>Toparlanma sayacı <span className="font-bold text-surface-800 dark:text-white">3</span> olunca soru havuzdan çıkar (çözülmüş olur).</li>
+                  <li>Soru tekrar yanlış olursa sayaç sıfırlanır ve soru yeniden aktif olur.</li>
                 </ul>
               </div>
             </div>
