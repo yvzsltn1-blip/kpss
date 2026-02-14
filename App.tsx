@@ -1943,8 +1943,6 @@ export default function App() {
           setSeenQuestionsById({});
         }
       );
-    } else {
-      setSeenQuestionsById({});
     }
 
     return () => {
@@ -1953,7 +1951,7 @@ export default function App() {
       unsubscribeFavoriteQuestions();
       unsubscribeSeenQuestions();
     };
-  }, [user?.uid]);
+  }, [user?.uid, persistSeenQuestionsToFirestore]);
 
   // Timer Logic
   useEffect(() => {
@@ -2333,13 +2331,17 @@ export default function App() {
       const currentQuestions = quizState.questions;
       const now = Date.now();
       const nextWrongQuestionStatsById = { ...wrongQuestionStatsById };
-      const nextSeenQuestionsById = persistSeenQuestionsToFirestore ? { ...seenQuestionsById } : null;
+      const nextSeenQuestionsById = { ...seenQuestionsById };
       const changedQuestionIds = new Set<string>();
       const changedSeenQuestionIds = new Set<string>();
+      const answeredQuestionCount = currentAnswers.reduce<number>((sum, answer) => (
+        answer === null || answer === undefined ? sum : sum + 1
+      ), 0);
+      const topicQuestionCount = allQuestions[topicId]?.length || 0;
       const prevTopicStats = topicProgressStats[topicId] || EMPTY_TOPIC_PROGRESS;
       const nextTopicStats: TopicProgressStats = {
         ...prevTopicStats,
-        seenCount: prevTopicStats.seenCount + currentQuestions.length,
+        seenCount: Math.min(topicQuestionCount, prevTopicStats.seenCount + answeredQuestionCount),
         correctCount: prevTopicStats.correctCount,
         wrongCount: prevTopicStats.wrongCount,
         totalWrongAnswers: prevTopicStats.totalWrongAnswers,
@@ -2351,23 +2353,21 @@ export default function App() {
         const prevWrongStats = nextWrongQuestionStatsById[questionTrackingId];
         const answer = currentAnswers[index];
 
-        if (persistSeenQuestionsToFirestore && nextSeenQuestionsById) {
-          const prevSeenStats = nextSeenQuestionsById[questionTrackingId];
-          nextSeenQuestionsById[questionTrackingId] = {
-            questionTrackingId,
-            topicId,
-            questionId: getQuestionStableId(question),
-            questionText: question.questionText,
-            sourceTag: typeof question.sourceTag === 'string' ? question.sourceTag : null,
-            firstSeenAt: prevSeenStats?.firstSeenAt || now,
-            lastSeenAt: now,
-            seenCount: (prevSeenStats?.seenCount || 0) + 1,
-            answeredCount: (prevSeenStats?.answeredCount || 0) + (answer === null || answer === undefined ? 0 : 1),
-            correctCount: (prevSeenStats?.correctCount || 0) + (answer === question.correctOptionIndex ? 1 : 0),
-            wrongCount: (prevSeenStats?.wrongCount || 0) + (answer !== null && answer !== undefined && answer !== question.correctOptionIndex ? 1 : 0),
-          };
-          changedSeenQuestionIds.add(questionTrackingId);
-        }
+        const prevSeenStats = nextSeenQuestionsById[questionTrackingId];
+        nextSeenQuestionsById[questionTrackingId] = {
+          questionTrackingId,
+          topicId,
+          questionId: getQuestionStableId(question),
+          questionText: question.questionText,
+          sourceTag: typeof question.sourceTag === 'string' ? question.sourceTag : null,
+          firstSeenAt: prevSeenStats?.firstSeenAt || now,
+          lastSeenAt: now,
+          seenCount: (prevSeenStats?.seenCount || 0) + 1,
+          answeredCount: (prevSeenStats?.answeredCount || 0) + (answer === null || answer === undefined ? 0 : 1),
+          correctCount: (prevSeenStats?.correctCount || 0) + (answer === question.correctOptionIndex ? 1 : 0),
+          wrongCount: (prevSeenStats?.wrongCount || 0) + (answer !== null && answer !== undefined && answer !== question.correctOptionIndex ? 1 : 0),
+        };
+        changedSeenQuestionIds.add(questionTrackingId);
 
         if (answer === null || answer === undefined) {
           return;
@@ -2411,9 +2411,7 @@ export default function App() {
         [topicId]: nextTopicStats,
       }));
       setWrongQuestionStatsById(nextWrongQuestionStatsById);
-      if (persistSeenQuestionsToFirestore && nextSeenQuestionsById) {
-        setSeenQuestionsById(nextSeenQuestionsById);
-      }
+      setSeenQuestionsById(nextSeenQuestionsById);
 
       const persistTopicAndWrongStats = async () => {
         try {
@@ -2442,7 +2440,7 @@ export default function App() {
             );
           });
 
-          if (persistSeenQuestionsToFirestore && nextSeenQuestionsById) {
+          if (persistSeenQuestionsToFirestore) {
             changedSeenQuestionIds.forEach((questionTrackingId) => {
               const seenStats = nextSeenQuestionsById[questionTrackingId];
               if (!seenStats) return;
@@ -2477,6 +2475,20 @@ export default function App() {
     const m = Math.floor(seconds / 60);
     const s = seconds % 60;
     return `${m}:${s < 10 ? '0' : ''}${s}`;
+  };
+
+  const getAdaptiveStatValueClass = (value: string | number, variant: 'regular' | 'compact' = 'regular'): string => {
+    const len = String(value).length;
+    if (variant === 'compact') {
+      if (len >= 9) return 'text-[11px] md:text-[12px]';
+      if (len >= 7) return 'text-[12px] md:text-[13px]';
+      if (len >= 5) return 'text-[14px] md:text-[15px]';
+      return 'text-[18px] md:text-[19px]';
+    }
+    if (len >= 9) return 'text-[14px] md:text-[15px]';
+    if (len >= 7) return 'text-[16px] md:text-[17px]';
+    if (len >= 5) return 'text-[19px] md:text-[20px]';
+    return 'text-[22px]';
   };
 
   const downloadJsonFile = (filename: string, payload: unknown) => {
@@ -3405,9 +3417,7 @@ export default function App() {
     },
     { seenCount: 0, correctCount: 0, wrongCount: 0 }
   );
-  const allSeenQuestionStats = persistSeenQuestionsToFirestore
-    ? (Object.values(seenQuestionsById) as SeenQuestionStats[])
-    : [];
+  const allSeenQuestionStats = Object.values(seenQuestionsById) as SeenQuestionStats[];
   const selectedHomeStatsCategory = homeStatsCategoryFilter === 'all'
     ? null
     : (categories.find((cat) => cat.id === homeStatsCategoryFilter) || null);
@@ -3439,12 +3449,10 @@ export default function App() {
     const totalWrongAnswers = filteredTopicProgressStats.reduce((sum, [, stats]) => sum + stats.totalWrongAnswers, 0);
 
     const filteredSeenQuestionStats = allSeenQuestionStats.filter((stats) => includeTopic(stats.topicId));
-    const uniqueSolvedCount = persistSeenQuestionsToFirestore
-      ? filteredSeenQuestionStats.reduce((sum, stats) => (stats.answeredCount > 0 ? sum + 1 : sum), 0)
-      : progressStats.seenCount;
-    const totalAnsweredCount = persistSeenQuestionsToFirestore
-      ? filteredSeenQuestionStats.reduce((sum, stats) => sum + stats.answeredCount, 0)
-      : (progressStats.correctCount + totalWrongAnswers);
+    const uniqueSolvedFromSeenStats = filteredSeenQuestionStats.reduce((sum, stats) => (stats.answeredCount > 0 ? sum + 1 : sum), 0);
+    const totalAnsweredFromSeenStats = filteredSeenQuestionStats.reduce((sum, stats) => sum + stats.answeredCount, 0);
+    const uniqueSolvedCount = uniqueSolvedFromSeenStats > 0 ? uniqueSolvedFromSeenStats : progressStats.seenCount;
+    const totalAnsweredCount = totalAnsweredFromSeenStats > 0 ? totalAnsweredFromSeenStats : (progressStats.correctCount + totalWrongAnswers);
 
     const filteredFavoriteCount = (Object.values(favoriteQuestionsById) as FavoriteQuestionRecord[]).reduce((sum, favoriteRecord) => (
       includeTopic(favoriteRecord.topicId) ? sum + 1 : sum
@@ -3476,13 +3484,13 @@ export default function App() {
     return categories.flatMap((cat) => {
       return cat.subCategories.map((sub) => {
         const topicStats = topicProgressStats[sub.id] || EMPTY_TOPIC_PROGRESS;
+        const questionCount = (allQuestions[sub.id] || []).length;
         const seenStats = seenQuestionStatsByTopic[sub.id] || [];
-        const uniqueSolvedCount = persistSeenQuestionsToFirestore
-          ? seenStats.reduce((sum, stats) => (stats.answeredCount > 0 ? sum + 1 : sum), 0)
-          : topicStats.seenCount;
-        const totalAnsweredCount = persistSeenQuestionsToFirestore
-          ? seenStats.reduce((sum, stats) => sum + stats.answeredCount, 0)
-          : (topicStats.correctCount + topicStats.totalWrongAnswers);
+        const uniqueSolvedFromSeenStats = seenStats.reduce((sum, stats) => (stats.answeredCount > 0 ? sum + 1 : sum), 0);
+        const totalAnsweredFromSeenStats = seenStats.reduce((sum, stats) => sum + stats.answeredCount, 0);
+        const uniqueSolvedCount = uniqueSolvedFromSeenStats > 0 ? uniqueSolvedFromSeenStats : topicStats.seenCount;
+        const totalAnsweredCount = totalAnsweredFromSeenStats > 0 ? totalAnsweredFromSeenStats : (topicStats.correctCount + topicStats.totalWrongAnswers);
+        const completionPercent = questionCount > 0 ? Math.round((totalAnsweredCount / questionCount) * 100) : 0;
         const correctCount = topicStats.correctCount;
         const wrongCount = topicStats.totalWrongAnswers;
         const accuracyPercent = totalAnsweredCount > 0
@@ -3495,6 +3503,8 @@ export default function App() {
           categoryIconName: cat.iconName,
           topicId: sub.id,
           topicName: sub.name,
+          questionCount,
+          completionPercent,
           uniqueSolvedCount,
           totalAnsweredCount,
           correctCount,
@@ -3510,7 +3520,7 @@ export default function App() {
         };
       });
     });
-  }, [categories, persistSeenQuestionsToFirestore, seenQuestionStatsByTopic, topicProgressStats]);
+  }, [allQuestions, categories, persistSeenQuestionsToFirestore, seenQuestionStatsByTopic, topicProgressStats]);
   const statisticsCategoryRows = useMemo(() => {
     return categories
       .map((cat) => {
@@ -3588,7 +3598,7 @@ export default function App() {
       accuracyPercent,
     };
   }, [statisticsCategoryRows, statisticsScopeCategoryId]);
-  const statisticsScopeLabel = statisticsScopeCategory?.name || 'Tum Dersler';
+  const statisticsScopeLabel = statisticsScopeCategory?.name || 'Tüm Dersler';
   const isStatisticsTopicView = statisticsScopeCategoryId !== 'all';
   const hasProgressForTopic = (topicId: string): boolean => {
     const stats = getTopicProgress(topicId);
@@ -5912,7 +5922,7 @@ export default function App() {
           {currentView === 'statistics' && (
             <div className="animate-fade-in h-full w-full min-w-0 flex flex-col gap-2 md:gap-3 overflow-hidden">
               <div className="shrink-0 flex flex-wrap items-center justify-between gap-2">
-                <h1 className="text-[26px] md:text-[36px] font-black text-slate-800 dark:text-white tracking-tight">Istatistikler</h1>
+                <h1 className="text-[26px] md:text-[36px] font-black text-slate-800 dark:text-white tracking-tight">İstatistikler</h1>
                 <span className="inline-flex items-center h-8 px-3 rounded-full text-[11px] font-semibold text-slate-600 dark:text-slate-200 bg-white/60 dark:bg-slate-900/40 border border-white/70 dark:border-slate-600/30">
                   {statisticsScopeLabel}
                 </span>
@@ -5921,7 +5931,7 @@ export default function App() {
               <section className="kpss-neon-panel rounded-2xl p-3 md:p-4 shrink-0">
                 <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3 md:items-center mb-3">
                   <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-300">Genel Istatistik</p>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-300">Genel İstatistik</p>
                     <p className="text-lg md:text-xl font-black text-slate-900 dark:text-white">{statisticsScopeLabel}</p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
@@ -5936,7 +5946,7 @@ export default function App() {
                         }`}
                         aria-haspopup="listbox"
                         aria-expanded={isStatisticsScopeMenuOpen}
-                        aria-label="Istatistik ders secimi"
+                        aria-label="İstatistik ders seçimi"
                       >
                         <span className="truncate text-left">{statisticsScopeLabel}</span>
                         <Icon
@@ -5952,11 +5962,11 @@ export default function App() {
                               : 'bg-white border-slate-200'
                           }`}
                           role="listbox"
-                          aria-label="Istatistik ders secenekleri"
+                          aria-label="İstatistik ders seçenekleri"
                         >
                           <div className="max-h-56 overflow-y-auto custom-scrollbar">
                             {[
-                              { id: 'all', name: 'Tum Dersler' },
+                              { id: 'all', name: 'Tüm Dersler' },
                               ...categories.map((cat) => ({ id: cat.id, name: cat.name })),
                             ].map((option) => (
                             <button
@@ -5988,31 +5998,48 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-4 gap-1.5 md:gap-2">
-                  {[
-                    { id: 'total_answered', label: 'Toplam Cevap', mobileLabel: 'Cevap', value: statisticsSummary.totalAnsweredCount, tone: 'kpss-neon-mini-blue' },
-                    { id: 'unique_solved', label: 'Farkli Cozulen', mobileLabel: 'Farkli', value: statisticsSummary.uniqueSolvedCount, tone: 'kpss-neon-mini-fuchsia' },
-                    { id: 'correct', label: 'Toplam Dogru', mobileLabel: 'Dogru', value: statisticsSummary.correctCount, tone: 'kpss-neon-mini-amber' },
-                    { id: 'wrong', label: 'Toplam Yanlis', mobileLabel: 'Yanlis', value: statisticsSummary.wrongCount, tone: 'kpss-neon-mini-cyan' },
-                  ].map((card) => (
-                    <div key={card.id} className={`kpss-neon-mini-card statistics-summary-mini-card min-w-0 ${card.tone}`}>
-                      <p className="kpss-neon-mini-label">
-                        <span className="md:hidden">{card.mobileLabel}</span>
-                        <span className="hidden md:inline">{card.label}</span>
-                      </p>
-                      <p className="kpss-neon-mini-value">{card.value}</p>
+                <div className={`rounded-xl border overflow-hidden ${
+                  isDarkMode
+                    ? 'border-cyan-400/30 bg-gradient-to-r from-slate-900/55 via-slate-900/35 to-indigo-900/35 shadow-[0_0_0_1px_rgba(34,211,238,0.12),0_10px_24px_rgba(2,6,23,0.34)]'
+                    : 'border-sky-300/70 bg-gradient-to-r from-white/96 via-sky-50/80 to-indigo-50/75 shadow-[0_8px_20px_rgba(56,189,248,0.14)]'
+                }`}>
+                  <div className={`grid grid-cols-[2.1fr_2fr_1fr_1fr_1.05fr] divide-x ${isDarkMode ? 'divide-cyan-300/25' : 'divide-sky-200/90'}`}>
+                    <div className="min-w-0 px-1.5 py-1.5 text-center flex items-center justify-center">
+                      <p className="text-[9px] font-semibold text-slate-400 dark:text-slate-300 leading-tight whitespace-nowrap -translate-y-0.5">Toplam Çözülen</p>
                     </div>
-                  ))}
-                </div>
-
-                <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-300 font-medium">
-                  <span className={`px-2 py-1 rounded-md ${
-                    isDarkMode
-                      ? 'bg-slate-900/30 border border-slate-400/25'
-                      : 'bg-white border border-slate-200'
-                  }`}>
-                    Basari Orani: %{statisticsSummary.accuracyPercent}
-                  </span>
+                    <div className="min-w-0 px-1.5 py-1.5 text-center flex items-center justify-center">
+                      <p className="text-[9px] font-semibold text-slate-400 dark:text-slate-300 leading-tight whitespace-nowrap -translate-y-0.5">Toplam Cevaplanan</p>
+                    </div>
+                    <div className="min-w-0 px-1.5 py-1.5 text-center flex items-center justify-center">
+                      <p className="text-[9px] font-semibold text-slate-400 dark:text-slate-300 leading-tight -translate-y-0.5">Doğru</p>
+                    </div>
+                    <div className="min-w-0 px-1.5 py-1.5 text-center flex items-center justify-center">
+                      <p className="text-[9px] font-semibold text-slate-400 dark:text-slate-300 leading-tight -translate-y-0.5">Yanlış</p>
+                    </div>
+                    <div className="min-w-0 px-1.5 py-1.5 text-center flex items-center justify-center">
+                      <p className="text-[9px] font-semibold text-slate-400 dark:text-slate-300 leading-tight -translate-y-0.5">Başarı</p>
+                    </div>
+                  </div>
+                  <div className={`h-px w-full ${isDarkMode ? 'bg-cyan-300/25' : 'bg-sky-200/90'}`} />
+                  <div className={`grid grid-cols-[2.1fr_2fr_1fr_1fr_1.05fr] divide-x ${isDarkMode ? 'divide-cyan-300/25' : 'divide-sky-200/90'}`}>
+                    <div className="min-w-0 px-1.5 py-2 text-center flex items-center justify-center">
+                      <p className={`font-semibold text-fuchsia-600 dark:text-fuchsia-300 leading-none tabular-nums whitespace-nowrap -translate-y-0.5 ${getAdaptiveStatValueClass(statisticsSummary.uniqueSolvedCount)}`}>{statisticsSummary.uniqueSolvedCount}</p>
+                    </div>
+                    <div className="min-w-0 px-1.5 py-2 text-center flex items-center justify-center">
+                      <p className={`font-semibold text-slate-900 dark:text-white leading-none tabular-nums whitespace-nowrap -translate-y-0.5 ${getAdaptiveStatValueClass(statisticsSummary.totalAnsweredCount)}`}>{statisticsSummary.totalAnsweredCount}</p>
+                    </div>
+                    <div className="min-w-0 px-1.5 py-2 text-center flex items-center justify-center">
+                      <p className={`font-semibold text-emerald-600 dark:text-emerald-300 leading-none tabular-nums whitespace-nowrap -translate-y-0.5 ${getAdaptiveStatValueClass(statisticsSummary.correctCount)}`}>{statisticsSummary.correctCount}</p>
+                    </div>
+                    <div className="min-w-0 px-1.5 py-2 text-center flex items-center justify-center">
+                      <p className={`font-semibold text-red-600 dark:text-red-300 leading-none tabular-nums whitespace-nowrap -translate-y-0.5 ${getAdaptiveStatValueClass(statisticsSummary.wrongCount)}`}>{statisticsSummary.wrongCount}</p>
+                    </div>
+                    <div className="min-w-0 px-1.5 py-2 text-center flex items-center justify-center">
+                      <p className={`inline-flex items-center justify-center font-semibold text-rose-600 dark:text-rose-300 leading-none tabular-nums whitespace-nowrap -translate-y-0.5 ${getAdaptiveStatValueClass(statisticsSummary.accuracyPercent)}`}>
+                        <span className="text-[0.5em] leading-none mr-0.5 -ml-0.5">%</span>{statisticsSummary.accuracyPercent}
+                      </p>
+                    </div>
+                  </div>
                 </div>
               </section>
 
@@ -6020,7 +6047,7 @@ export default function App() {
                 <section className="kpss-neon-panel rounded-2xl p-3 md:p-4 flex-1 min-h-0 overflow-hidden">
                   <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
                     <h2 className="text-base md:text-lg font-extrabold text-slate-900 dark:text-white">
-                      {statisticsScopeLabel} Konulari
+                      {statisticsScopeLabel} Konuları
                     </h2>
                   </div>
 
@@ -6032,47 +6059,55 @@ export default function App() {
                             key={row.topicId}
                             className={`rounded-2xl p-3 border ${
                               isDarkMode
-                                ? 'border-slate-500/30 bg-slate-900/45'
-                                : 'border-slate-200 bg-white/90'
+                                ? 'border-slate-500/35 bg-gradient-to-br from-slate-900/78 via-indigo-900/34 to-cyan-900/22 shadow-[0_0_0_1px_rgba(148,163,184,0.12),0_12px_26px_rgba(2,6,23,0.42)]'
+                                : 'border-slate-300/70 bg-gradient-to-br from-white via-sky-50/80 to-cyan-50/75 shadow-[0_10px_22px_rgba(56,189,248,0.1)]'
                             }`}
                           >
-                            <div className="flex items-center justify-between gap-2 mb-2">
-                              <div className="flex items-center gap-2 min-w-0">
-                                <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-500 flex items-center justify-center shadow-[0_0_16px_rgba(34,211,238,0.3)]">
-                                  <Icon name="BookOpen" className="w-4 h-4 text-white" />
-                                </div>
-                                <div className="min-w-0">
+                            <div className={`rounded-xl border overflow-hidden mb-2 ${
+                              isDarkMode
+                                ? 'border-cyan-300/25 bg-slate-900/35'
+                                : 'border-sky-200/90 bg-white/70'
+                            }`}>
+                              <div className={`grid grid-cols-[minmax(0,1fr)_auto_auto] divide-x ${isDarkMode ? 'divide-cyan-300/25' : 'divide-sky-200/90'}`}>
+                                <div className="min-w-0 px-2 py-2 flex items-center gap-2">
+                                  <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-500 flex items-center justify-center shadow-[0_0_16px_rgba(34,211,238,0.3)] shrink-0">
+                                    <Icon name="BookOpen" className="w-4 h-4 text-white" />
+                                  </div>
                                   <p className="text-sm font-black text-slate-900 dark:text-white truncate">{row.topicName}</p>
-                                  <p className="text-[11px] text-slate-500 dark:text-slate-300">{(allQuestions[row.topicId] || []).length} soru</p>
                                 </div>
-                              </div>
-                              <div className="text-right">
-                                <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-300">%{row.accuracyPercent}</p>
-                                <p className="text-[10px] font-semibold text-cyan-600 dark:text-cyan-300">Konu</p>
+                                <div className="px-2 py-2 text-center min-w-[82px]">
+                                  <p className="text-[10px] font-medium text-slate-500 dark:text-slate-300">Soru Sayısı</p>
+                                  <p className="text-sm font-semibold text-slate-900 dark:text-white leading-none mt-0.5">{row.questionCount}</p>
+                                </div>
+                                <div className="px-2 py-2 min-w-[72px] flex items-center justify-center">
+                                  <p className={`inline-flex items-center justify-center font-semibold text-cyan-600 dark:text-cyan-300 leading-none text-center tabular-nums whitespace-nowrap ${getAdaptiveStatValueClass(row.accuracyPercent, 'compact')}`}>
+                                    <span className="text-[0.5em] leading-none mr-1.5 -ml-0.5">%</span>{row.accuracyPercent}
+                                  </p>
+                                </div>
                               </div>
                             </div>
-                            <div className="grid grid-cols-4 md:grid-cols-2 gap-1 md:gap-1.5 text-[10px] md:text-[11px]">
-                              <div className="rounded-lg px-1.5 py-1 md:px-2 md:py-1.5 bg-slate-100/70 dark:bg-slate-800/60 min-w-0">
-                                <p className="font-semibold text-slate-500 dark:text-slate-300 truncate">
-                                  <span className="md:hidden">Cevap</span>
-                                  <span className="hidden md:inline">Toplam Cevap</span>
-                                </p>
-                                <p className="font-black text-slate-900 dark:text-white leading-none mt-0.5">{row.totalAnsweredCount}</p>
-                              </div>
-                              <div className="rounded-lg px-1.5 py-1 md:px-2 md:py-1.5 bg-slate-100/70 dark:bg-slate-800/60 min-w-0">
-                                <p className="font-semibold text-slate-500 dark:text-slate-300 truncate">
-                                  <span className="md:hidden">Farkli</span>
-                                  <span className="hidden md:inline">Farkli Soru</span>
-                                </p>
-                                <p className="font-black text-slate-900 dark:text-white leading-none mt-0.5">{row.uniqueSolvedCount}</p>
-                              </div>
-                              <div className="rounded-lg px-1.5 py-1 md:px-2 md:py-1.5 bg-emerald-50 dark:bg-emerald-900/20 min-w-0">
-                                <p className="font-semibold text-emerald-700 dark:text-emerald-300 truncate">Dogru</p>
-                                <p className="font-black text-emerald-700 dark:text-emerald-300 leading-none mt-0.5">{row.correctCount}</p>
-                              </div>
-                              <div className="rounded-lg px-1.5 py-1 md:px-2 md:py-1.5 bg-red-50 dark:bg-red-900/20 min-w-0">
-                                <p className="font-semibold text-red-700 dark:text-red-300 truncate">Yanlis</p>
-                                <p className="font-black text-red-700 dark:text-red-300 leading-none mt-0.5">{row.wrongCount}</p>
+                            <div className={`rounded-xl border overflow-hidden ${
+                              isDarkMode
+                                ? 'border-slate-500/30 bg-gradient-to-r from-slate-900/55 via-slate-900/35 to-slate-800/40'
+                                : 'border-slate-200 bg-gradient-to-r from-white/95 via-slate-50/70 to-sky-50/60'
+                            }`}>
+                              <div className={`grid grid-cols-[1.9fr_1.9fr_1fr_1fr] divide-x ${isDarkMode ? 'divide-slate-500/30' : 'divide-slate-200/90'} text-[10px] md:text-[11px]`}>
+                                <div className="min-w-0 px-1.5 py-1.5 md:px-2 md:py-1.5 text-center">
+                                  <p className="font-medium text-slate-500 dark:text-slate-300 whitespace-nowrap">Toplam Çözülen</p>
+                                  <p className={`font-semibold text-slate-900 dark:text-white leading-none mt-0.5 tabular-nums whitespace-nowrap ${getAdaptiveStatValueClass(row.uniqueSolvedCount, 'compact')}`}>{row.uniqueSolvedCount}</p>
+                                </div>
+                                <div className="min-w-0 px-1.5 py-1.5 md:px-2 md:py-1.5 text-center">
+                                  <p className="font-medium text-slate-500 dark:text-slate-300 whitespace-nowrap">Toplam Cevaplanan</p>
+                                  <p className={`font-semibold text-slate-900 dark:text-white leading-none mt-0.5 tabular-nums whitespace-nowrap ${getAdaptiveStatValueClass(row.totalAnsweredCount, 'compact')}`}>{row.totalAnsweredCount}</p>
+                                </div>
+                                <div className="min-w-0 px-1.5 py-1.5 md:px-2 md:py-1.5 text-center">
+                                  <p className="font-medium text-emerald-700 dark:text-emerald-300 truncate">Doğru</p>
+                                  <p className={`font-semibold text-emerald-700 dark:text-emerald-300 leading-none mt-0.5 tabular-nums whitespace-nowrap ${getAdaptiveStatValueClass(row.correctCount, 'compact')}`}>{row.correctCount}</p>
+                                </div>
+                                <div className="min-w-0 px-1.5 py-1.5 md:px-2 md:py-1.5 text-center">
+                                  <p className="font-medium text-red-700 dark:text-red-300 truncate">Yanlış</p>
+                                  <p className={`font-semibold text-red-700 dark:text-red-300 leading-none mt-0.5 tabular-nums whitespace-nowrap ${getAdaptiveStatValueClass(row.wrongCount, 'compact')}`}>{row.wrongCount}</p>
+                                </div>
                               </div>
                             </div>
                           </div>
@@ -6080,7 +6115,7 @@ export default function App() {
                       </div>
                     ) : (
                       <div className="h-full min-h-[160px] flex items-center justify-center rounded-2xl border border-dashed border-slate-300/60 dark:border-slate-600/60 text-[13px] font-semibold text-slate-500 dark:text-slate-300">
-                        Bu derste gosterilecek konu istatistigi yok.
+                        Bu derste gösterilecek konu istatistiği yok.
                       </div>
                     )}
                   </div>
@@ -6163,8 +6198,8 @@ export default function App() {
               </div>
 
               {mobileDashboardTab === 'stats' && (
-                <div className="lg:hidden flex-1 min-h-0 overflow-hidden pr-0.5 pb-0.5">
-                <section className="kpss-neon-panel h-full mb-0 rounded-2xl p-2">
+                <div className="lg:hidden shrink-0 pr-0.5 pb-0.5">
+                <section className="kpss-neon-panel mb-0 rounded-2xl p-2">
                   <div className="flex items-center justify-between gap-2 mb-2">
                     <h2 className="text-base font-extrabold text-slate-900 dark:text-white">Istatistiklerim</h2>
                     <span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold ${
@@ -6172,33 +6207,49 @@ export default function App() {
                         ? 'bg-slate-900/35 border border-slate-400/35 text-slate-200'
                         : 'bg-white border border-slate-200 text-slate-600'
                     }`}>
-                      Bugun
+                      Toplam
                     </span>
                   </div>
-                  <div className="grid grid-cols-2 gap-1.5">
-                    <div className="kpss-neon-mini-card kpss-neon-mini-fuchsia">
-                      <p className="kpss-neon-mini-label">Farkli Cozulen</p>
-                      <p className="kpss-neon-mini-value">{homeStats.uniqueSolvedCount}</p>
+                  <div className="space-y-1.5">
+                    <div className={`rounded-xl border overflow-hidden ${
+                      isDarkMode
+                        ? 'border-cyan-400/35 bg-gradient-to-r from-slate-900/60 via-slate-900/35 to-indigo-900/45 shadow-[0_0_0_1px_rgba(34,211,238,0.14),0_10px_24px_rgba(2,6,23,0.38)]'
+                        : 'border-sky-300/70 bg-gradient-to-r from-white/95 via-sky-50/80 to-indigo-50/75 shadow-[0_8px_20px_rgba(56,189,248,0.16)]'
+                    }`}>
+                      <div className={`flex items-stretch divide-x ${isDarkMode ? 'divide-cyan-300/30' : 'divide-sky-200/90'}`}>
+                        <div className="flex-1 min-w-0 px-2 py-2.5 text-center">
+                          <p className="kpss-neon-mini-label normal-case !text-[8.5px] !tracking-[0.03em] !leading-[1.25] !font-medium">Toplam Cozulen</p>
+                          <p className="kpss-neon-mini-value !text-[20px] !font-semibold !tracking-[0.01em]">{homeStats.uniqueSolvedCount}</p>
+                        </div>
+                        <div className="flex-1 min-w-0 px-2 py-2.5 text-center">
+                          <p className="kpss-neon-mini-label normal-case !text-[8.5px] !tracking-[0.03em] !leading-[1.25] !font-medium">Toplam Cevaplanan</p>
+                          <p className="kpss-neon-mini-value !text-[20px] !font-semibold !tracking-[0.01em]">{homeStats.totalAnsweredCount}</p>
+                        </div>
+                        <div className="flex-1 min-w-0 px-2 py-2.5 text-center">
+                          <p className="kpss-neon-mini-label normal-case !text-[8.5px] !tracking-[0.03em] !leading-[1.25] !font-medium">Favori Soru Sayisi</p>
+                          <p className="kpss-neon-mini-value !text-[20px] !font-semibold !tracking-[0.01em]">{homeStats.filteredFavoriteCount}</p>
+                        </div>
+                      </div>
                     </div>
-                    <div className="kpss-neon-mini-card kpss-neon-mini-blue">
-                      <p className="kpss-neon-mini-label">Toplam Cevap</p>
-                      <p className="kpss-neon-mini-value">{homeStats.totalAnsweredCount}</p>
-                    </div>
-                    <div className="kpss-neon-mini-card kpss-neon-mini-emerald">
-                      <p className="kpss-neon-mini-label">Favori Soru</p>
-                      <p className="kpss-neon-mini-value">{homeStats.filteredFavoriteCount}</p>
-                    </div>
-                    <div className="kpss-neon-mini-card kpss-neon-mini-amber">
-                      <p className="kpss-neon-mini-label">Toplam Dogru</p>
-                      <p className="kpss-neon-mini-value">{homeStats.progressStats.correctCount}</p>
-                    </div>
-                    <div className="kpss-neon-mini-card kpss-neon-mini-cyan">
-                      <p className="kpss-neon-mini-label">Yanlis Cevap</p>
-                      <p className="kpss-neon-mini-value">{homeStats.totalWrongAnswers}</p>
-                    </div>
-                    <div className="kpss-neon-mini-card kpss-neon-mini-red">
-                      <p className="kpss-neon-mini-label">Basari Orani</p>
-                      <p className="kpss-neon-mini-value">%{homeStats.accuracyPercent}</p>
+                    <div className={`rounded-xl border overflow-hidden ${
+                      isDarkMode
+                        ? 'border-rose-400/30 bg-gradient-to-r from-slate-900/60 via-slate-900/35 to-rose-900/30 shadow-[0_0_0_1px_rgba(244,114,182,0.12),0_10px_24px_rgba(2,6,23,0.38)]'
+                        : 'border-rose-300/55 bg-gradient-to-r from-white/95 via-amber-50/70 to-rose-50/70 shadow-[0_8px_20px_rgba(251,113,133,0.14)]'
+                    }`}>
+                      <div className={`flex items-stretch divide-x ${isDarkMode ? 'divide-rose-300/30' : 'divide-rose-200/90'}`}>
+                        <div className="flex-1 min-w-0 px-2 py-2.5 text-center">
+                          <p className="kpss-neon-mini-label normal-case !text-[8.5px] !tracking-[0.03em] !leading-[1.25] !font-medium">Toplam Dogru</p>
+                          <p className="kpss-neon-mini-value !text-[20px] !font-semibold !tracking-[0.01em]">{homeStats.progressStats.correctCount}</p>
+                        </div>
+                        <div className="flex-1 min-w-0 px-2 py-2.5 text-center">
+                          <p className="kpss-neon-mini-label normal-case !text-[8.5px] !tracking-[0.03em] !leading-[1.25] !font-medium">Toplam Yanlis</p>
+                          <p className="kpss-neon-mini-value !text-[20px] !font-semibold !tracking-[0.01em]">{homeStats.totalWrongAnswers}</p>
+                        </div>
+                        <div className="flex-1 min-w-0 px-2 py-2.5 text-center">
+                          <p className="kpss-neon-mini-label normal-case !text-[8.5px] !tracking-[0.03em] !leading-[1.25] !font-medium">Basari Orani</p>
+                          <p className="kpss-neon-mini-value !text-[20px] !font-semibold !tracking-[0.01em]">%{homeStats.accuracyPercent}</p>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </section>
@@ -6215,7 +6266,7 @@ export default function App() {
                       onChange={(e) => setHomeStatsCategoryFilter(e.target.value)}
                       className="kpss-neon-select h-10 min-w-0 flex-1 sm:flex-none sm:w-[220px] max-w-full px-3 rounded-xl text-[12px] font-semibold text-slate-700 dark:text-slate-100 outline-none"
                     >
-                      <option value="all">Toplam (Tum Dersler)</option>
+                      <option value="all">Toplam (Tüm Dersler)</option>
                       {categories.map((cat) => (
                         <option key={cat.id} value={cat.id}>{cat.name}</option>
                       ))}
@@ -6250,7 +6301,7 @@ export default function App() {
                 {isHomeStatsExpanded && (
                   <>
                     <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-300 mb-3">
-                      {homeStatsCategoryFilter === 'all' ? 'Gorunum: Tum Dersler' : `Gorunum: ${selectedHomeStatsCategory?.name || 'Secili Ders'}`}
+                      {homeStatsCategoryFilter === 'all' ? 'Görünüm: Tüm Dersler' : `Görünüm: ${selectedHomeStatsCategory?.name || 'Seçili Ders'}`}
                     </p>
                     <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 md:gap-3">
                       <div className="kpss-neon-mini-card kpss-neon-mini-fuchsia">
@@ -6344,34 +6395,42 @@ export default function App() {
           {/* ===== DASHBOARD - SUBCATEGORIES ===== */}
           {currentView === 'dashboard' && activeCategory && (
             <div className="animate-fade-in h-full flex flex-col overflow-hidden">
-              <div className="flex flex-wrap items-center justify-between gap-2 mb-3 shrink-0">
-                <button
-                  onClick={() => { setActiveCategory(null); setMobileDashboardTab('categories'); }}
-                  className="inline-flex items-center gap-2 text-surface-500 dark:text-surface-300 hover:text-brand-500 transition-colors font-semibold text-sm px-3 py-2 rounded-xl bg-white/80 dark:bg-surface-800/80 border border-surface-200/80 dark:border-surface-700/80"
-                >
-                  <Icon name="ArrowLeft" className="w-4 h-4" />
-                  Tum Dersler
-                </button>
-                <div className="w-full sm:w-auto flex items-center gap-2">
-                  <div className="relative flex-1 sm:w-64">
-                    <Icon name="Search" className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-surface-400" />
+              <div className="mb-3 shrink-0">
+                <div className="w-full h-12 rounded-2xl border border-surface-200 dark:border-surface-700 bg-white/90 dark:bg-surface-800/90 overflow-hidden flex items-stretch focus-within:ring-2 focus-within:ring-brand-500/30">
+                  <button
+                    onClick={() => { setActiveCategory(null); setMobileDashboardTab('categories'); }}
+                    className="basis-[30%] min-w-0 h-full px-3 inline-flex items-center gap-2 text-surface-600 dark:text-surface-300 hover:text-brand-500 transition-colors text-sm font-semibold"
+                  >
+                    <Icon name="ArrowLeft" className="w-4 h-4 shrink-0" />
+                    <span className="truncate">Tüm Dersler</span>
+                  </button>
+
+                  <div className="w-px h-full bg-surface-200 dark:bg-surface-700" />
+
+                  <div className="relative flex-1 min-w-0 h-full">
+                    <Icon name="Search" className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-surface-400 pointer-events-none" />
                     <input
                       value={topicSearchTerm}
                       onChange={(e) => setTopicSearchTerm(e.target.value)}
                       placeholder="Konu ara..."
-                      className="w-full h-10 pl-9 pr-3 rounded-xl border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800 text-sm text-surface-700 dark:text-surface-200 placeholder:text-surface-400 outline-none focus:border-brand-500"
+                      className="w-full h-full pl-9 pr-3 bg-transparent border-0 text-sm text-surface-700 dark:text-surface-200 placeholder:text-surface-400 outline-none"
                     />
                   </div>
-                  <select
-                    value={topicCardFilter}
-                    onChange={(e) => setTopicCardFilter(e.target.value as 'all' | 'in_progress' | 'completed' | 'not_started')}
-                    className="h-10 px-3 rounded-xl border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800 text-sm text-surface-700 dark:text-surface-200 outline-none focus:border-brand-500"
-                  >
-                    <option value="all">Tum Konular</option>
-                    <option value="in_progress">Devam Edenler</option>
-                    <option value="completed">Tamamlananlar</option>
-                    <option value="not_started">Baslanmayanlar</option>
-                  </select>
+
+                  <div className="w-px h-full bg-surface-200 dark:bg-surface-700" />
+
+                  <div className="basis-[34%] min-w-0 h-full">
+                    <select
+                      value={topicCardFilter}
+                      onChange={(e) => setTopicCardFilter(e.target.value as 'all' | 'in_progress' | 'completed' | 'not_started')}
+                      className="w-full h-full px-3 bg-transparent border-0 text-sm text-surface-700 dark:text-surface-200 outline-none truncate"
+                    >
+                      <option value="all">Tum Konular</option>
+                      <option value="in_progress">Devam Edenler</option>
+                      <option value="completed">Tamamlananlar</option>
+                      <option value="not_started">Baslanmayanlar</option>
+                    </select>
+                  </div>
                 </div>
               </div>
 
@@ -6383,14 +6442,18 @@ export default function App() {
                   const topicProgress = getTopicProgress(sub.id);
                   const topicFavoriteCount = (favoriteQuestionIdsByTopic[sub.id] || []).length;
                   const topicSeenStats = seenQuestionStatsByTopic[sub.id] || [];
-                  const uniqueSolvedCount = persistSeenQuestionsToFirestore
-                    ? topicSeenStats.reduce((sum, stats) => (stats.answeredCount > 0 ? sum + 1 : sum), 0)
+                  const uniqueSolvedFromSeenStats = topicSeenStats.reduce((sum, stats) => (stats.answeredCount > 0 ? sum + 1 : sum), 0);
+                  const uniqueSolvedCount = uniqueSolvedFromSeenStats > 0
+                    ? uniqueSolvedFromSeenStats
                     : Math.min(questionCount, topicProgress.seenCount);
-                  const progressPercent = questionCount > 0 ? Math.min(100, Math.round((uniqueSolvedCount / questionCount) * 100)) : 0;
                   const attempted = topicProgress.correctCount + topicProgress.totalWrongAnswers;
+                  const totalAnsweredFromSeenStats = topicSeenStats.reduce((sum, stats) => sum + stats.answeredCount, 0);
+                  const totalAnsweredCount = totalAnsweredFromSeenStats > 0 ? totalAnsweredFromSeenStats : attempted;
+                  const completionPercent = questionCount > 0 ? Math.round((totalAnsweredCount / questionCount) * 100) : 0;
+                  const progressPercent = Math.min(100, completionPercent);
                   const accuracy = attempted > 0 ? Math.round((topicProgress.correctCount / attempted) * 100) : 0;
                   const hasTopicProgressStats =
-                    uniqueSolvedCount > 0 ||
+                    totalAnsweredCount > 0 ||
                     topicProgress.wrongCount > 0;
                   const wrongOrFavoriteCount = new Set([
                     ...(wrongQuestionIdsByTopic[sub.id] || []),
@@ -6407,6 +6470,8 @@ export default function App() {
                     questionCount,
                     topicProgress,
                     uniqueSolvedCount,
+                    totalAnsweredCount,
+                    completionPercent,
                     progressPercent,
                     accuracy,
                     topicFavoriteCount,
@@ -6425,39 +6490,48 @@ export default function App() {
                   return topicCard.status === topicCardFilter;
                 });
                 const totalQuestionCount = topicCards.reduce((sum, topicCard) => sum + topicCard.questionCount, 0);
-                const totalSolvedUniqueCount = topicCards.reduce((sum, topicCard) => sum + topicCard.uniqueSolvedCount, 0);
-                const categoryProgressPercent = totalQuestionCount > 0 ? Math.min(100, Math.round((totalSolvedUniqueCount / totalQuestionCount) * 100)) : 0;
+                const categoryTotalAnsweredCount = topicCards.reduce((sum, topicCard) => sum + topicCard.totalAnsweredCount, 0);
+                const categoryCompletionPercent = totalQuestionCount > 0 ? Math.round((categoryTotalAnsweredCount / totalQuestionCount) * 100) : 0;
+                const categoryProgressPercent = Math.min(100, categoryCompletionPercent);
 
                 return (
                   <>
-                    <div className="mb-3 rounded-2xl border border-brand-200/50 dark:border-brand-900/40 bg-gradient-to-r from-surface-900 via-surface-800 to-surface-900 p-4 md:p-5 shadow-card shrink-0 overflow-hidden relative">
+                    <div className="mb-3 w-[96%] mx-auto rounded-2xl border border-brand-200/50 dark:border-brand-900/40 bg-gradient-to-r from-surface-900 via-surface-800 to-surface-900 p-4 md:p-5 shadow-card shrink-0 overflow-hidden relative">
                       <div className="absolute inset-y-0 right-0 w-40 bg-gradient-to-l from-brand-500/15 to-transparent pointer-events-none" />
                       <div className="relative z-10">
-                        <div className="flex items-center justify-between gap-3 mb-2">
-                          <div className="flex items-center gap-2.5 min-w-0">
-                            <div className={`w-9 h-9 rounded-xl bg-gradient-to-br ${color.gradient} flex items-center justify-center text-white shadow-lg`}>
+                        <div className="flex items-center gap-3">
+                          <div className="flex items-center gap-2.5 min-w-0 basis-[50%]">
+                            <div className={`w-9 h-9 rounded-xl bg-gradient-to-br ${color.gradient} flex items-center justify-center text-white shadow-lg shrink-0`}>
                               <Icon name={activeCategory.iconName} className="w-4.5 h-4.5" />
                             </div>
-                            <div className="min-w-0">
-                              <h1 className="text-base md:text-lg font-black text-white truncate">{activeCategory.name}</h1>
-                              <p className="text-[11px] md:text-xs text-surface-300">
+                            <div className="min-w-0 flex flex-wrap items-center gap-x-2.5 gap-y-0.5">
+                              <h1 className="min-w-0 text-base md:text-lg font-black text-white truncate">{activeCategory.name}</h1>
+                              <p className="text-[10px] md:text-[11px] text-surface-300/90 whitespace-nowrap">
                                 {activeCategory.subCategories.length} konu - {totalQuestionCount} soru
                               </p>
                             </div>
                           </div>
-                          <span className="px-2 py-1 rounded-lg text-[11px] font-bold bg-brand-500/20 text-brand-200 border border-brand-400/30 whitespace-nowrap">
-                            %{categoryProgressPercent} tamamlandi
+
+                          <div className="w-px h-9 bg-brand-200/25 shrink-0" />
+
+                          <div className="flex-1 min-w-0">
+                            <div className="w-full h-2 rounded-full bg-surface-700/90 overflow-hidden">
+                              <div className="h-full bg-gradient-to-r from-brand-400 to-emerald-400 rounded-full transition-all duration-500" style={{ width: `${categoryProgressPercent}%` }} />
+                            </div>
+                          </div>
+
+                          <div className="w-px h-9 bg-brand-200/25 shrink-0" />
+
+                          <span className="shrink-0 text-sm md:text-base font-black text-brand-100 whitespace-nowrap">
+                            %{categoryCompletionPercent}
                           </span>
-                        </div>
-                        <div className="w-full h-2 rounded-full bg-surface-700/90 overflow-hidden">
-                          <div className="h-full bg-gradient-to-r from-brand-400 to-emerald-400 rounded-full transition-all duration-500" style={{ width: `${categoryProgressPercent}%` }} />
                         </div>
                       </div>
                     </div>
 
                     <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar pr-0.5 pb-1">
                       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3 md:gap-4">
-                        {filteredTopicCards.map(({ sub, questionCount, topicProgress, uniqueSolvedCount, progressPercent, accuracy, topicFavoriteCount, wrongOrFavoriteCount, hasTopicProgressStats, hasExternalSource, status }) => {
+                        {filteredTopicCards.map(({ sub, questionCount, topicProgress, uniqueSolvedCount, completionPercent, progressPercent, accuracy, topicFavoriteCount, wrongOrFavoriteCount, hasTopicProgressStats, hasExternalSource, status }) => {
                           const statusLabel =
                             status === 'completed'
                               ? 'Tamamlandi'
@@ -6485,9 +6559,9 @@ export default function App() {
                               key={sub.id}
                               className="group bg-white dark:bg-surface-800 rounded-2xl border border-surface-200 dark:border-surface-700 p-4 md:p-5 hover:border-brand-300 dark:hover:border-brand-700/60 transition-all duration-200 shadow-card dark:shadow-card-dark flex flex-col"
                             >
-                              <div className="flex items-start justify-between gap-3 mb-3">
-                                <div className="flex items-start gap-2.5 min-w-0 flex-1">
-                                  <div className={`w-10 h-10 rounded-xl bg-gradient-to-br ${color.gradient} text-white flex items-center justify-center shadow-md shrink-0`}>
+                              <div className="flex items-center justify-between gap-3 mb-3">
+                                <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                                  <div className={`w-9 h-9 rounded-xl bg-gradient-to-br ${color.gradient} text-white flex items-center justify-center shadow-md shrink-0`}>
                                     <Icon name={topicCardIconName} className="w-4.5 h-4.5" />
                                   </div>
                                   <div className="min-w-0">
@@ -6562,7 +6636,7 @@ export default function App() {
                                     </div>
                                     <div className="px-1.5 py-1.5 text-center">
                                       <p className="text-[9px] font-semibold uppercase tracking-[0.06em] text-surface-400">İlerleme</p>
-                                      <p className="text-[11px] font-black text-brand-600 dark:text-brand-300">%{progressPercent}</p>
+                                      <p className="text-[11px] font-black text-brand-600 dark:text-brand-300">%{completionPercent}</p>
                                     </div>
                                   </div>
                                 </div>
