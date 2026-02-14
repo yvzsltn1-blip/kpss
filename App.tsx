@@ -23,7 +23,7 @@ import {
   getDocs
 } from 'firebase/firestore';
 
-type ViewState = 'dashboard' | 'statistics' | 'quiz-setup' | 'quiz' | 'admin';
+type ViewState = 'dashboard' | 'statistics' | 'quiz-setup' | 'all-quiz-setup' | 'quiz' | 'admin';
 type QuizConfirmAction = 'exit' | 'finish';
 type TopicProgressStats = {
   seenCount: number;
@@ -77,6 +77,11 @@ type QuizStatusFilter = {
   wrong: boolean;
   favorite: boolean;
 };
+type QuizQuestionMeta = {
+  topicId: string;
+  trackingId: string;
+};
+type MixedQuizScope = { mode: 'all' } | { mode: 'category'; categoryId: string };
 
 // Kategori Renk Tanımları
 const CATEGORY_COLORS: Record<string, { bg: string; bgLight: string; bgDark: string; text: string; textDark: string; gradient: string; shadow: string; border: string; borderDark: string }> = {
@@ -122,6 +127,22 @@ const RESOLVED_RETENTION_MS = RESOLVED_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 const TOPIC_STATS_MIGRATION_KEY_PREFIX = 'kpsspro_topic_stats_migrated_v2_';
 const BLANK_STATS_CLEANUP_KEY_PREFIX = 'kpsspro_blank_stats_cleanup_v1_';
 const COMPLETED_QUIZ_COUNT_CLEANUP_KEY_PREFIX = 'kpsspro_completed_quiz_count_cleanup_v1_';
+const ALL_LESSONS_CATEGORY_ID = '__all_lessons__';
+const ALL_LESSONS_TOPIC_ID = '__all_topics__';
+const ALL_LESSONS_MAX_QUESTION_COUNT = 120;
+const CATEGORY_MIXED_TOPIC_ID_PREFIX = '__category_all_topics__';
+const ALL_LESSONS_CATEGORY: Category = {
+  id: ALL_LESSONS_CATEGORY_ID,
+  name: 'Tum Dersler',
+  iconName: 'Layers',
+  description: 'Tum derslerin tum konularindan karma sinav.',
+  subCategories: [{ id: ALL_LESSONS_TOPIC_ID, name: 'Tum Konular' }],
+};
+const getCategoryMixedTopicId = (categoryId: string): string => `${CATEGORY_MIXED_TOPIC_ID_PREFIX}_${categoryId}`;
+const getCategoryIdFromMixedTopicId = (topicId: string): string | null => {
+  const prefix = `${CATEGORY_MIXED_TOPIC_ID_PREFIX}_`;
+  return topicId.startsWith(prefix) ? topicId.slice(prefix.length) : null;
+};
 
 const STORAGE_KEYS = {
   theme: 'kpsspro_theme',
@@ -924,6 +945,10 @@ export default function App() {
   const [quizTagQuestionCounts, setQuizTagQuestionCounts] = useState<Record<string, number>>({});
   const [quizTagPickerSourceKey, setQuizTagPickerSourceKey] = useState('');
   const [quizTagPickerCountInput, setQuizTagPickerCountInput] = useState('');
+  const [quizQuestionMeta, setQuizQuestionMeta] = useState<QuizQuestionMeta[]>([]);
+  const [mixedQuizScope, setMixedQuizScope] = useState<MixedQuizScope>({ mode: 'all' });
+  const [allLessonsQuestionCount, setAllLessonsQuestionCount] = useState(20);
+  const [allLessonsQuestionInputValue, setAllLessonsQuestionInputValue] = useState('20');
 
   // --- SORULAR STATE (ARTIK BOŞ BAŞLIYOR) ---
   const [allQuestions, setAllQuestions] = useState<Record<string, Question[]>>({});
@@ -1011,11 +1036,13 @@ export default function App() {
   // Mobile Menu
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [mobileDashboardTab, setMobileDashboardTab] = useState<'stats' | 'categories'>('stats');
+  const [inlineNotice, setInlineNotice] = useState<{ message: string; tone: 'info' | 'warning' } | null>(null);
 
   // Timer Ref
   const timerRef = useRef<number | null>(null);
   // Auto-advance ref
   const autoAdvanceRef = useRef<number | null>(null);
+  const inlineNoticeTimerRef = useRef<number | null>(null);
   const questionJumpPickerRef = useRef<HTMLDivElement | null>(null);
   const categoriesRef = useRef<Category[]>(categories);
   const topicBloggerPagesRef = useRef<Record<string, string>>(topicBloggerPages);
@@ -1023,6 +1050,21 @@ export default function App() {
   const categoriesSeedAttemptedRef = useRef(false);
   const topicBloggerPagesSeedAttemptedRef = useRef(false);
   const deletedTopicIdsRef = useRef<string[]>(deletedTopicIds);
+
+  const showInlineNotice = (message: string, tone: 'info' | 'warning' = 'warning') => {
+    if (inlineNoticeTimerRef.current) clearTimeout(inlineNoticeTimerRef.current);
+    setInlineNotice({ message, tone });
+    inlineNoticeTimerRef.current = window.setTimeout(() => {
+      setInlineNotice(null);
+      inlineNoticeTimerRef.current = null;
+    }, 3600);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (inlineNoticeTimerRef.current) clearTimeout(inlineNoticeTimerRef.current);
+    };
+  }, []);
 
   const saveTopicConfigToFirestore = async (options: {
     pages?: Record<string, string>;
@@ -1130,6 +1172,34 @@ export default function App() {
 
     return next;
   }, [favoriteQuestionsById, allQuestions]);
+  const selectedMixedQuizCategory = useMemo<Category | null>(() => {
+    if (mixedQuizScope.mode !== 'category') return null;
+    return categories.find((cat) => cat.id === mixedQuizScope.categoryId) || null;
+  }, [categories, mixedQuizScope]);
+  const allLessonsQuestionPool = useMemo<Array<{ question: Question; topicId: string; trackingId: string }>>(() => {
+    const scopedCategories = mixedQuizScope.mode === 'category'
+      ? categories.filter((cat) => cat.id === mixedQuizScope.categoryId)
+      : categories;
+    return scopedCategories.flatMap((cat) => {
+      return cat.subCategories.flatMap((sub) => {
+        const topicQuestions = allQuestions[sub.id] || [];
+        return topicQuestions.map((question, index) => ({
+          question,
+          topicId: sub.id,
+          trackingId: getQuestionTrackingId(question, sub.id, index),
+        }));
+      });
+    });
+  }, [allQuestions, categories, mixedQuizScope]);
+  const allLessonsQuestionCountMax = Math.min(ALL_LESSONS_MAX_QUESTION_COUNT, allLessonsQuestionPool.length);
+  const topicNameById = useMemo<Record<string, string>>(() => {
+    return categories.reduce<Record<string, string>>((acc, cat) => {
+      cat.subCategories.forEach((sub) => {
+        acc[sub.id] = sub.name;
+      });
+      return acc;
+    }, {});
+  }, [categories]);
   
 
   // -- Effects --
@@ -1158,6 +1228,10 @@ export default function App() {
   useEffect(() => {
     setQuestionCountInputValue(String(Math.max(0, Math.floor(quizConfig.questionCount))));
   }, [quizConfig.questionCount]);
+
+  useEffect(() => {
+    setAllLessonsQuestionInputValue(String(Math.max(0, Math.floor(allLessonsQuestionCount))));
+  }, [allLessonsQuestionCount]);
 
   useEffect(() => {
     try {
@@ -2090,6 +2164,7 @@ export default function App() {
     setReportingQuestion(null);
     setReportNote('');
     setQuizConfirmAction(null);
+    setQuizQuestionMeta([]);
     setQuizState({
       currentQuestionIndex: 0,
       userAnswers: [],
@@ -2101,6 +2176,147 @@ export default function App() {
       totalTime: 0,
       isTimerActive: false,
     });
+  };
+
+  const getQuizQuestionMeta = (question: Question, questionIndex: number): QuizQuestionMeta | null => {
+    const meta = quizQuestionMeta[questionIndex];
+    if (meta?.topicId && meta?.trackingId) return meta;
+    if (!activeTopic) return null;
+    const fallbackTopicId = activeTopic.sub.id;
+    return {
+      topicId: fallbackTopicId,
+      trackingId: getQuestionTrackingId(question, fallbackTopicId, questionIndex),
+    };
+  };
+
+  const openAllLessonsQuizSetup = () => {
+    const totalQuestionCount = categories.reduce((sum, cat) => (
+      sum + cat.subCategories.reduce((topicSum, sub) => topicSum + ((allQuestions[sub.id] || []).length), 0)
+    ), 0);
+    setMixedQuizScope({ mode: 'all' });
+    const initialQuestionCount = Math.min(20, Math.min(ALL_LESSONS_MAX_QUESTION_COUNT, totalQuestionCount));
+    setActiveCategory(null);
+    setActiveTopic(null);
+    setAllLessonsQuestionCount(initialQuestionCount);
+    setAllLessonsQuestionInputValue(String(initialQuestionCount));
+    setCurrentView('all-quiz-setup');
+    setIsMobileMenuOpen(false);
+  };
+
+  const openCategoryMixedQuizSetup = (category: Category) => {
+    const categoryQuestionCount = category.subCategories.reduce((sum, sub) => sum + ((allQuestions[sub.id] || []).length), 0);
+    setMixedQuizScope({ mode: 'category', categoryId: category.id });
+    const initialQuestionCount = Math.min(20, Math.min(ALL_LESSONS_MAX_QUESTION_COUNT, categoryQuestionCount));
+    setActiveCategory(category);
+    setActiveTopic(null);
+    setAllLessonsQuestionCount(initialQuestionCount);
+    setAllLessonsQuestionInputValue(String(initialQuestionCount));
+    setCurrentView('all-quiz-setup');
+    setIsMobileMenuOpen(false);
+  };
+
+  const closeMixedQuizSetup = () => {
+    if (mixedQuizScope.mode === 'category') {
+      const targetCategory = categories.find((cat) => cat.id === mixedQuizScope.categoryId) || null;
+      setActiveCategory(targetCategory);
+      setCurrentView('dashboard');
+      setMobileDashboardTab('categories');
+      return;
+    }
+    setCurrentView('dashboard');
+    setActiveCategory(null);
+    setMobileDashboardTab('categories');
+  };
+
+  const startAllLessonsQuiz = () => {
+    if (allLessonsQuestionPool.length === 0) {
+      showInlineNotice('Soru havuzunda soru bulunamadi.');
+      return;
+    }
+
+    const safeCount = Math.min(
+      allLessonsQuestionCountMax,
+      Math.max(0, Math.floor(allLessonsQuestionCount))
+    );
+    if (safeCount === 0) {
+      showInlineNotice('Lutfen en az 1 soru secin.');
+      return;
+    }
+
+    const shuffledEntries = [...allLessonsQuestionPool];
+    for (let i = shuffledEntries.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffledEntries[i], shuffledEntries[j]] = [shuffledEntries[j], shuffledEntries[i]];
+    }
+
+    const selectedEntries = shuffledEntries.slice(0, safeCount);
+    const selectedQuestionsWithShuffledOptions = selectedEntries.map((entry) => shuffleOptionsWithAnswer(entry.question));
+    const nextQuizQuestionMeta: QuizQuestionMeta[] = selectedEntries.map((entry) => ({
+      topicId: entry.topicId,
+      trackingId: entry.trackingId,
+    }));
+    const durationSeconds = getAutoDurationForQuestionCount(safeCount);
+    const nextActiveTopic = (() => {
+      if (mixedQuizScope.mode === 'category') {
+        const targetCategory = categories.find((cat) => cat.id === mixedQuizScope.categoryId);
+        if (!targetCategory) return null;
+        return {
+          cat: targetCategory,
+          sub: {
+            id: getCategoryMixedTopicId(targetCategory.id),
+            name: 'Tum Konular',
+          },
+        };
+      }
+      return {
+        cat: ALL_LESSONS_CATEGORY,
+        sub: ALL_LESSONS_CATEGORY.subCategories[0],
+      };
+    })();
+    if (!nextActiveTopic) {
+      showInlineNotice('Secili ders bulunamadi.');
+      return;
+    }
+
+    if (timerRef.current) clearInterval(timerRef.current);
+    if (autoAdvanceRef.current) clearTimeout(autoAdvanceRef.current);
+    setIsQuestionJumpModalOpen(false);
+    setReportingQuestion(null);
+    setReportNote('');
+    setQuizConfirmAction(null);
+    setQuizQuestionMeta(nextQuizQuestionMeta);
+    setActiveTopic(nextActiveTopic);
+    setQuizStatusFilter({ wrong: false, favorite: false });
+    setQuizTagQuestionCounts({});
+    setQuizTagPickerSourceKey('');
+    setQuizTagPickerCountInput('');
+    setQuizConfig({
+      questionCount: safeCount,
+      durationSeconds,
+    });
+    setCurrentView('quiz');
+    setIsMobileMenuOpen(false);
+    setQuizState((prev) => ({
+      ...prev,
+      loading: true,
+      error: null,
+      questions: [],
+      userAnswers: [],
+      showResults: false,
+      currentQuestionIndex: 0,
+      timeLeft: durationSeconds,
+      totalTime: durationSeconds,
+      isTimerActive: true,
+    }));
+
+    setTimeout(() => {
+      setQuizState((prev) => ({
+        ...prev,
+        questions: selectedQuestionsWithShuffledOptions,
+        userAnswers: new Array(selectedQuestionsWithShuffledOptions.length).fill(null),
+        loading: false,
+      }));
+    }, 600);
   };
 
   const openQuizSetup = (category: Category, sub: SubCategory, preset: 'all' | 'wrong' | 'favorite' | 'wrong_favorite' = 'all') => {
@@ -2131,11 +2347,133 @@ export default function App() {
     setQuizTagQuestionCounts({});
     setQuizTagPickerSourceKey('');
     setQuizTagPickerCountInput('');
+    setQuizQuestionMeta([]);
     setQuizConfig({
       questionCount: initialQuestionCount,
       durationSeconds: getAutoDurationForQuestionCount(initialQuestionCount),
     });
     setCurrentView('quiz-setup');
+  };
+
+  const startPresetQuizFromTopic = (category: Category, sub: SubCategory, preset: 'wrong' | 'favorite') => {
+    const topicQuestionEntries = (allQuestions[sub.id] || []).map((question, index) => ({
+      question,
+      trackingId: getQuestionTrackingId(question, sub.id, index),
+    }));
+    const wrongSet = new Set(wrongQuestionIdsByTopic[sub.id] || []);
+    const favoriteSet = new Set(favoriteQuestionIdsByTopic[sub.id] || []);
+    const nextStatusFilter = preset === 'wrong'
+      ? { wrong: true, favorite: false }
+      : { wrong: false, favorite: true };
+
+    const filteredPool = topicQuestionEntries.filter((entry) => {
+      const includeWrong = nextStatusFilter.wrong && wrongSet.has(entry.trackingId);
+      const includeFavorite = nextStatusFilter.favorite && favoriteSet.has(entry.trackingId);
+      return includeWrong || includeFavorite;
+    });
+
+    if (filteredPool.length === 0) {
+      showInlineNotice(
+        preset === 'wrong'
+          ? 'Secili konuda sinava baslamak icin yanlis soru bulunamadi.'
+          : 'Secili konuda sinava baslamak icin favori soru bulunamadi.'
+      );
+      return;
+    }
+
+    for (let i = filteredPool.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [filteredPool[i], filteredPool[j]] = [filteredPool[j], filteredPool[i]];
+    }
+
+    const questionCount = Math.min(10, filteredPool.length);
+    const durationSeconds = getAutoDurationForQuestionCount(questionCount);
+    const selectedEntries = filteredPool
+      .slice(0, questionCount)
+      .map((entry) => entry);
+    const selectedQuestionsWithShuffledOptions = selectedEntries
+      .map((entry) => shuffleOptionsWithAnswer(entry.question));
+    const nextQuizQuestionMeta: QuizQuestionMeta[] = selectedEntries.map((entry) => ({
+      topicId: sub.id,
+      trackingId: entry.trackingId,
+    }));
+
+    if (timerRef.current) clearInterval(timerRef.current);
+    if (autoAdvanceRef.current) clearTimeout(autoAdvanceRef.current);
+    setIsQuestionJumpModalOpen(false);
+    setReportingQuestion(null);
+    setReportNote('');
+    setQuizConfirmAction(null);
+    setQuizQuestionMeta(nextQuizQuestionMeta);
+    setActiveTopic({ cat: category, sub });
+    setQuizStatusFilter(nextStatusFilter);
+    setQuizTagQuestionCounts({});
+    setQuizTagPickerSourceKey('');
+    setQuizTagPickerCountInput('');
+    setQuizConfig({
+      questionCount,
+      durationSeconds,
+    });
+    setCurrentView('quiz');
+    setIsMobileMenuOpen(false);
+    setQuizState((prev) => ({
+      ...prev,
+      loading: true,
+      error: null,
+      questions: [],
+      userAnswers: [],
+      showResults: false,
+      currentQuestionIndex: 0,
+      timeLeft: durationSeconds,
+      totalTime: durationSeconds,
+      isTimerActive: true,
+    }));
+
+    setTimeout(() => {
+      setQuizState((prev) => ({
+        ...prev,
+        questions: selectedQuestionsWithShuffledOptions,
+        userAnswers: new Array(selectedQuestionsWithShuffledOptions.length).fill(null),
+        loading: false,
+      }));
+    }, 600);
+  };
+
+  const openHomeStatsPresetQuiz = (preset: 'wrong' | 'favorite') => {
+    const scopedCategories = homeStatsCategoryFilter === 'all'
+      ? categories
+      : categories.filter((cat) => cat.id === homeStatsCategoryFilter);
+
+    for (const category of scopedCategories) {
+      for (const sub of category.subCategories) {
+        const topicQuestions = allQuestions[sub.id] || [];
+        if (topicQuestions.length === 0) continue;
+
+        const trackingIdPool = new Set(
+          preset === 'wrong'
+            ? (wrongQuestionIdsByTopic[sub.id] || [])
+            : (favoriteQuestionIdsByTopic[sub.id] || [])
+        );
+
+        if (trackingIdPool.size === 0) continue;
+
+        const matchedCount = topicQuestions.reduce((count, question, index) => {
+          const trackingId = getQuestionTrackingId(question, sub.id, index);
+          return trackingIdPool.has(trackingId) ? count + 1 : count;
+        }, 0);
+
+        if (matchedCount > 0) {
+          startPresetQuizFromTopic(category, sub, preset);
+          return;
+        }
+      }
+    }
+
+    showInlineNotice(
+      preset === 'wrong'
+        ? 'Secili kapsamda sinava baslamak icin yanlis soru bulunamadi.'
+        : 'Secili kapsamda sinava baslamak icin favori soru bulunamadi.'
+    );
   };
 
   const handleStartQuiz = () => {
@@ -2145,11 +2483,14 @@ export default function App() {
     const wrongSet = new Set(wrongQuestionIdsByTopic[topicId] || []);
     const favoriteSet = new Set(favoriteQuestionIdsByTopic[topicId] || []);
     const isStatusFilterActive = quizStatusFilter.wrong || quizStatusFilter.favorite;
-    const topicQuestionsPool = (allQuestions[topicId] || []).filter((question, index) => {
+    const topicQuestionEntries = (allQuestions[topicId] || []).map((question, index) => ({
+      question,
+      trackingId: getQuestionTrackingId(question, topicId, index),
+    }));
+    const topicQuestionsPool = topicQuestionEntries.filter((entry) => {
       if (!isStatusFilterActive) return true;
-      const questionTrackingId = getQuestionTrackingId(question, topicId, index);
-      const includeWrong = quizStatusFilter.wrong && wrongSet.has(questionTrackingId);
-      const includeFavorite = quizStatusFilter.favorite && favoriteSet.has(questionTrackingId);
+      const includeWrong = quizStatusFilter.wrong && wrongSet.has(entry.trackingId);
+      const includeFavorite = quizStatusFilter.favorite && favoriteSet.has(entry.trackingId);
       return includeWrong || includeFavorite;
     });
     const selectedTagEntries = Object.keys(quizTagQuestionCounts)
@@ -2159,12 +2500,12 @@ export default function App() {
       }))
       .filter((entry) => entry.count > 0);
 
-    let selectedQuestions: Question[] = [];
+    let selectedEntries: Array<{ question: Question; trackingId: string }> = [];
     if (selectedTagEntries.length > 0) {
-      const tagBuckets = topicQuestionsPool.reduce<Record<string, Question[]>>((acc, question) => {
-        const sourceKey = getQuestionSourceKey(question);
+      const tagBuckets = topicQuestionsPool.reduce<Record<string, Array<{ question: Question; trackingId: string }>>>((acc, entry) => {
+        const sourceKey = getQuestionSourceKey(entry.question);
         if (!acc[sourceKey]) acc[sourceKey] = [];
-        acc[sourceKey].push(question);
+        acc[sourceKey].push(entry);
         return acc;
       }, {});
 
@@ -2174,23 +2515,28 @@ export default function App() {
           const j = Math.floor(Math.random() * (i + 1));
           [tagQuestions[i], tagQuestions[j]] = [tagQuestions[j], tagQuestions[i]];
         }
-        selectedQuestions.push(...tagQuestions.slice(0, Math.min(count, tagQuestions.length)));
+        selectedEntries.push(...tagQuestions.slice(0, Math.min(count, tagQuestions.length)));
       });
 
-      for (let i = selectedQuestions.length - 1; i > 0; i--) {
+      for (let i = selectedEntries.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
-        [selectedQuestions[i], selectedQuestions[j]] = [selectedQuestions[j], selectedQuestions[i]];
+        [selectedEntries[i], selectedEntries[j]] = [selectedEntries[j], selectedEntries[i]];
       }
     } else {
       for (let i = topicQuestionsPool.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [topicQuestionsPool[i], topicQuestionsPool[j]] = [topicQuestionsPool[j], topicQuestionsPool[i]];
       }
-      selectedQuestions = topicQuestionsPool.slice(0, quizConfig.questionCount);
+      selectedEntries = topicQuestionsPool.slice(0, quizConfig.questionCount);
     }
 
-    const selectedQuestionsWithShuffledOptions = selectedQuestions.map((question) => shuffleOptionsWithAnswer(question));
+    const selectedQuestionsWithShuffledOptions = selectedEntries.map((entry) => shuffleOptionsWithAnswer(entry.question));
+    const nextQuizQuestionMeta: QuizQuestionMeta[] = selectedEntries.map((entry) => ({
+      topicId,
+      trackingId: entry.trackingId,
+    }));
 
+    setQuizQuestionMeta(nextQuizQuestionMeta);
     setCurrentView('quiz');
     setQuizState(prev => ({
       ...prev,
@@ -2284,8 +2630,10 @@ export default function App() {
 
   const toggleFavoriteQuestion = async (question: Question, questionIndex: number): Promise<void> => {
     if (!user?.uid || !activeTopic) return;
-    const topicId = activeTopic.sub.id;
-    const questionTrackingId = getQuestionTrackingId(question, topicId, questionIndex);
+    const questionMeta = getQuizQuestionMeta(question, questionIndex);
+    if (!questionMeta) return;
+    const topicId = questionMeta.topicId;
+    const questionTrackingId = questionMeta.trackingId;
     const alreadyFavorite = Boolean(favoriteQuestionsById[questionTrackingId]);
     const favoriteRef = doc(db, 'users', user.uid, 'favoriteQuestions', getFavoriteQuestionDocId(questionTrackingId));
 
@@ -2326,32 +2674,35 @@ export default function App() {
     if (autoAdvanceRef.current) clearTimeout(autoAdvanceRef.current);
 
     if (activeTopic && quizState.questions.length > 0 && user?.uid) {
-      const topicId = activeTopic.sub.id;
       const currentAnswers = quizState.userAnswers;
       const currentQuestions = quizState.questions;
       const now = Date.now();
       const nextWrongQuestionStatsById = { ...wrongQuestionStatsById };
       const nextSeenQuestionsById = { ...seenQuestionsById };
+      const nextTopicProgressStats = { ...topicProgressStats };
       const changedQuestionIds = new Set<string>();
       const changedSeenQuestionIds = new Set<string>();
-      const answeredQuestionCount = currentAnswers.reduce<number>((sum, answer) => (
-        answer === null || answer === undefined ? sum : sum + 1
-      ), 0);
-      const topicQuestionCount = allQuestions[topicId]?.length || 0;
-      const prevTopicStats = topicProgressStats[topicId] || EMPTY_TOPIC_PROGRESS;
-      const nextTopicStats: TopicProgressStats = {
-        ...prevTopicStats,
-        seenCount: Math.min(topicQuestionCount, prevTopicStats.seenCount + answeredQuestionCount),
-        correctCount: prevTopicStats.correctCount,
-        wrongCount: prevTopicStats.wrongCount,
-        totalWrongAnswers: prevTopicStats.totalWrongAnswers,
-        lastPlayedAt: now,
-      };
+      const answeredQuestionCountByTopic: Record<string, number> = {};
+      const touchedTopicIds = new Set<string>();
 
       currentQuestions.forEach((question, index) => {
-        const questionTrackingId = getQuestionTrackingId(question, topicId, index);
+        const questionMeta = getQuizQuestionMeta(question, index);
+        if (!questionMeta) return;
+        const topicId = questionMeta.topicId;
+        const questionTrackingId = questionMeta.trackingId;
+        touchedTopicIds.add(topicId);
         const prevWrongStats = nextWrongQuestionStatsById[questionTrackingId];
         const answer = currentAnswers[index];
+        const prevTopicStats = nextTopicProgressStats[topicId] || EMPTY_TOPIC_PROGRESS;
+        const topicStats: TopicProgressStats = nextTopicProgressStats[topicId]
+          ? { ...nextTopicProgressStats[topicId] }
+          : { ...prevTopicStats };
+        topicStats.lastPlayedAt = now;
+        nextTopicProgressStats[topicId] = topicStats;
+
+        if (answer !== null && answer !== undefined) {
+          answeredQuestionCountByTopic[topicId] = (answeredQuestionCountByTopic[topicId] || 0) + 1;
+        }
 
         const prevSeenStats = nextSeenQuestionsById[questionTrackingId];
         nextSeenQuestionsById[questionTrackingId] = {
@@ -2374,7 +2725,7 @@ export default function App() {
         }
 
         if (answer === question.correctOptionIndex) {
-          nextTopicStats.correctCount += 1;
+          topicStats.correctCount += 1;
           if (prevWrongStats && prevWrongStats.status === 'active_wrong') {
             const nextRecoveryStreak = prevWrongStats.recoveryStreak + 1;
             nextWrongQuestionStatsById[questionTrackingId] = {
@@ -2388,7 +2739,7 @@ export default function App() {
           return;
         }
 
-        nextTopicStats.totalWrongAnswers += 1;
+        topicStats.totalWrongAnswers += 1;
         nextWrongQuestionStatsById[questionTrackingId] = {
           questionTrackingId,
           topicId,
@@ -2401,31 +2752,42 @@ export default function App() {
         changedQuestionIds.add(questionTrackingId);
       });
 
-      const activeWrongCount = (Object.values(nextWrongQuestionStatsById) as WrongQuestionStats[]).reduce<number>((sum, stats) => {
-        return stats.topicId === topicId && stats.status === 'active_wrong' ? sum + 1 : sum;
-      }, 0);
-      nextTopicStats.wrongCount = activeWrongCount;
+      touchedTopicIds.forEach((topicId) => {
+        const prevTopicStats = topicProgressStats[topicId] || EMPTY_TOPIC_PROGRESS;
+        const topicStats: TopicProgressStats = nextTopicProgressStats[topicId]
+          ? { ...nextTopicProgressStats[topicId] }
+          : { ...prevTopicStats };
+        const topicQuestionCount = allQuestions[topicId]?.length || 0;
+        const answeredQuestionCount = answeredQuestionCountByTopic[topicId] || 0;
+        topicStats.seenCount = Math.min(topicQuestionCount, topicStats.seenCount + answeredQuestionCount);
+        topicStats.lastPlayedAt = now;
+        topicStats.wrongCount = (Object.values(nextWrongQuestionStatsById) as WrongQuestionStats[]).reduce<number>((sum, stats) => {
+          return stats.topicId === topicId && stats.status === 'active_wrong' ? sum + 1 : sum;
+        }, 0);
+        nextTopicProgressStats[topicId] = topicStats;
+      });
 
-      setTopicProgressStats((prev) => ({
-        ...prev,
-        [topicId]: nextTopicStats,
-      }));
+      setTopicProgressStats(nextTopicProgressStats);
       setWrongQuestionStatsById(nextWrongQuestionStatsById);
       setSeenQuestionsById(nextSeenQuestionsById);
 
       const persistTopicAndWrongStats = async () => {
         try {
           const batch = writeBatch(db);
-          batch.set(
-            doc(db, 'users', user.uid, 'topicStats', topicId),
-            {
-              ...nextTopicStats,
-              completedQuizCount: deleteField(),
-              blankCount: deleteField(),
-              totalBlankAnswers: deleteField(),
-            },
-            { merge: true }
-          );
+          touchedTopicIds.forEach((topicId) => {
+            const topicStats = nextTopicProgressStats[topicId];
+            if (!topicStats) return;
+            batch.set(
+              doc(db, 'users', user.uid, 'topicStats', topicId),
+              {
+                ...topicStats,
+                completedQuizCount: deleteField(),
+                blankCount: deleteField(),
+                totalBlankAnswers: deleteField(),
+              },
+              { merge: true }
+            );
+          });
 
           changedQuestionIds.forEach((questionTrackingId) => {
             const wrongStats = nextWrongQuestionStatsById[questionTrackingId];
@@ -3454,8 +3816,8 @@ export default function App() {
     const uniqueSolvedCount = uniqueSolvedFromSeenStats > 0 ? uniqueSolvedFromSeenStats : progressStats.seenCount;
     const totalAnsweredCount = totalAnsweredFromSeenStats > 0 ? totalAnsweredFromSeenStats : (progressStats.correctCount + totalWrongAnswers);
 
-    const filteredFavoriteCount = (Object.values(favoriteQuestionsById) as FavoriteQuestionRecord[]).reduce((sum, favoriteRecord) => (
-      includeTopic(favoriteRecord.topicId) ? sum + 1 : sum
+    const filteredFavoriteCount = Object.entries(favoriteQuestionIdsByTopic as Record<string, string[]>).reduce((sum, [topicId, questionIds]) => (
+      includeTopic(topicId) ? sum + questionIds.length : sum
     ), 0);
 
     const answeredAttemptCount = progressStats.correctCount + totalWrongAnswers;
@@ -3471,7 +3833,7 @@ export default function App() {
       totalWrongAnswers,
       accuracyPercent,
     };
-  }, [allSeenQuestionStats, favoriteQuestionsById, homeStatsTopicIds, topicProgressStats]);
+  }, [allSeenQuestionStats, favoriteQuestionIdsByTopic, homeStatsTopicIds, topicProgressStats]);
   const seenQuestionStatsByTopic = useMemo<Record<string, SeenQuestionStats[]>>(() => {
     const next: Record<string, SeenQuestionStats[]> = {};
     allSeenQuestionStats.forEach((stats) => {
@@ -3837,7 +4199,124 @@ export default function App() {
     );
   }
 
-  // 2. QUIZ SETUP VIEW
+  // 2. ALL LESSONS QUIZ SETUP VIEW
+  if (currentView === 'all-quiz-setup') {
+    const mixedQuizScopeLabel = mixedQuizScope.mode === 'category'
+      ? (selectedMixedQuizCategory?.name || 'Secili Ders')
+      : 'Tum Dersler';
+    const mixedQuizSetupTitle = mixedQuizScope.mode === 'category'
+      ? `${mixedQuizScopeLabel} Karma Sinav`
+      : 'Tum Dersler Karma Sinav';
+    const mixedQuizSetupDescription = mixedQuizScope.mode === 'category'
+      ? `${mixedQuizScopeLabel} dersinin tum konularindan sorular rastgele secilir.`
+      : 'Tum ders ve tum konulardan sorular rastgele secilir.';
+    const applyAllLessonsQuestionCount = (nextRawQuestionCount: number) => {
+      const normalizedQuestionCount = Math.min(
+        Math.max(0, Math.floor(Number.isFinite(nextRawQuestionCount) ? nextRawQuestionCount : 0)),
+        Math.max(0, allLessonsQuestionCountMax)
+      );
+      setAllLessonsQuestionCount(normalizedQuestionCount);
+    };
+
+    return (
+      <div className="min-h-screen bg-surface-50 dark:bg-surface-900 flex items-start justify-center p-3 sm:p-4 md:py-8">
+        <div className="w-full max-w-lg animate-fade-in-scale">
+          <button
+            onClick={closeMixedQuizSetup}
+            className="flex items-center gap-2 text-surface-400 hover:text-surface-700 dark:hover:text-white transition-colors mb-4 md:mb-6 font-medium text-xs md:text-sm"
+          >
+            <Icon name="ArrowLeft" className="w-4 h-4" />
+            Geri Don
+          </button>
+
+          <div className="bg-white dark:bg-surface-800 rounded-2xl md:rounded-3xl shadow-card dark:shadow-card-dark p-4 sm:p-5 md:p-9 border border-surface-100 dark:border-surface-700">
+            <div className="text-center mb-5 md:mb-8">
+              <div className="w-12 h-12 md:w-16 md:h-16 bg-cyan-50 dark:bg-cyan-900/20 rounded-xl md:rounded-2xl mx-auto flex items-center justify-center mb-3 md:mb-5 text-cyan-600 dark:text-cyan-300">
+                <Icon name="Layers" className="w-6 h-6 md:w-8 md:h-8" />
+              </div>
+              <h2 className="text-xl md:text-2xl font-extrabold text-surface-800 dark:text-white mb-1">{mixedQuizSetupTitle}</h2>
+              <p className="text-surface-400 text-xs md:text-sm">
+                {mixedQuizSetupDescription}
+              </p>
+            </div>
+
+            <div className="space-y-4 md:space-y-6">
+              <div className="bg-surface-50 dark:bg-surface-900/50 p-3.5 md:p-5 rounded-xl md:rounded-2xl border border-surface-100 dark:border-surface-700/50">
+                <div className="flex justify-between items-center mb-3">
+                  <label className="font-bold text-surface-700 dark:text-surface-200 text-sm flex items-center gap-2">
+                    <Icon name="Hash" className="w-4 h-4 text-surface-400" />
+                    Soru Sayisi
+                  </label>
+                  <span className="text-cyan-700 dark:text-cyan-300 font-bold bg-cyan-50 dark:bg-cyan-900/30 px-2.5 py-0.5 rounded-full text-xs">
+                    Max: {allLessonsQuestionCountMax} / {ALL_LESSONS_MAX_QUESTION_COUNT}
+                  </span>
+                </div>
+                <div className="flex items-center gap-4">
+                  <input
+                    type="range"
+                    min="0"
+                    max={allLessonsQuestionCountMax}
+                    value={allLessonsQuestionCount}
+                    onChange={(e) => {
+                      const nextQuestionCount = parseInt(e.target.value, 10) || 0;
+                      applyAllLessonsQuestionCount(nextQuestionCount);
+                    }}
+                    disabled={allLessonsQuestionCountMax === 0}
+                    className="w-full h-2 bg-surface-200 dark:bg-surface-700 rounded-lg cursor-pointer"
+                  />
+                  <input
+                    type="number"
+                    min={0}
+                    max={allLessonsQuestionCountMax}
+                    value={allLessonsQuestionInputValue}
+                    onFocus={() => {
+                      setAllLessonsQuestionInputValue('');
+                      applyAllLessonsQuestionCount(0);
+                    }}
+                    onChange={(e) => {
+                      const sanitized = e.target.value.replace(/[^\d]/g, '');
+                      setAllLessonsQuestionInputValue(sanitized);
+                      if (sanitized === '') {
+                        applyAllLessonsQuestionCount(0);
+                        return;
+                      }
+                      applyAllLessonsQuestionCount(parseInt(sanitized, 10) || 0);
+                    }}
+                    onBlur={() => {
+                      if (allLessonsQuestionInputValue.trim() !== '') return;
+                      setAllLessonsQuestionInputValue('0');
+                    }}
+                    disabled={allLessonsQuestionCountMax === 0}
+                    className="w-16 h-10 bg-white dark:bg-surface-800 border border-surface-200 dark:border-surface-600 rounded-xl font-extrabold text-lg text-surface-800 dark:text-white text-center outline-none focus:border-brand-500 disabled:opacity-50"
+                  />
+                </div>
+                {allLessonsQuestionCountMax === 0 && <p className="text-red-500 text-xs mt-2 font-medium">Soru havuzunda soru bulunmuyor.</p>}
+              </div>
+            </div>
+
+            <div className="flex gap-2.5 md:gap-3 mt-6 md:mt-8">
+              <button
+                onClick={closeMixedQuizSetup}
+                className="flex-1 py-3.5 rounded-xl font-bold text-sm text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-700/50 transition"
+              >
+                Vazgec
+              </button>
+              <button
+                onClick={startAllLessonsQuiz}
+                disabled={allLessonsQuestionCountMax === 0 || allLessonsQuestionCount === 0}
+                className="flex-[2] py-3.5 rounded-xl bg-gradient-to-r from-cyan-500 via-blue-600 to-indigo-600 text-white font-bold text-sm hover:opacity-90 shadow-lg shadow-cyan-600/30 transition transform hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-40 disabled:cursor-not-allowed disabled:transform-none flex items-center justify-center gap-2"
+              >
+                <Icon name="Play" className="w-4 h-4" />
+                Sinavi Baslat ({allLessonsQuestionCount})
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // 3. QUIZ SETUP VIEW
   if (currentView === 'quiz-setup' && activeTopic) {
     const allSetupTopicQuestions = allQuestions[activeTopic.sub.id] || [];
     const wrongQuestionIdSet = new Set(wrongQuestionIdsByTopic[activeTopic.sub.id] || []);
@@ -4411,9 +4890,13 @@ export default function App() {
       : quizSize === 1
         ? 'text-base leading-7'
         : 'text-lg leading-8';
-    const currentQuestionTrackingId = currentQuestion
-      ? getQuestionTrackingId(currentQuestion, activeTopic.sub.id, quizState.currentQuestionIndex)
+    const currentQuestionMeta = currentQuestion
+      ? getQuizQuestionMeta(currentQuestion, quizState.currentQuestionIndex)
       : null;
+    const currentQuestionTrackingId = currentQuestionMeta?.trackingId || null;
+    const currentQuestionTopicName = currentQuestionMeta?.topicId
+      ? (topicNameById[currentQuestionMeta.topicId] || activeTopic.sub.name)
+      : activeTopic.sub.name;
     const isCurrentQuestionFavorite = currentQuestionTrackingId
       ? Boolean(favoriteQuestionsById[currentQuestionTrackingId])
       : false;
@@ -4635,8 +5118,11 @@ export default function App() {
                       }`}>
                         {quizState.currentQuestionIndex + 1}
                       </div>
-                      <div className="h-11 min-w-0 px-3 border-l border-surface-200/85 dark:border-surface-700/70 flex items-center">
-                        <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-200 leading-[1.05] overflow-hidden [display:-webkit-box] [-webkit-line-clamp:2] [-webkit-box-orient:vertical]">
+                      <div className="h-11 min-w-0 px-3 border-l border-surface-200/85 dark:border-surface-700/70 flex flex-col justify-center gap-[1px] overflow-hidden">
+                        <span className="text-[10px] font-bold text-slate-700 dark:text-slate-100 leading-[1.05] truncate">
+                          {currentQuestionTopicName}
+                        </span>
+                        <span className="text-[9px] font-medium text-slate-500 dark:text-slate-300 leading-[1.05] truncate">
                           {currentQuestion.sourceTag || 'Kaynak yok'}
                         </span>
                       </div>
@@ -4925,7 +5411,21 @@ export default function App() {
                       Ana Menü
                     </button>
                     <button
-                      onClick={() => openQuizSetup(activeTopic.cat, activeTopic.sub)}
+                      onClick={() => {
+                        if (activeTopic.sub.id === ALL_LESSONS_TOPIC_ID) {
+                          openAllLessonsQuizSetup();
+                          return;
+                        }
+                        const mixedCategoryId = getCategoryIdFromMixedTopicId(activeTopic.sub.id);
+                        if (mixedCategoryId) {
+                          const mixedCategory = categories.find((cat) => cat.id === mixedCategoryId);
+                          if (mixedCategory) {
+                            openCategoryMixedQuizSetup(mixedCategory);
+                            return;
+                          }
+                        }
+                        openQuizSetup(activeTopic.cat, activeTopic.sub);
+                      }}
                       className={`flex-1 py-3 rounded-xl bg-gradient-to-r ${catColor.gradient} text-white font-bold text-sm hover:opacity-90 shadow-lg ${catColor.shadow} transition flex items-center justify-center gap-2`}
                     >
                       <Icon name="RotateCcw" className="w-3.5 h-3.5" />
@@ -4941,7 +5441,7 @@ export default function App() {
                     const userAnswer = quizState.userAnswers[idx];
                     const isCorrect = userAnswer === q.correctOptionIndex;
                     const isUnanswered = userAnswer === null;
-                    const questionTrackingId = getQuestionTrackingId(q, activeTopic.sub.id, idx);
+                    const questionTrackingId = getQuizQuestionMeta(q, idx)?.trackingId || null;
                     const isFavorite = Boolean(favoriteQuestionsById[questionTrackingId]);
 
                     return (
@@ -5326,6 +5826,26 @@ export default function App() {
             <div className="pt-3 pb-1 px-4">
               <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Dersler</span>
             </div>
+
+            <button
+              onClick={() => { openAllLessonsQuizSetup(); setIsMobileMenuOpen(false); }}
+              className={`w-full flex items-center justify-between gap-3 px-4 py-2.5 rounded-xl text-sm font-medium transition-all border
+                ${currentView === 'all-quiz-setup'
+                  ? (isDarkMode
+                      ? 'border-cyan-400/55 bg-cyan-500/10 text-cyan-100 shadow-[0_0_16px_rgba(34,211,238,0.25)]'
+                      : 'border-cyan-200 bg-cyan-50 text-cyan-700 shadow-[0_8px_16px_rgba(34,211,238,0.14)]')
+                  : (isDarkMode
+                      ? 'border-slate-500/20 text-slate-300 hover:border-slate-400/35 hover:bg-slate-900/35 hover:text-slate-100'
+                      : 'border-slate-200 text-slate-700 hover:border-slate-300 hover:bg-white/80 hover:text-slate-900')
+                }
+              `}
+            >
+              <span className="flex items-center gap-3">
+                <div className="w-2 h-2 rounded-full bg-gradient-to-r from-cyan-500 to-indigo-600"></div>
+                Tum Dersler
+              </span>
+              <span className="w-2 h-2 rounded-full bg-gradient-to-r from-cyan-500 to-indigo-600 shadow-[0_0_10px_rgba(255,255,255,0.45)]" />
+            </button>
 
             {categories.map(cat => {
               const color = getCatColor(cat.id);
@@ -5931,8 +6451,12 @@ export default function App() {
               <section className="kpss-neon-panel rounded-2xl p-3 md:p-4 shrink-0">
                 <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3 md:items-center mb-3">
                   <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-300">Genel İstatistik</p>
-                    <p className="text-lg md:text-xl font-black text-slate-900 dark:text-white">{statisticsScopeLabel}</p>
+                    <h2 className="flex items-end gap-2 md:gap-3 whitespace-nowrap">
+                      <span className="text-lg md:text-xl font-black text-slate-900 dark:text-white">{statisticsScopeLabel}</span>
+                      <span className="text-[10px] md:text-[11px] font-medium uppercase tracking-[0.08em] text-slate-500 dark:text-slate-300 pb-0.5">
+                        Genel İstatistikler
+                      </span>
+                    </h2>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
                     <div className="min-w-0 w-full sm:w-[240px]" ref={statisticsScopeMenuRef}>
@@ -6005,19 +6529,19 @@ export default function App() {
                 }`}>
                   <div className={`grid grid-cols-[2.1fr_2fr_1fr_1fr_1.05fr] divide-x ${isDarkMode ? 'divide-cyan-300/25' : 'divide-sky-200/90'}`}>
                     <div className="min-w-0 px-1.5 py-1.5 text-center flex items-center justify-center">
-                      <p className="text-[9px] font-semibold text-slate-400 dark:text-slate-300 leading-tight whitespace-nowrap -translate-y-0.5">Toplam Çözülen</p>
+                      <p className="text-[clamp(7px,2.25vw,9px)] font-semibold text-slate-400 dark:text-slate-300 leading-tight whitespace-nowrap overflow-hidden text-ellipsis -translate-y-0.5">Toplam Çözülen</p>
                     </div>
                     <div className="min-w-0 px-1.5 py-1.5 text-center flex items-center justify-center">
-                      <p className="text-[9px] font-semibold text-slate-400 dark:text-slate-300 leading-tight whitespace-nowrap -translate-y-0.5">Toplam Cevaplanan</p>
+                      <p className="text-[clamp(7px,2.25vw,9px)] font-semibold text-slate-400 dark:text-slate-300 leading-tight whitespace-nowrap overflow-hidden text-ellipsis -translate-y-0.5">Toplam Cevaplanan</p>
                     </div>
                     <div className="min-w-0 px-1.5 py-1.5 text-center flex items-center justify-center">
-                      <p className="text-[9px] font-semibold text-slate-400 dark:text-slate-300 leading-tight -translate-y-0.5">Doğru</p>
+                      <p className="text-[clamp(7px,2.1vw,9px)] font-semibold text-slate-400 dark:text-slate-300 leading-tight whitespace-nowrap overflow-hidden text-ellipsis -translate-y-0.5">Doğru</p>
                     </div>
                     <div className="min-w-0 px-1.5 py-1.5 text-center flex items-center justify-center">
-                      <p className="text-[9px] font-semibold text-slate-400 dark:text-slate-300 leading-tight -translate-y-0.5">Yanlış</p>
+                      <p className="text-[clamp(7px,2.1vw,9px)] font-semibold text-slate-400 dark:text-slate-300 leading-tight whitespace-nowrap overflow-hidden text-ellipsis -translate-y-0.5">Yanlış</p>
                     </div>
                     <div className="min-w-0 px-1.5 py-1.5 text-center flex items-center justify-center">
-                      <p className="text-[9px] font-semibold text-slate-400 dark:text-slate-300 leading-tight -translate-y-0.5">Başarı</p>
+                      <p className="text-[clamp(7px,2.1vw,9px)] font-semibold text-slate-400 dark:text-slate-300 leading-tight whitespace-nowrap overflow-hidden text-ellipsis -translate-y-0.5">Başarı</p>
                     </div>
                   </div>
                   <div className={`h-px w-full ${isDarkMode ? 'bg-cyan-300/25' : 'bg-sky-200/90'}`} />
@@ -6091,13 +6615,13 @@ export default function App() {
                                 ? 'border-slate-500/30 bg-gradient-to-r from-slate-900/55 via-slate-900/35 to-slate-800/40'
                                 : 'border-slate-200 bg-gradient-to-r from-white/95 via-slate-50/70 to-sky-50/60'
                             }`}>
-                              <div className={`grid grid-cols-[1.9fr_1.9fr_1fr_1fr] divide-x ${isDarkMode ? 'divide-slate-500/30' : 'divide-slate-200/90'} text-[10px] md:text-[11px]`}>
+                              <div className={`grid grid-cols-[1.9fr_1.9fr_1fr_1fr] divide-x ${isDarkMode ? 'divide-slate-500/30' : 'divide-slate-200/90'} text-[clamp(8px,2.25vw,10px)] md:text-[11px]`}>
                                 <div className="min-w-0 px-1.5 py-1.5 md:px-2 md:py-1.5 text-center">
-                                  <p className="font-medium text-slate-500 dark:text-slate-300 whitespace-nowrap">Toplam Çözülen</p>
+                                  <p className="font-medium text-slate-500 dark:text-slate-300 whitespace-nowrap overflow-hidden text-ellipsis">Toplam Çözülen</p>
                                   <p className={`font-semibold text-slate-900 dark:text-white leading-none mt-0.5 tabular-nums whitespace-nowrap ${getAdaptiveStatValueClass(row.uniqueSolvedCount, 'compact')}`}>{row.uniqueSolvedCount}</p>
                                 </div>
                                 <div className="min-w-0 px-1.5 py-1.5 md:px-2 md:py-1.5 text-center">
-                                  <p className="font-medium text-slate-500 dark:text-slate-300 whitespace-nowrap">Toplam Cevaplanan</p>
+                                  <p className="font-medium text-slate-500 dark:text-slate-300 whitespace-nowrap overflow-hidden text-ellipsis">Toplam Cevaplanan</p>
                                   <p className={`font-semibold text-slate-900 dark:text-white leading-none mt-0.5 tabular-nums whitespace-nowrap ${getAdaptiveStatValueClass(row.totalAnsweredCount, 'compact')}`}>{row.totalAnsweredCount}</p>
                                 </div>
                                 <div className="min-w-0 px-1.5 py-1.5 md:px-2 md:py-1.5 text-center">
@@ -6225,10 +6749,20 @@ export default function App() {
                           <p className="kpss-neon-mini-label normal-case !text-[8.5px] !tracking-[0.03em] !leading-[1.25] !font-medium">Toplam Cevaplanan</p>
                           <p className="kpss-neon-mini-value !text-[20px] !font-semibold !tracking-[0.01em]">{homeStats.totalAnsweredCount}</p>
                         </div>
-                        <div className="flex-1 min-w-0 px-2 py-2.5 text-center">
+                        <button
+                          type="button"
+                          onClick={() => openHomeStatsPresetQuiz('favorite')}
+                          className={`flex-1 min-w-0 px-2 py-2.5 text-center transition-colors outline-none focus-visible:ring-2 ${
+                            isDarkMode
+                              ? 'hover:bg-amber-400/10 focus-visible:ring-amber-300/70'
+                              : 'hover:bg-amber-100/60 focus-visible:ring-amber-400/60'
+                          }`}
+                          title="Favori sorulardan sinav baslat"
+                          aria-label="Favori sorulardan sinav baslat"
+                        >
                           <p className="kpss-neon-mini-label normal-case !text-[8.5px] !tracking-[0.03em] !leading-[1.25] !font-medium">Favori Soru Sayisi</p>
                           <p className="kpss-neon-mini-value !text-[20px] !font-semibold !tracking-[0.01em]">{homeStats.filteredFavoriteCount}</p>
-                        </div>
+                        </button>
                       </div>
                     </div>
                     <div className={`rounded-xl border overflow-hidden ${
@@ -6241,10 +6775,20 @@ export default function App() {
                           <p className="kpss-neon-mini-label normal-case !text-[8.5px] !tracking-[0.03em] !leading-[1.25] !font-medium">Toplam Dogru</p>
                           <p className="kpss-neon-mini-value !text-[20px] !font-semibold !tracking-[0.01em]">{homeStats.progressStats.correctCount}</p>
                         </div>
-                        <div className="flex-1 min-w-0 px-2 py-2.5 text-center">
+                        <button
+                          type="button"
+                          onClick={() => openHomeStatsPresetQuiz('wrong')}
+                          className={`flex-1 min-w-0 px-2 py-2.5 text-center transition-colors outline-none focus-visible:ring-2 ${
+                            isDarkMode
+                              ? 'hover:bg-red-400/10 focus-visible:ring-red-300/70'
+                              : 'hover:bg-red-100/60 focus-visible:ring-red-400/60'
+                          }`}
+                          title="Yanlis sorulardan sinav baslat"
+                          aria-label="Yanlis sorulardan sinav baslat"
+                        >
                           <p className="kpss-neon-mini-label normal-case !text-[8.5px] !tracking-[0.03em] !leading-[1.25] !font-medium">Toplam Yanlis</p>
                           <p className="kpss-neon-mini-value !text-[20px] !font-semibold !tracking-[0.01em]">{homeStats.totalWrongAnswers}</p>
-                        </div>
+                        </button>
                         <div className="flex-1 min-w-0 px-2 py-2.5 text-center">
                           <p className="kpss-neon-mini-label normal-case !text-[8.5px] !tracking-[0.03em] !leading-[1.25] !font-medium">Basari Orani</p>
                           <p className="kpss-neon-mini-value !text-[20px] !font-semibold !tracking-[0.01em]">%{homeStats.accuracyPercent}</p>
@@ -6312,18 +6856,30 @@ export default function App() {
                         <p className="kpss-neon-mini-label">Toplam Cevap</p>
                         <p className="kpss-neon-mini-value">{homeStats.totalAnsweredCount}</p>
                       </div>
-                      <div className="kpss-neon-mini-card kpss-neon-mini-emerald">
+                      <button
+                        type="button"
+                        onClick={() => openHomeStatsPresetQuiz('favorite')}
+                        className="kpss-neon-mini-card kpss-neon-mini-emerald text-left transition-transform hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/70"
+                        title="Favori sorulardan sinav baslat"
+                        aria-label="Favori sorulardan sinav baslat"
+                      >
                         <p className="kpss-neon-mini-label">Favori Soru</p>
                         <p className="kpss-neon-mini-value">{homeStats.filteredFavoriteCount}</p>
-                      </div>
+                      </button>
                       <div className="kpss-neon-mini-card kpss-neon-mini-amber">
                         <p className="kpss-neon-mini-label">Toplam Dogru</p>
                         <p className="kpss-neon-mini-value">{homeStats.progressStats.correctCount}</p>
                       </div>
-                      <div className="kpss-neon-mini-card kpss-neon-mini-cyan">
+                      <button
+                        type="button"
+                        onClick={() => openHomeStatsPresetQuiz('wrong')}
+                        className="kpss-neon-mini-card kpss-neon-mini-cyan text-left transition-transform hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400/70"
+                        title="Yanlis sorulardan sinav baslat"
+                        aria-label="Yanlis sorulardan sinav baslat"
+                      >
                         <p className="kpss-neon-mini-label">Yanlis Cevap</p>
                         <p className="kpss-neon-mini-value">{homeStats.totalWrongAnswers}</p>
-                      </div>
+                      </button>
                       <div className="kpss-neon-mini-card kpss-neon-mini-red">
                         <p className="kpss-neon-mini-label">Basari Orani</p>
                         <p className="kpss-neon-mini-value">%{homeStats.accuracyPercent}</p>
@@ -6349,11 +6905,38 @@ export default function App() {
                     : 'border border-slate-200 bg-white/85 shadow-sm'
                 }`}>
                   <p className="text-[12px] font-extrabold text-slate-900 dark:text-white">Dersler</p>
-                  <span className="text-[10px] font-bold text-slate-500 dark:text-slate-300">{categories.length} ders</span>
+                  <span className="text-[10px] font-bold text-slate-500 dark:text-slate-300">{categories.length + 1} ders</span>
                 </div>
               )}
 
               <div className={`${mobileDashboardTab === 'categories' ? 'grid' : 'hidden'} lg:grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 auto-rows-max gap-2.5 md:gap-3 flex-1 min-h-0 content-start overflow-y-auto custom-scrollbar pr-0.5 md:pr-1.5 pb-1`}>
+                <button
+                  onClick={openAllLessonsQuizSetup}
+                  className={`group relative w-full min-h-[76px] rounded-2xl px-3 py-2.5 md:px-4 md:py-3 hover:-translate-y-0.5 transition-all duration-300 text-left overflow-hidden animate-fade-in-scale flex items-center justify-between cursor-pointer ${
+                    isDarkMode
+                      ? 'border border-cyan-400/35 bg-slate-900/45 shadow-[0_10px_24px_rgba(2,6,23,0.42)]'
+                      : 'border border-cyan-200 bg-white/85 shadow-[0_10px_24px_rgba(15,23,42,0.1)]'
+                  }`}
+                  style={{ animationDelay: '0ms' }}
+                >
+                  <div className="pointer-events-none absolute -right-14 -top-14 h-28 w-28 rounded-full bg-gradient-to-br from-cyan-500 to-indigo-600 opacity-[0.24] blur-2xl transition-all duration-500 group-hover:opacity-[0.38]" />
+
+                  <div className="relative z-10 flex items-center gap-3 min-w-0">
+                    <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-500 to-indigo-600 flex items-center justify-center shadow-[0_0_20px_rgba(14,165,233,0.35)]">
+                      <Icon name="Layers" className="w-5 h-5 text-white" />
+                    </div>
+                    <h3 className="text-[22px] leading-[1.15] font-black text-slate-900 dark:text-white truncate tracking-tight py-[1px]">Tum Dersler</h3>
+                  </div>
+
+                  <div className={`relative z-10 w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
+                    isDarkMode
+                      ? 'bg-slate-800/70 border border-cyan-300/35 text-cyan-200 lg:group-hover:text-white lg:group-hover:border-cyan-200/50'
+                      : 'bg-cyan-50 border border-cyan-200 text-cyan-600 lg:group-hover:text-slate-800 lg:group-hover:border-cyan-300'
+                  }`}>
+                    <Icon name="ChevronRight" className="w-4 h-4 lg:transition-transform lg:duration-300 lg:group-hover:translate-x-0.5" />
+                  </div>
+                </button>
+
                 {categories.map((cat, index) => {
                   const color = getCatColor(cat.id);
 
@@ -6366,7 +6949,7 @@ export default function App() {
                           ? 'border border-slate-500/30 bg-slate-900/45 shadow-[0_10px_24px_rgba(2,6,23,0.42)]'
                           : 'border border-slate-200 bg-white/85 shadow-[0_10px_24px_rgba(15,23,42,0.1)]'
                       }`}
-                      style={{ animationDelay: `${index * 60}ms` }}
+                      style={{ animationDelay: `${(index + 1) * 60}ms` }}
                     >
                       {/* Animated gradient background blob */}
                       <div className={`pointer-events-none absolute -right-14 -top-14 h-28 w-28 rounded-full bg-gradient-to-br ${color.gradient} opacity-[0.2] blur-2xl transition-all duration-500 group-hover:opacity-[0.35]`} />
@@ -6527,6 +7110,21 @@ export default function App() {
                           </span>
                         </div>
                       </div>
+                    </div>
+
+                    <div className="mb-3 w-[96%] mx-auto shrink-0">
+                      <button
+                        onClick={() => openCategoryMixedQuizSetup(activeCategory)}
+                        className={`w-full h-11 rounded-xl border transition flex items-center justify-center gap-2 text-sm font-bold ${
+                          isDarkMode
+                            ? 'border-cyan-400/40 bg-slate-900/55 text-cyan-100 hover:border-cyan-300/65 hover:bg-cyan-500/10'
+                            : 'border-cyan-200 bg-cyan-50/80 text-cyan-700 hover:border-cyan-300 hover:bg-cyan-100/70'
+                        }`}
+                        aria-label={`${activeCategory.name} dersinin tum konularindan karma sinav baslat`}
+                      >
+                        <Icon name="Layers" className="w-4 h-4" />
+                        {activeCategory.name} Tum Konular Karma Sinav
+                      </button>
                     </div>
 
                     <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar pr-0.5 pb-1">
@@ -7297,6 +7895,50 @@ export default function App() {
                   <li>Soru tekrar yanlış olursa sayaç sıfırlanır ve soru yeniden aktif olur.</li>
                 </ul>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {inlineNotice && (
+        <div
+          className={`fixed left-1/2 -translate-x-1/2 w-[calc(100%-1rem)] max-w-md z-[57] lg:left-auto lg:translate-x-0 lg:right-4 ${
+            showMobileBottomNav ? 'bottom-20' : 'bottom-4'
+          } lg:bottom-4`}
+        >
+          <div className={`rounded-2xl border shadow-2xl backdrop-blur-xl animate-fade-in-scale ${
+            inlineNotice.tone === 'warning'
+              ? (isDarkMode
+                  ? 'border-amber-300/40 bg-gradient-to-r from-slate-900/92 via-slate-900/90 to-amber-900/40'
+                  : 'border-amber-200/90 bg-gradient-to-r from-white/95 via-amber-50/90 to-rose-50/80')
+              : (isDarkMode
+                  ? 'border-cyan-300/40 bg-gradient-to-r from-slate-900/92 via-slate-900/90 to-cyan-900/35'
+                  : 'border-cyan-200/90 bg-gradient-to-r from-white/95 via-cyan-50/90 to-sky-50/80')
+          }`}>
+            <div className="flex items-start gap-2.5 p-3">
+              <div className={`w-8 h-8 rounded-xl shrink-0 flex items-center justify-center ${
+                inlineNotice.tone === 'warning'
+                  ? (isDarkMode ? 'bg-amber-400/20 text-amber-200' : 'bg-amber-100 text-amber-700')
+                  : (isDarkMode ? 'bg-cyan-400/20 text-cyan-200' : 'bg-cyan-100 text-cyan-700')
+              }`}>
+                <Icon name={inlineNotice.tone === 'warning' ? 'CircleX' : 'Info'} className="w-4 h-4" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-[11px] font-bold uppercase tracking-[0.07em] text-slate-500 dark:text-slate-300 mb-0.5">
+                  Bilgilendirme
+                </p>
+                <p className="text-[13px] leading-snug text-slate-800 dark:text-slate-100">
+                  {inlineNotice.message}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setInlineNotice(null)}
+                className="w-8 h-8 rounded-xl flex items-center justify-center text-slate-500 dark:text-slate-300 hover:bg-slate-100/70 dark:hover:bg-slate-800/70 transition"
+                aria-label="Bildirimi kapat"
+              >
+                <Icon name="X" className="w-4 h-4" />
+              </button>
             </div>
           </div>
         </div>
