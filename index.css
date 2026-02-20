@@ -443,6 +443,189 @@ input[type="number"] {
   box-shadow: 0 12px 24px -8px rgba(0, 0, 0, 0.4);
 }
 
+/* ===== Enhanced Hover Effects ===== */
+.hover-scale {
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.hover-scale:hover {
+  transform: scale(1.02);
+}
+
+.hover-scale:active {
+  transform: scale(0.98);
+}
+
+.hover-glow {
+  transition: box-shadow 0.3s ease, transform 0.3s ease;
+}
+
+.hover-glow:hover {
+  box-shadow: 0 0 20px rgba(59, 130, 246, 0.35);
+}
+
+.hover-lift-enhanced {
+  transition: all 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.hover-lift-enhanced:hover {
+  transform: translateY(-6px) scale(1.01);
+}
+
+.hover-lift-enhanced:active {
+  transform: translateY(-2px) scale(1);
+}
+
+/* ===== Button Press Effect ===== */
+.press-effect {
+  transition: transform 0.1s ease;
+}
+
+.press-effect:active {
+  transform: scale(0.96);
+}
+
+/* ===== Interactive Card ===== */
+.interactive-card {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.interactive-card:hover {
+  transform: translateY(-5px) scale(1.01);
+  box-shadow: 0 20px 40px -12px rgba(0, 0, 0, 0.15);
+}
+
+.dark .interactive-card:hover {
+  box-shadow: 0 20px 40px -12px rgba(0, 0, 0, 0.4);
+}
+
+.interactive-card:active {
+  transform: translateY(-2px) scale(1);
+  transition-duration: 0.1s;
+}
+
+/* ===== Soft Shadow Hover ===== */
+.hover-shadow-soft {
+  transition: box-shadow 0.3s ease, transform 0.3s ease;
+}
+
+.hover-shadow-soft:hover {
+  box-shadow: 0 8px 30px -8px rgba(0, 0, 0, 0.12);
+}
+
+.dark .hover-shadow-soft:hover {
+  box-shadow: 0 8px 30px -8px rgba(0, 0, 0, 0.35);
+}
+
+/* ===== Border Glow Hover ===== */
+.hover-border-glow {
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.hover-border-glow:hover {
+  border-color: rgba(59, 130, 246, 0.5);
+  box-shadow: 0 0 16px rgba(59, 130, 246, 0.2);
+}
+
+/* ===== Icon Hover Rotate ===== */
+.icon-hover-rotate {
+  transition: transform 0.3s ease;
+}
+
+.icon-hover-rotate:hover {
+  transform: rotate(10deg) scale(1.1);
+}
+
+/* ===== Category Card Enhanced Hover ===== */
+.category-card-hover {
+  transition: all 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.category-card-hover:hover {
+  transform: translateY(-8px) scale(1.02);
+}
+
+.category-card-hover:hover .category-icon-bg {
+  transform: scale(1.1);
+}
+
+/* ===== Stat Card Hover ===== */
+.stat-card-hover {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.stat-card-hover:hover {
+  transform: translateY(-4px);
+}
+
+.stat-card-hover:hover .stat-icon-wrapper {
+  transform: scale(1.08);
+}
+
+/* ===== Nav Item Hover ===== */
+.nav-item-hover {
+  transition: all 0.2s ease;
+}
+
+.nav-item-hover:hover {
+  background: rgba(59, 130, 246, 0.1);
+  transform: translateX(4px);
+}
+
+.dark .nav-item-hover:hover {
+  background: rgba(59, 130, 246, 0.15);
+}
+
+/* ===== Tab Switch Animation ===== */
+.tab-switch {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.tab-switch.active {
+  background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+  color: white;
+}
+
+/* ===== Badge Hover ===== */
+.badge-hover {
+  transition: all 0.2s ease;
+}
+
+.badge-hover:hover {
+  transform: scale(1.05);
+  box-shadow: 0 4px 12px -2px rgba(0, 0, 0, 0.15);
+}
+
+/* ===== Quiz Option Hover ===== */
+.quiz-option-hover {
+  transition: all 0.2s ease;
+}
+
+.quiz-option-hover:hover:not(:disabled) {
+  border-color: rgba(59, 130, 246, 0.6);
+  background: rgba(59, 130, 246, 0.05);
+  transform: translateX(4px);
+}
+
+.dark .quiz-option-hover:hover:not(:disabled) {
+  background: rgba(59, 130, 246, 0.1);
+}
+
+/* ===== Progress Bar Animated ===== */
+.progress-animated {
+  transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ===== Streak Fire Effect ===== */
+.streak-pulse {
+  animation: streakGlow 1.5s ease-in-out infinite;
+}
+
+@keyframes streakGlow {
+  0%, 100% { filter: drop-shadow(0 0 4px rgba(251, 191, 36, 0.6)); }
+  50% { filter: drop-shadow(0 0 12px rgba(251, 191, 36, 0.9)); }
+}
+
 /* ===== Gradient Text Effects ===== */
 .text-gradient-primary {
   background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);

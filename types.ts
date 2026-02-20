@@ -60,3 +60,24 @@ export interface QuizState {
   totalTime: number; // in seconds (for progress calculation)
   isTimerActive: boolean;
 }
+
+export type SpacedRepetitionLevel = 0 | 1 | 2 | 3 | 4 | 5;
+
+export interface SpacedRepetitionRecord {
+  questionTrackingId: string;
+  topicId: string;
+  level: SpacedRepetitionLevel;
+  nextReviewAt: number;
+  lastReviewAt: number;
+  reviewCount: number;
+  correctStreak: number;
+  incorrectCount: number;
+}
+
+export interface SpacedRepetitionConfig {
+  enabled: boolean;
+  initialInterval: number; // minutes
+  intervalMultiplier: number;
+  maxInterval: number; // days
+  easyBonus: number;
+}

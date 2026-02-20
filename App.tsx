@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { INITIAL_CATEGORIES } from './constants';
 import { Category, User, SubCategory, Question, QuizState, QuestionReport } from './types';
 import { Icon } from './components/Icon';
@@ -8165,5 +8165,4 @@ export default function App() {
     </div>
   );
 }
-
 
