@@ -92,6 +92,7 @@ type QuizQuestionMeta = {
 type TopicCardStatKey = 'total' | 'seen' | 'solved' | 'wrong' | 'favorite' | 'progress';
 type StatisticsTopicStatKey = 'seen' | 'solved' | 'correct' | 'wrong' | 'accuracy' | 'progress';
 type HomeStatsStatKey = 'seen' | 'solved' | 'correct' | 'wrong' | 'favorite' | 'accuracy';
+type DashboardCategoryStatKey = 'total' | 'seen' | 'solved' | 'correct' | 'wrong' | 'progress';
 type StatisticsTopicSortMode = 'activity' | 'added_order';
 type MixedQuizScope = { mode: 'all' } | { mode: 'category'; categoryId: string };
 
@@ -128,6 +129,69 @@ const DEFAULT_COLOR = {
   text: 'text-blue-600', textDark: 'dark:text-blue-400',
   gradient: 'from-blue-500 to-indigo-500', shadow: 'shadow-blue-500/20',
   border: 'border-blue-200', borderDark: 'dark:border-blue-800/30',
+};
+
+const AnimatedStatValue = ({ value, className }: { value: string | number; className: string }) => {
+  const parsed = useMemo(() => {
+    const raw = String(value ?? '');
+    const isPercent = raw.trim().startsWith('%');
+    const digitsOnly = raw.replace(/[^\d]/g, '');
+    const target = digitsOnly ? Number(digitsOnly) : 0;
+    return {
+      isPercent,
+      target: Number.isFinite(target) ? target : 0,
+    };
+  }, [value]);
+
+  const [animatedValue, setAnimatedValue] = useState(0);
+  const rafRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+
+    if (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+      setAnimatedValue(parsed.target);
+      return;
+    }
+
+    if (parsed.target <= 0) {
+      setAnimatedValue(0);
+      return;
+    }
+
+    setAnimatedValue(0);
+    const durationMs = 2000;
+    const startTime = performance.now();
+
+    const tick = (now: number) => {
+      const elapsed = now - startTime;
+      const progress = Math.min(1, elapsed / durationMs);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      setAnimatedValue(Math.round(parsed.target * eased));
+      if (progress < 1) {
+        rafRef.current = requestAnimationFrame(tick);
+      } else {
+        rafRef.current = null;
+      }
+    };
+
+    rafRef.current = requestAnimationFrame(tick);
+    return () => {
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
+  }, [parsed.target]);
+
+  const displayText = parsed.isPercent
+    ? `%${animatedValue}`
+    : animatedValue.toLocaleString('tr-TR');
+
+  return <span className={className}>{displayText}</span>;
 };
 
 const getCatColor = (id: string) => CATEGORY_COLORS[id] || DEFAULT_COLOR;
@@ -1161,10 +1225,11 @@ export default function App() {
   const [selectedTopicFilterId, setSelectedTopicFilterId] = useState<string | null>(null);
   const [topicCardFilter, setTopicCardFilter] = useState<'all' | 'in_progress' | 'completed' | 'not_started'>('all');
   const [mobileTopicStatPopover, setMobileTopicStatPopover] = useState<{ topicId: string; statKey: TopicCardStatKey } | null>(null);
+  const [mobileDashboardCategoryStatPopover, setMobileDashboardCategoryStatPopover] = useState<{ categoryId: string; statKey: DashboardCategoryStatKey } | null>(null);
   const [statisticsTopicStatPopover, setStatisticsTopicStatPopover] = useState<{ topicId: string; statKey: StatisticsTopicStatKey } | null>(null);
   const [statisticsSummaryStatPopover, setStatisticsSummaryStatPopover] = useState<StatisticsTopicStatKey | null>(null);
   const [statisticsTopicNamePopoverTopicId, setStatisticsTopicNamePopoverTopicId] = useState<string | null>(null);
-  const [statisticsTopicSortMode, setStatisticsTopicSortMode] = useState<StatisticsTopicSortMode>('activity');
+  const [statisticsTopicSortMode, setStatisticsTopicSortMode] = useState<StatisticsTopicSortMode>('added_order');
   const [homeStatsCategoryFilter, setHomeStatsCategoryFilter] = useState<string>('all');
   const [homeStatsStatPopover, setHomeStatsStatPopover] = useState<HomeStatsStatKey | null>(null);
   const [statisticsScopeCategoryId, setStatisticsScopeCategoryId] = useState<string>('all');
@@ -4353,16 +4418,20 @@ export default function App() {
         const rows = statisticsTopicRows.filter((row) => row.categoryId === cat.id);
         const totals = rows.reduce(
           (acc, row) => {
+            acc.totalQuestionCount += row.questionCount;
             acc.uniqueSolvedCount += row.uniqueSolvedCount;
             acc.totalAnsweredCount += row.totalAnsweredCount;
             acc.correctCount += row.correctCount;
             acc.wrongCount += row.wrongCount;
             return acc;
           },
-          { uniqueSolvedCount: 0, totalAnsweredCount: 0, correctCount: 0, wrongCount: 0 }
+          { totalQuestionCount: 0, uniqueSolvedCount: 0, totalAnsweredCount: 0, correctCount: 0, wrongCount: 0 }
         );
         const accuracyPercent = totals.totalAnsweredCount > 0
           ? Math.round((totals.correctCount / totals.totalAnsweredCount) * 100)
+          : 0;
+        const progressPercent = totals.totalQuestionCount > 0
+          ? Math.min(100, Math.round((totals.uniqueSolvedCount / totals.totalQuestionCount) * 100))
           : 0;
         return {
           categoryId: cat.id,
@@ -4371,6 +4440,7 @@ export default function App() {
           topicCount: cat.subCategories.length,
           ...totals,
           accuracyPercent,
+          progressPercent,
           hasProgress: rows.some((row) => row.hasProgress),
         };
       })
@@ -4381,6 +4451,30 @@ export default function App() {
         return a.categoryName.localeCompare(b.categoryName, 'tr');
       });
   }, [categories, statisticsTopicRows]);
+  const statisticsCategoryRowById = useMemo(() => {
+    const next: Record<string, (typeof statisticsCategoryRows)[number]> = {};
+    statisticsCategoryRows.forEach((row) => {
+      next[row.categoryId] = row;
+    });
+    return next;
+  }, [statisticsCategoryRows]);
+  const dashboardAllLessonsStats = useMemo(() => {
+    const totals = statisticsCategoryRows.reduce(
+      (acc, row) => {
+        acc.totalQuestionCount += row.totalQuestionCount;
+        acc.uniqueSolvedCount += row.uniqueSolvedCount;
+        acc.totalAnsweredCount += row.totalAnsweredCount;
+        acc.correctCount += row.correctCount;
+        acc.wrongCount += row.wrongCount;
+        return acc;
+      },
+      { totalQuestionCount: 0, uniqueSolvedCount: 0, totalAnsweredCount: 0, correctCount: 0, wrongCount: 0 }
+    );
+    const progressPercent = totals.totalQuestionCount > 0
+      ? Math.min(100, Math.round((totals.uniqueSolvedCount / totals.totalQuestionCount) * 100))
+      : 0;
+    return { ...totals, progressPercent };
+  }, [statisticsCategoryRows]);
   const statisticsScopeCategory = statisticsScopeCategoryId === 'all'
     ? null
     : (categories.find((cat) => cat.id === statisticsScopeCategoryId) || null);
@@ -7550,7 +7644,7 @@ export default function App() {
                       <div className={`w-px ${isDarkMode ? 'bg-cyan-300/20' : 'bg-sky-200/90'}`} />
                       <div className="shrink-0 px-3 py-2.5 min-w-[88px] flex flex-col items-center justify-center">
                         <p className="text-[10px] font-medium text-slate-500 dark:text-slate-300 leading-none">Toplam Soru</p>
-                        <p className="text-xs md:text-sm font-semibold text-slate-900 dark:text-white leading-none mt-1 tabular-nums">{formatStatCount(statisticsScopeQuestionCount)}</p>
+                        <AnimatedStatValue className="text-xs md:text-sm font-semibold text-slate-900 dark:text-white leading-none mt-1 tabular-nums" value={formatStatCount(statisticsScopeQuestionCount)} />
                       </div>
                     </div>
                   </div>
@@ -7581,7 +7675,7 @@ export default function App() {
                               }`}
                             >
                               <Icon name={item.icon} className={`w-3.5 h-3.5 ${item.valueClass}`} />
-                              <span className={`text-[10px] md:text-[11px] font-black leading-none tabular-nums ${item.valueClass}`}>{item.value}</span>
+                              <AnimatedStatValue className={`text-[10px] md:text-[11px] font-black leading-none tabular-nums ${item.valueClass}`} value={item.value} />
                             </button>
                           );
                         })}
@@ -7594,7 +7688,7 @@ export default function App() {
                             </div>
                             <div className="min-w-0">
                               <p className="text-[10px] font-bold text-surface-700 dark:text-surface-200 leading-tight">
-                                {activeStatisticsSummaryStat.label}: <span className={`tabular-nums ${activeStatisticsSummaryStat.valueClass}`}>{activeStatisticsSummaryStat.value}</span>
+                                {activeStatisticsSummaryStat.label}: <AnimatedStatValue className={`tabular-nums ${activeStatisticsSummaryStat.valueClass}`} value={activeStatisticsSummaryStat.value} />
                               </p>
                               <p className="text-[10px] text-surface-500 dark:text-surface-400 leading-tight mt-0.5">
                                 {activeStatisticsSummaryStat.description}
@@ -7620,8 +7714,8 @@ export default function App() {
                         : 'border-slate-200 bg-white/90'
                     }`}>
                       {[
-                        { key: 'activity' as const, label: 'Aktivite' },
-                        { key: 'added_order' as const, label: 'Eklenme Sirasi' },
+                        { key: 'activity' as const, label: 'Aktivite', icon: 'TrendingUp' },
+                        { key: 'added_order' as const, label: 'Eklenme Sirasi', icon: 'ListOrdered' },
                       ].map((option) => {
                         const isActive = statisticsTopicSortMode === option.key;
                         return (
@@ -7630,8 +7724,9 @@ export default function App() {
                             type="button"
                             onClick={() => setStatisticsTopicSortMode(option.key)}
                             aria-pressed={isActive}
+                            aria-label={`Siralama: ${option.label}`}
                             title={option.label}
-                            className={`px-2.5 h-8 rounded-lg text-[11px] font-semibold transition ${
+                            className={`w-9 h-8 rounded-lg inline-flex items-center justify-center transition ${
                               isActive
                                 ? (isDarkMode
                                     ? 'bg-cyan-500/18 text-cyan-100'
@@ -7641,7 +7736,7 @@ export default function App() {
                                     : 'text-slate-600 hover:bg-slate-50')
                             }`}
                           >
-                            {option.label}
+                            <Icon name={option.icon} className="w-4 h-4" />
                           </button>
                         );
                       })}
@@ -7752,7 +7847,7 @@ export default function App() {
                                 <div className={`w-px ${isDarkMode ? 'bg-cyan-300/20' : 'bg-sky-200/90'}`} />
                                 <div className="shrink-0 px-3 py-2.5 min-w-[88px] flex flex-col items-center justify-center">
                                   <p className="text-[10px] font-medium text-slate-500 dark:text-slate-300 leading-none">Toplam Soru</p>
-                                  <p className="text-xs md:text-sm font-semibold text-slate-900 dark:text-white leading-none mt-1 tabular-nums">{formatStatCount(row.questionCount)}</p>
+                                  <AnimatedStatValue className="text-xs md:text-sm font-semibold text-slate-900 dark:text-white leading-none mt-1 tabular-nums" value={formatStatCount(row.questionCount)} />
                                 </div>
                               </div>
                             </div>
@@ -7801,7 +7896,7 @@ export default function App() {
                                         }`}
                                       >
                                         <Icon name={item.icon} className={`w-3.5 h-3.5 ${item.valueClass}`} />
-                                        <span className={`text-[10px] md:text-[11px] font-black leading-none tabular-nums ${item.valueClass}`}>{item.value}</span>
+                                        <AnimatedStatValue className={`text-[10px] md:text-[11px] font-black leading-none tabular-nums ${item.valueClass}`} value={item.value} />
                                       </button>
                                     );
                                   })}
@@ -7814,7 +7909,7 @@ export default function App() {
                                       </div>
                                       <div className="min-w-0">
                                         <p className="text-[10px] font-bold text-surface-700 dark:text-surface-200 leading-tight">
-                                          {activeStatisticsRowStat.label}: <span className={`tabular-nums ${activeStatisticsRowStat.valueClass}`}>{activeStatisticsRowStat.value}</span>
+                                          {activeStatisticsRowStat.label}: <AnimatedStatValue className={`tabular-nums ${activeStatisticsRowStat.valueClass}`} value={activeStatisticsRowStat.value} />
                                         </p>
                                         <p className="text-[10px] text-surface-500 dark:text-surface-400 leading-tight mt-0.5">
                                           {activeStatisticsRowStat.description}
@@ -7902,10 +7997,11 @@ export default function App() {
                       <div className="kpss-neon-stat-icon w-10 h-10 md:w-11 md:h-11 rounded-xl md:rounded-2xl flex items-center justify-center shrink-0">
                         <Icon name={card.icon} className="w-4 h-4 text-slate-800 dark:text-white" />
                       </div>
-                      <div className="min-w-0">
-                        <p className="sm:hidden text-[10px] text-slate-600 dark:text-slate-200/80 font-semibold leading-none whitespace-nowrap">{card.mobileLabel}</p>
-                        <p className="hidden sm:block text-[10px] md:text-[11px] text-slate-600 dark:text-slate-200/80 font-bold uppercase tracking-[0.12em] leading-none">{card.label}</p>
-                        <p className="text-[30px] sm:text-[34px] md:text-[36px] font-black text-slate-900 dark:text-white leading-none mt-0">{formatStatCount(card.value)}</p>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <AnimatedStatValue className="text-[30px] sm:text-[34px] md:text-[36px] font-black text-slate-900 dark:text-white leading-none" value={formatStatCount(card.value)} />
+                          <p className="text-[11px] sm:text-[12px] md:text-[13px] text-slate-600 dark:text-slate-200/80 font-semibold leading-tight text-right">{card.mobileLabel}</p>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -7949,7 +8045,7 @@ export default function App() {
                               }`}
                             >
                               <Icon name={item.icon} className={`w-3.5 h-3.5 ${item.valueClass}`} />
-                              <span className={`text-[10px] font-black leading-none tabular-nums ${item.valueClass}`}>{item.value}</span>
+                              <AnimatedStatValue className={`text-[10px] font-black leading-none tabular-nums ${item.valueClass}`} value={item.value} />
                             </button>
                           );
                         })}
@@ -7962,7 +8058,7 @@ export default function App() {
                             </div>
                             <div className="min-w-0">
                               <p className="text-[10px] font-bold text-surface-700 dark:text-surface-200 leading-tight">
-                                {activeHomeStatsMobileStat.label}: <span className={`tabular-nums ${activeHomeStatsMobileStat.valueClass}`}>{activeHomeStatsMobileStat.value}</span>
+                                {activeHomeStatsMobileStat.label}: <AnimatedStatValue className={`tabular-nums ${activeHomeStatsMobileStat.valueClass}`} value={activeHomeStatsMobileStat.value} />
                               </p>
                               <p className="text-[10px] text-surface-500 dark:text-surface-400 leading-tight mt-0.5">
                                 {activeHomeStatsMobileStat.description}
@@ -8079,11 +8175,11 @@ export default function App() {
                     <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 md:gap-3">
                       <div className="kpss-neon-mini-card kpss-neon-mini-fuchsia">
                         <p className="kpss-neon-mini-label">Farkli Cozulen</p>
-                        <p className="kpss-neon-mini-value">{formatStatCount(homeStats.uniqueSolvedCount)}</p>
+                        <AnimatedStatValue className="kpss-neon-mini-value" value={formatStatCount(homeStats.uniqueSolvedCount)} />
                       </div>
                       <div className="kpss-neon-mini-card kpss-neon-mini-blue">
                         <p className="kpss-neon-mini-label">Toplam Cevap</p>
-                        <p className="kpss-neon-mini-value">{formatStatCount(homeStats.totalAnsweredCount)}</p>
+                        <AnimatedStatValue className="kpss-neon-mini-value" value={formatStatCount(homeStats.totalAnsweredCount)} />
                       </div>
                       <button
                         type="button"
@@ -8093,11 +8189,11 @@ export default function App() {
                         aria-label="Favori sorulardan sinav baslat"
                       >
                         <p className="kpss-neon-mini-label">Favori Soru</p>
-                        <p className="kpss-neon-mini-value">{formatStatCount(homeStats.filteredFavoriteCount)}</p>
+                        <AnimatedStatValue className="kpss-neon-mini-value" value={formatStatCount(homeStats.filteredFavoriteCount)} />
                       </button>
                       <div className="kpss-neon-mini-card kpss-neon-mini-amber">
                         <p className="kpss-neon-mini-label">Toplam Dogru</p>
-                        <p className="kpss-neon-mini-value">{formatStatCount(homeStats.progressStats.correctCount)}</p>
+                        <AnimatedStatValue className="kpss-neon-mini-value" value={formatStatCount(homeStats.progressStats.correctCount)} />
                       </div>
                       <button
                         type="button"
@@ -8107,11 +8203,11 @@ export default function App() {
                         aria-label="Yanlis sorulardan sinav baslat"
                       >
                         <p className="kpss-neon-mini-label">Yanlis Cevap</p>
-                        <p className="kpss-neon-mini-value">{formatStatCount(homeStats.totalWrongAnswers)}</p>
+                        <AnimatedStatValue className="kpss-neon-mini-value" value={formatStatCount(homeStats.totalWrongAnswers)} />
                       </button>
                       <div className="kpss-neon-mini-card kpss-neon-mini-red">
                         <p className="kpss-neon-mini-label">Basari Orani</p>
-                        <p className="kpss-neon-mini-value">%{homeStats.accuracyPercent}</p>
+                        <AnimatedStatValue className="kpss-neon-mini-value" value={`%${homeStats.accuracyPercent}`} />
                       </div>
                     </div>
                     <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-300 font-medium">
@@ -8120,7 +8216,7 @@ export default function App() {
                           ? 'bg-slate-900/30 border border-slate-400/25'
                           : 'bg-white border border-slate-200'
                       }`}>
-                        Yanlis cevap: {formatStatCount(homeStats.totalWrongAnswers)}
+                        Yanlis cevap: <AnimatedStatValue className="tabular-nums" value={formatStatCount(homeStats.totalWrongAnswers)} />
                       </span>
                     </div>
                   </>
@@ -8139,65 +8235,342 @@ export default function App() {
               )}
 
               <div className={`${mobileDashboardTab === 'categories' ? 'grid' : 'hidden'} lg:grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 auto-rows-max gap-2.5 md:gap-3 flex-1 min-h-0 content-start overflow-y-auto custom-scrollbar pr-0.5 md:pr-1.5 pb-1`}>
-                <button
-                  onClick={openAllLessonsQuizSetup}
-                  className={`group relative w-full min-h-[76px] rounded-2xl px-3 py-2.5 md:px-4 md:py-3 hover:-translate-y-0.5 transition-all duration-300 text-left overflow-hidden animate-fade-in-scale flex items-center justify-between cursor-pointer ${
-                    isDarkMode
-                      ? 'border border-cyan-400/35 bg-slate-900/45 shadow-[0_10px_24px_rgba(2,6,23,0.42)]'
-                      : 'border border-cyan-200 bg-white/85 shadow-[0_10px_24px_rgba(15,23,42,0.1)]'
-                  }`}
-                  style={{ animationDelay: '0ms' }}
-                >
-                  <div className="pointer-events-none absolute -right-14 -top-14 h-28 w-28 rounded-full bg-gradient-to-br from-cyan-500 to-indigo-600 opacity-[0.24] blur-2xl transition-all duration-500 group-hover:opacity-[0.38]" />
+                <React.Fragment>
+                  {(() => {
+                    const allLessonsStatItems: Array<{
+                      key: DashboardCategoryStatKey;
+                      icon: string;
+                      label: string;
+                      value: string;
+                      valueClass: string;
+                      description: string;
+                    }> = [
+                      { key: 'total', icon: 'Hash', label: 'Toplam Soru', value: formatStatCount(dashboardAllLessonsStats.totalQuestionCount), valueClass: 'text-slate-700 dark:text-slate-100', description: 'Tum derslerdeki toplam soru sayisi.' },
+                      { key: 'seen', icon: 'Eye', label: 'Gorulen Soru', value: formatStatCount(dashboardAllLessonsStats.uniqueSolvedCount), valueClass: 'text-cyan-600 dark:text-cyan-300', description: 'Toplam gorulen (boslar haric) farkli soru sayisi.' },
+                      { key: 'solved', icon: 'CircleCheck', label: 'Cozulen Soru', value: formatStatCount(dashboardAllLessonsStats.totalAnsweredCount), valueClass: 'text-fuchsia-600 dark:text-fuchsia-300', description: 'Toplam cozulen soru sayisi (dogru + yanlis, tekrarlar dahil).' },
+                      { key: 'correct', icon: 'CheckCircle', label: 'Dogru', value: formatStatCount(dashboardAllLessonsStats.correctCount), valueClass: 'text-emerald-600 dark:text-emerald-300', description: 'Toplam dogru cevap sayisi.' },
+                      { key: 'wrong', icon: 'CircleX', label: 'Yanlis', value: formatStatCount(dashboardAllLessonsStats.wrongCount), valueClass: 'text-red-600 dark:text-red-300', description: 'Toplam yanlis cevap sayisi.' },
+                      { key: 'progress', icon: 'TrendingUp', label: 'Ilerleme', value: `%${dashboardAllLessonsStats.progressPercent}`, valueClass: 'text-brand-600 dark:text-brand-300', description: 'Ilerleme yuzdesi (gorulen / toplam soru).' },
+                    ];
+                    const activeAllLessonsStat = mobileDashboardCategoryStatPopover?.categoryId === '__all_lessons__'
+                      ? allLessonsStatItems.find((item) => item.key === mobileDashboardCategoryStatPopover.statKey) || null
+                      : null;
 
-                  <div className="relative z-10 flex items-center gap-3 min-w-0">
-                    <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-500 to-indigo-600 flex items-center justify-center shadow-[0_0_20px_rgba(14,165,233,0.35)]">
-                      <Icon name="Layers" className="w-5 h-5 text-white" />
-                    </div>
-                    <h3 className="text-[22px] leading-[1.15] font-black text-slate-900 dark:text-white truncate tracking-tight py-[1px]">Tum Dersler</h3>
-                  </div>
+                    return (
+                      <>
+                        <div
+                          className={`lg:hidden relative rounded-2xl border p-2.5 overflow-hidden animate-fade-in-scale ${
+                            isDarkMode
+                              ? 'border-cyan-400/35 bg-slate-900/45 shadow-[0_10px_24px_rgba(2,6,23,0.42)]'
+                              : 'border-cyan-200 bg-white/85 shadow-[0_10px_24px_rgba(15,23,42,0.1)]'
+                          }`}
+                          style={{ animationDelay: '0ms' }}
+                        >
+                          <div className="pointer-events-none absolute -right-14 -top-14 h-28 w-28 rounded-full bg-gradient-to-br from-cyan-500 to-indigo-600 opacity-[0.24] blur-2xl" />
 
-                  <div className={`relative z-10 w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
-                    isDarkMode
-                      ? 'bg-slate-800/70 border border-cyan-300/35 text-cyan-200 lg:group-hover:text-white lg:group-hover:border-cyan-200/50'
-                      : 'bg-cyan-50 border border-cyan-200 text-cyan-600 lg:group-hover:text-slate-800 lg:group-hover:border-cyan-300'
-                  }`}>
-                    <Icon name="ChevronRight" className="w-4 h-4 lg:transition-transform lg:duration-300 lg:group-hover:translate-x-0.5" />
-                  </div>
-                </button>
+                          <button type="button" onClick={openAllLessonsQuizSetup} className="relative z-10 w-full flex items-center justify-between gap-2 text-left">
+                            <div className="min-w-0 flex items-center gap-3">
+                              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-500 to-indigo-600 flex items-center justify-center shadow-[0_0_20px_rgba(14,165,233,0.35)] shrink-0">
+                                <Icon name="Layers" className="w-5 h-5 text-white" />
+                              </div>
+                              <div className="min-w-0">
+                                <h3 className="text-[18px] leading-[1.15] font-black text-slate-900 dark:text-white truncate tracking-tight">Tum Dersler</h3>
+                              </div>
+                            </div>
+                            <div className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
+                              isDarkMode
+                                ? 'bg-emerald-500/12 border border-emerald-300/35 text-emerald-200'
+                                : 'bg-emerald-50 border border-emerald-200 text-emerald-600'
+                            }`}>
+                              <Icon name="ChevronRight" className="w-4 h-4 animate-pulse" />
+                            </div>
+                          </button>
+
+                          <div className={`relative z-10 mt-2 rounded-xl border overflow-hidden ${
+                            isDarkMode
+                              ? 'border-slate-500/30 bg-gradient-to-r from-slate-900/55 via-slate-900/35 to-slate-800/40'
+                              : 'border-slate-200 bg-gradient-to-r from-white/95 via-slate-50/70 to-sky-50/60'
+                          }`}>
+                            <div className="p-1.5">
+                              <div className="grid grid-cols-6 gap-1">
+                                {allLessonsStatItems.map((item) => {
+                                  const isActive = activeAllLessonsStat?.key === item.key;
+                                  return (
+                                    <button
+                                      key={item.key}
+                                      type="button"
+                                      onClick={() => {
+                                        setMobileDashboardCategoryStatPopover((prev) => (
+                                          prev?.categoryId === '__all_lessons__' && prev.statKey === item.key
+                                            ? null
+                                            : { categoryId: '__all_lessons__', statKey: item.key }
+                                        ));
+                                      }}
+                                      aria-pressed={isActive}
+                                      aria-label={`${item.label}: ${item.value}`}
+                                      title={item.label}
+                                      className={`h-12 rounded-md border transition flex flex-col items-center justify-center gap-0.5 ${
+                                        isActive
+                                          ? 'border-brand-300 bg-white dark:border-brand-600/60 dark:bg-surface-800/80 shadow-sm'
+                                          : 'border-transparent bg-white/70 dark:bg-surface-900/45'
+                                      }`}
+                                    >
+                                      <Icon name={item.icon} className={`w-3.5 h-3.5 ${item.valueClass}`} />
+                                      <AnimatedStatValue className={`text-[10px] font-black leading-none tabular-nums ${item.valueClass}`} value={item.value} />
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                              {activeAllLessonsStat && (
+                                <div className="mt-1.5 rounded-md border border-brand-200/70 dark:border-brand-700/40 bg-white/95 dark:bg-surface-900/90 px-2.5 py-2 shadow-sm animate-fade-in">
+                                  <div className="flex items-center gap-2">
+                                    <div className="w-6 h-6 rounded-md bg-brand-50 dark:bg-brand-900/20 flex items-center justify-center shrink-0">
+                                      <Icon name={activeAllLessonsStat.icon} className={`w-3.5 h-3.5 ${activeAllLessonsStat.valueClass}`} />
+                                    </div>
+                                    <div className="min-w-0">
+                                      <p className="text-[10px] font-bold text-surface-700 dark:text-surface-200 leading-tight">
+                                        {activeAllLessonsStat.label}: <span className={`tabular-nums ${activeAllLessonsStat.valueClass}`}>{activeAllLessonsStat.value}</span>
+                                      </p>
+                                      <p className="text-[10px] text-surface-500 dark:text-surface-400 leading-tight mt-0.5">
+                                        {activeAllLessonsStat.description}
+                                      </p>
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                              <div className="mt-2">
+                                <div className={`h-1.5 rounded-full overflow-hidden ${isDarkMode ? 'bg-slate-700/80' : 'bg-slate-200/80'}`}>
+                                  <div className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-indigo-600 transition-all duration-500" style={{ width: `${dashboardAllLessonsStats.progressPercent}%` }} />
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        <button
+                          onClick={openAllLessonsQuizSetup}
+                          className={`hidden lg:flex group relative w-full min-h-[76px] rounded-2xl px-3 py-2.5 md:px-4 md:py-3 hover:-translate-y-0.5 transition-all duration-300 text-left overflow-hidden animate-fade-in-scale items-center justify-between cursor-pointer ${
+                            isDarkMode
+                              ? 'border border-cyan-400/35 bg-slate-900/45 shadow-[0_10px_24px_rgba(2,6,23,0.42)]'
+                              : 'border border-cyan-200 bg-white/85 shadow-[0_10px_24px_rgba(15,23,42,0.1)]'
+                          }`}
+                          style={{ animationDelay: '0ms' }}
+                        >
+                          <div className="pointer-events-none absolute -right-14 -top-14 h-28 w-28 rounded-full bg-gradient-to-br from-cyan-500 to-indigo-600 opacity-[0.24] blur-2xl transition-all duration-500 group-hover:opacity-[0.38]" />
+                          <div className="relative z-10 flex items-center gap-3 min-w-0">
+                            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-500 to-indigo-600 flex items-center justify-center shadow-[0_0_20px_rgba(14,165,233,0.35)]">
+                              <Icon name="Layers" className="w-5 h-5 text-white" />
+                            </div>
+                            <h3 className="text-[22px] leading-[1.15] font-black text-slate-900 dark:text-white truncate tracking-tight py-[1px]">Tum Dersler</h3>
+                          </div>
+                          <div className={`relative z-10 w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
+                            isDarkMode
+                              ? 'bg-slate-800/70 border border-cyan-300/35 text-cyan-200 lg:group-hover:text-white lg:group-hover:border-cyan-200/50'
+                              : 'bg-cyan-50 border border-cyan-200 text-cyan-600 lg:group-hover:text-slate-800 lg:group-hover:border-cyan-300'
+                          }`}>
+                            <Icon name="ChevronRight" className="w-4 h-4 lg:transition-transform lg:duration-300 lg:group-hover:translate-x-0.5" />
+                          </div>
+                        </button>
+                      </>
+                    );
+                  })()}
+                </React.Fragment>
 
                 {categories.map((cat, index) => {
                   const color = getCatColor(cat.id);
+                  const categoryStats = statisticsCategoryRowById[cat.id];
+                  const categoryTotalQuestionCount = categoryStats?.totalQuestionCount || 0;
+                  const categoryUniqueSeenCount = categoryStats?.uniqueSolvedCount || 0;
+                  const categoryTotalAnsweredCount = categoryStats?.totalAnsweredCount || 0;
+                  const categoryCorrectCount = categoryStats?.correctCount || 0;
+                  const categoryWrongCount = categoryStats?.wrongCount || 0;
+                  const categoryProgressPercent = categoryStats?.progressPercent || 0;
+                  const dashboardCategoryStatItems: Array<{
+                    key: DashboardCategoryStatKey;
+                    icon: string;
+                    label: string;
+                    value: string;
+                    valueClass: string;
+                    description: string;
+                  }> = [
+                    {
+                      key: 'total',
+                      icon: 'Hash',
+                      label: 'Toplam Soru',
+                      value: formatStatCount(categoryTotalQuestionCount),
+                      valueClass: 'text-slate-700 dark:text-slate-100',
+                      description: 'Bu dersteki toplam soru sayisi.',
+                    },
+                    {
+                      key: 'seen',
+                      icon: 'Eye',
+                      label: 'Gorulen Soru',
+                      value: formatStatCount(categoryUniqueSeenCount),
+                      valueClass: 'text-cyan-600 dark:text-cyan-300',
+                      description: 'Toplam gorulen (boslar haric) farkli soru sayisi.',
+                    },
+                    {
+                      key: 'solved',
+                      icon: 'CircleCheck',
+                      label: 'Cozulen Soru',
+                      value: formatStatCount(categoryTotalAnsweredCount),
+                      valueClass: 'text-fuchsia-600 dark:text-fuchsia-300',
+                      description: 'Toplam cozulen soru sayisi (dogru + yanlis, tekrarlar dahil).',
+                    },
+                    {
+                      key: 'correct',
+                      icon: 'CheckCircle',
+                      label: 'Dogru',
+                      value: formatStatCount(categoryCorrectCount),
+                      valueClass: 'text-emerald-600 dark:text-emerald-300',
+                      description: 'Toplam dogru cevap sayisi.',
+                    },
+                    {
+                      key: 'wrong',
+                      icon: 'CircleX',
+                      label: 'Yanlis',
+                      value: formatStatCount(categoryWrongCount),
+                      valueClass: 'text-red-600 dark:text-red-300',
+                      description: 'Toplam yanlis cevap sayisi.',
+                    },
+                    {
+                      key: 'progress',
+                      icon: 'TrendingUp',
+                      label: 'Ilerleme',
+                      value: `%${categoryProgressPercent}`,
+                      valueClass: 'text-brand-600 dark:text-brand-300',
+                      description: 'Ilerleme yuzdesi (gorulen / toplam soru).',
+                    },
+                  ];
+                  const activeDashboardCategoryStat = mobileDashboardCategoryStatPopover?.categoryId === cat.id
+                    ? dashboardCategoryStatItems.find((item) => item.key === mobileDashboardCategoryStatPopover.statKey) || null
+                    : null;
 
                   return (
-                    <button
-                      key={cat.id}
-                      onClick={() => handleCategoryCardClick(cat)}
-                      className={`group relative w-full min-h-[76px] rounded-2xl px-3 py-2.5 md:px-4 md:py-3 hover:-translate-y-0.5 transition-all duration-300 text-left overflow-hidden animate-fade-in-scale flex items-center justify-between cursor-pointer ${
-                        isDarkMode
-                          ? 'border border-slate-500/30 bg-slate-900/45 shadow-[0_10px_24px_rgba(2,6,23,0.42)]'
-                          : 'border border-slate-200 bg-white/85 shadow-[0_10px_24px_rgba(15,23,42,0.1)]'
-                      }`}
-                      style={{ animationDelay: `${(index + 1) * 60}ms` }}
-                    >
-                      {/* Animated gradient background blob */}
-                      <div className={`pointer-events-none absolute -right-14 -top-14 h-28 w-28 rounded-full bg-gradient-to-br ${color.gradient} opacity-[0.2] blur-2xl transition-all duration-500 group-hover:opacity-[0.35]`} />
+                    <React.Fragment key={cat.id}>
+                      <div
+                        className={`lg:hidden relative rounded-2xl border p-2.5 overflow-hidden animate-fade-in-scale ${
+                          isDarkMode
+                            ? 'border-slate-500/30 bg-slate-900/45 shadow-[0_10px_24px_rgba(2,6,23,0.42)]'
+                            : 'border-slate-200 bg-white/85 shadow-[0_10px_24px_rgba(15,23,42,0.1)]'
+                        }`}
+                        style={{ animationDelay: `${(index + 1) * 60}ms` }}
+                      >
+                        <div className={`pointer-events-none absolute -right-14 -top-14 h-28 w-28 rounded-full bg-gradient-to-br ${color.gradient} opacity-[0.2] blur-2xl`} />
 
-                      <div className="relative z-10 flex items-center gap-3 min-w-0">
-                        <div className={`w-10 h-10 rounded-xl bg-gradient-to-br ${color.gradient} flex items-center justify-center shadow-[0_0_20px_rgba(59,130,246,0.35)]`}>
-                          <Icon name={cat.iconName} className="w-5 h-5 text-white" />
+                        <button
+                          type="button"
+                          onClick={() => handleCategoryCardClick(cat)}
+                          className="relative z-10 w-full flex items-center justify-between gap-2 text-left"
+                        >
+                          <div className="min-w-0 flex items-center gap-3">
+                            <div className={`w-10 h-10 rounded-xl bg-gradient-to-br ${color.gradient} flex items-center justify-center shadow-[0_0_20px_rgba(59,130,246,0.35)] shrink-0`}>
+                              <Icon name={cat.iconName} className="w-5 h-5 text-white" />
+                            </div>
+                            <div className="min-w-0">
+                              <h3 className="text-[18px] leading-[1.15] font-black text-slate-900 dark:text-white truncate tracking-tight">{cat.name}</h3>
+                            </div>
+                          </div>
+                          <div className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
+                            isDarkMode
+                              ? 'bg-emerald-500/12 border border-emerald-300/35 text-emerald-200'
+                              : 'bg-emerald-50 border border-emerald-200 text-emerald-600'
+                          }`}>
+                            <Icon name="ChevronRight" className="w-4 h-4 animate-pulse" />
+                          </div>
+                        </button>
+
+                        <div className={`relative z-10 mt-2 rounded-xl border overflow-hidden ${
+                          isDarkMode
+                            ? 'border-slate-500/30 bg-gradient-to-r from-slate-900/55 via-slate-900/35 to-slate-800/40'
+                            : 'border-slate-200 bg-gradient-to-r from-white/95 via-slate-50/70 to-sky-50/60'
+                        }`}>
+                          <div className="p-1.5">
+                            <div className="grid grid-cols-6 gap-1">
+                              {dashboardCategoryStatItems.map((item) => {
+                                const isActive = activeDashboardCategoryStat?.key === item.key;
+                                return (
+                                  <button
+                                    key={item.key}
+                                    type="button"
+                                    onClick={() => {
+                                      setMobileDashboardCategoryStatPopover((prev) => (
+                                        prev?.categoryId === cat.id && prev.statKey === item.key
+                                          ? null
+                                          : { categoryId: cat.id, statKey: item.key }
+                                      ));
+                                    }}
+                                    aria-pressed={isActive}
+                                    aria-label={`${item.label}: ${item.value}`}
+                                    title={item.label}
+                                    className={`h-12 rounded-md border transition flex flex-col items-center justify-center gap-0.5 ${
+                                      isActive
+                                        ? 'border-brand-300 bg-white dark:border-brand-600/60 dark:bg-surface-800/80 shadow-sm'
+                                        : 'border-transparent bg-white/70 dark:bg-surface-900/45'
+                                    }`}
+                                  >
+                                    <Icon name={item.icon} className={`w-3.5 h-3.5 ${item.valueClass}`} />
+                                    <AnimatedStatValue className={`text-[10px] font-black leading-none tabular-nums ${item.valueClass}`} value={item.value} />
+                                  </button>
+                                );
+                              })}
+                            </div>
+                            {activeDashboardCategoryStat && (
+                              <div className="mt-1.5 rounded-md border border-brand-200/70 dark:border-brand-700/40 bg-white/95 dark:bg-surface-900/90 px-2.5 py-2 shadow-sm animate-fade-in">
+                                <div className="flex items-center gap-2">
+                                  <div className="w-6 h-6 rounded-md bg-brand-50 dark:bg-brand-900/20 flex items-center justify-center shrink-0">
+                                    <Icon name={activeDashboardCategoryStat.icon} className={`w-3.5 h-3.5 ${activeDashboardCategoryStat.valueClass}`} />
+                                  </div>
+                                  <div className="min-w-0">
+                                    <p className="text-[10px] font-bold text-surface-700 dark:text-surface-200 leading-tight">
+                                      {activeDashboardCategoryStat.label}: <span className={`tabular-nums ${activeDashboardCategoryStat.valueClass}`}>{activeDashboardCategoryStat.value}</span>
+                                    </p>
+                                    <p className="text-[10px] text-surface-500 dark:text-surface-400 leading-tight mt-0.5">
+                                      {activeDashboardCategoryStat.description}
+                                    </p>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                            <div className="mt-2">
+                              <div className={`h-1.5 rounded-full overflow-hidden ${isDarkMode ? 'bg-slate-700/80' : 'bg-slate-200/80'}`}>
+                                <div
+                                  className={`h-full rounded-full bg-gradient-to-r ${color.gradient} transition-all duration-500`}
+                                  style={{ width: `${categoryProgressPercent}%` }}
+                                />
+                              </div>
+                            </div>
+                          </div>
                         </div>
-                        <h3 className="text-[22px] leading-[1.15] font-black text-slate-900 dark:text-white truncate tracking-tight py-[1px]">{cat.name}</h3>
                       </div>
 
-                      <div className={`relative z-10 w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
-                        isDarkMode
-                          ? 'bg-slate-800/70 border border-slate-500/35 text-slate-300 lg:group-hover:text-white lg:group-hover:border-slate-300/40'
-                          : 'bg-slate-100 border border-slate-200 text-slate-500 lg:group-hover:text-slate-800 lg:group-hover:border-slate-300'
-                      }`}>
-                        <Icon name="ChevronRight" className="w-4 h-4 lg:transition-transform lg:duration-300 lg:group-hover:translate-x-0.5" />
-                      </div>
-                    </button>
+                      <button
+                        onClick={() => handleCategoryCardClick(cat)}
+                        className={`hidden lg:flex group relative w-full min-h-[76px] rounded-2xl px-3 py-2.5 md:px-4 md:py-3 hover:-translate-y-0.5 transition-all duration-300 text-left overflow-hidden animate-fade-in-scale items-center justify-between cursor-pointer ${
+                          isDarkMode
+                            ? 'border border-slate-500/30 bg-slate-900/45 shadow-[0_10px_24px_rgba(2,6,23,0.42)]'
+                            : 'border border-slate-200 bg-white/85 shadow-[0_10px_24px_rgba(15,23,42,0.1)]'
+                        }`}
+                        style={{ animationDelay: `${(index + 1) * 60}ms` }}
+                      >
+                        <div className={`pointer-events-none absolute -right-14 -top-14 h-28 w-28 rounded-full bg-gradient-to-br ${color.gradient} opacity-[0.2] blur-2xl transition-all duration-500 group-hover:opacity-[0.35]`} />
+
+                        <div className="relative z-10 flex items-center gap-3 min-w-0">
+                          <div className={`w-10 h-10 rounded-xl bg-gradient-to-br ${color.gradient} flex items-center justify-center shadow-[0_0_20px_rgba(59,130,246,0.35)]`}>
+                            <Icon name={cat.iconName} className="w-5 h-5 text-white" />
+                          </div>
+                          <h3 className="text-[22px] leading-[1.15] font-black text-slate-900 dark:text-white truncate tracking-tight py-[1px]">{cat.name}</h3>
+                        </div>
+
+                        <div className={`relative z-10 w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
+                          isDarkMode
+                            ? 'bg-slate-800/70 border border-slate-500/35 text-slate-300 lg:group-hover:text-white lg:group-hover:border-slate-300/40'
+                            : 'bg-slate-100 border border-slate-200 text-slate-500 lg:group-hover:text-slate-800 lg:group-hover:border-slate-300'
+                        }`}>
+                          <Icon name="ChevronRight" className="w-4 h-4 lg:transition-transform lg:duration-300 lg:group-hover:translate-x-0.5" />
+                        </div>
+                      </button>
+                    </React.Fragment>
                   );
                 })}
               </div>
