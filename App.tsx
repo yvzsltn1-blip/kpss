@@ -91,6 +91,8 @@ type QuizQuestionMeta = {
 };
 type TopicCardStatKey = 'total' | 'seen' | 'solved' | 'wrong' | 'favorite' | 'progress';
 type StatisticsTopicStatKey = 'seen' | 'solved' | 'correct' | 'wrong' | 'accuracy' | 'progress';
+type HomeStatsStatKey = 'seen' | 'solved' | 'correct' | 'wrong' | 'favorite' | 'accuracy';
+type StatisticsTopicSortMode = 'activity' | 'added_order';
 type MixedQuizScope = { mode: 'all' } | { mode: 'category'; categoryId: string };
 
 // Kategori Renk Tanımları
@@ -1162,9 +1164,12 @@ export default function App() {
   const [statisticsTopicStatPopover, setStatisticsTopicStatPopover] = useState<{ topicId: string; statKey: StatisticsTopicStatKey } | null>(null);
   const [statisticsSummaryStatPopover, setStatisticsSummaryStatPopover] = useState<StatisticsTopicStatKey | null>(null);
   const [statisticsTopicNamePopoverTopicId, setStatisticsTopicNamePopoverTopicId] = useState<string | null>(null);
+  const [statisticsTopicSortMode, setStatisticsTopicSortMode] = useState<StatisticsTopicSortMode>('activity');
   const [homeStatsCategoryFilter, setHomeStatsCategoryFilter] = useState<string>('all');
+  const [homeStatsStatPopover, setHomeStatsStatPopover] = useState<HomeStatsStatKey | null>(null);
   const [statisticsScopeCategoryId, setStatisticsScopeCategoryId] = useState<string>('all');
   const [isStatisticsScopeMenuOpen, setIsStatisticsScopeMenuOpen] = useState(false);
+  const [isHomeStatsScopeMenuOpen, setIsHomeStatsScopeMenuOpen] = useState(false);
   const [isHomeStatsExpanded, setIsHomeStatsExpanded] = useState(true);
   const [isRulesHelpModalOpen, setIsRulesHelpModalOpen] = useState(false);
   const [selectedReviewQuestionIndex, setSelectedReviewQuestionIndex] = useState<number | null>(null);
@@ -1235,6 +1240,7 @@ export default function App() {
   const categoriesRef = useRef<Category[]>(categories);
   const topicBloggerPagesRef = useRef<Record<string, string>>(topicBloggerPages);
   const statisticsScopeMenuRef = useRef<HTMLDivElement | null>(null);
+  const homeStatsScopeMenuRef = useRef<HTMLDivElement | null>(null);
   const categoriesSeedAttemptedRef = useRef(false);
   const topicBloggerPagesSeedAttemptedRef = useRef(false);
   const deletedTopicIdsRef = useRef<string[]>(deletedTopicIds);
@@ -1636,6 +1642,27 @@ export default function App() {
   useEffect(() => {
     setIsStatisticsScopeMenuOpen(false);
   }, [statisticsScopeCategoryId]);
+
+  useEffect(() => {
+    if (!isHomeStatsScopeMenuOpen) return;
+    const handleOutsidePointer = (event: MouseEvent | TouchEvent) => {
+      const targetNode = event.target;
+      if (!(targetNode instanceof Node)) return;
+      if (!homeStatsScopeMenuRef.current?.contains(targetNode)) {
+        setIsHomeStatsScopeMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutsidePointer);
+    document.addEventListener('touchstart', handleOutsidePointer);
+    return () => {
+      document.removeEventListener('mousedown', handleOutsidePointer);
+      document.removeEventListener('touchstart', handleOutsidePointer);
+    };
+  }, [isHomeStatsScopeMenuOpen]);
+
+  useEffect(() => {
+    setIsHomeStatsScopeMenuOpen(false);
+  }, [homeStatsCategoryFilter]);
 
   useEffect(() => {
     try {
@@ -4209,6 +4236,66 @@ export default function App() {
       accuracyPercent,
     };
   }, [allSeenQuestionStats, favoriteQuestionIdsByTopic, homeStatsTopicIds, topicProgressStats]);
+  const homeStatsMobileStatItems: Array<{
+    key: HomeStatsStatKey;
+    icon: string;
+    label: string;
+    value: string;
+    valueClass: string;
+    description: string;
+  }> = [
+    {
+      key: 'seen',
+      icon: 'Eye',
+      label: 'Toplam Gorulen',
+      value: formatStatCount(homeStats.uniqueSolvedCount),
+      valueClass: 'text-cyan-600 dark:text-cyan-300',
+      description: 'Toplam gorulen (boslar haric) farkli soru sayisi.',
+    },
+    {
+      key: 'solved',
+      icon: 'CircleCheck',
+      label: 'Toplam Cozulen',
+      value: formatStatCount(homeStats.totalAnsweredCount),
+      valueClass: 'text-fuchsia-600 dark:text-fuchsia-300',
+      description: 'Toplam cozulen soru sayisi (dogru + yanlis, tekrarlar dahil).',
+    },
+    {
+      key: 'correct',
+      icon: 'CheckCircle',
+      label: 'Dogru Soru Sayisi',
+      value: formatStatCount(homeStats.progressStats.correctCount),
+      valueClass: 'text-emerald-600 dark:text-emerald-300',
+      description: 'Toplam dogru cevap sayisi.',
+    },
+    {
+      key: 'wrong',
+      icon: 'CircleX',
+      label: 'Yanlis Soru Sayisi',
+      value: formatStatCount(homeStats.totalWrongAnswers),
+      valueClass: 'text-red-600 dark:text-red-300',
+      description: 'Toplam yanlis cevap sayisi.',
+    },
+    {
+      key: 'favorite',
+      icon: 'Star',
+      label: 'Favori Soru Sayisi',
+      value: formatStatCount(homeStats.filteredFavoriteCount),
+      valueClass: 'text-amber-600 dark:text-amber-300',
+      description: 'Secili kapsam icindeki toplam favori soru sayisi.',
+    },
+    {
+      key: 'accuracy',
+      icon: 'Target',
+      label: 'Basari Orani',
+      value: `%${homeStats.accuracyPercent}`,
+      valueClass: 'text-rose-600 dark:text-rose-300',
+      description: 'Basari orani (dogru / cevaplanan).',
+    },
+  ];
+  const activeHomeStatsMobileStat = homeStatsStatPopover
+    ? homeStatsMobileStatItems.find((item) => item.key === homeStatsStatPopover) || null
+    : null;
   const seenQuestionStatsByTopic = useMemo<Record<string, SeenQuestionStats[]>>(() => {
     const next: Record<string, SeenQuestionStats[]> = {};
     allSeenQuestionStats.forEach((stats) => {
@@ -4218,8 +4305,8 @@ export default function App() {
     return next;
   }, [allSeenQuestionStats]);
   const statisticsTopicRows = useMemo(() => {
-    return categories.flatMap((cat) => {
-      return cat.subCategories.map((sub) => {
+    return categories.flatMap((cat, categoryOrderIndex) => {
+      return cat.subCategories.map((sub, topicOrderIndex) => {
         const topicStats = topicProgressStats[sub.id] || EMPTY_TOPIC_PROGRESS;
         const questionCount = (allQuestions[sub.id] || []).length;
         const seenStats = seenQuestionStatsByTopic[sub.id] || [];
@@ -4238,8 +4325,10 @@ export default function App() {
           categoryId: cat.id,
           categoryName: cat.name,
           categoryIconName: cat.iconName,
+          categoryOrderIndex,
           topicId: sub.id,
           topicName: sub.name,
+          topicOrderIndex,
           questionCount,
           completionPercent,
           uniqueSolvedCount,
@@ -4303,6 +4392,14 @@ export default function App() {
     const rows = statisticsScopeCategoryId === 'all'
       ? statisticsTopicRows
       : statisticsTopicRows.filter((row) => row.categoryId === statisticsScopeCategoryId);
+    if (statisticsTopicSortMode === 'added_order') {
+      return [...rows].sort((a, b) => {
+        if (a.categoryOrderIndex !== b.categoryOrderIndex) {
+          return a.categoryOrderIndex - b.categoryOrderIndex;
+        }
+        return a.topicOrderIndex - b.topicOrderIndex;
+      });
+    }
     return [...rows].sort((a, b) => {
       if (b.totalAnsweredCount !== a.totalAnsweredCount) {
         return b.totalAnsweredCount - a.totalAnsweredCount;
@@ -4312,7 +4409,7 @@ export default function App() {
       }
       return a.topicName.localeCompare(b.topicName, 'tr');
     });
-  }, [statisticsScopeCategoryId, statisticsTopicRows]);
+  }, [statisticsScopeCategoryId, statisticsTopicRows, statisticsTopicSortMode]);
   const statisticsSummary = useMemo(() => {
     const baseRows = statisticsScopeCategoryId === 'all'
       ? statisticsCategoryRows
@@ -7517,6 +7614,38 @@ export default function App() {
                     <h2 className="text-base md:text-lg font-extrabold text-slate-900 dark:text-white">
                       {statisticsScopeLabel} {'Konular\u0131'}
                     </h2>
+                    <div className={`inline-flex items-center rounded-xl border p-1 ${
+                      isDarkMode
+                        ? 'border-slate-500/35 bg-slate-900/35'
+                        : 'border-slate-200 bg-white/90'
+                    }`}>
+                      {[
+                        { key: 'activity' as const, label: 'Aktivite' },
+                        { key: 'added_order' as const, label: 'Eklenme Sirasi' },
+                      ].map((option) => {
+                        const isActive = statisticsTopicSortMode === option.key;
+                        return (
+                          <button
+                            key={option.key}
+                            type="button"
+                            onClick={() => setStatisticsTopicSortMode(option.key)}
+                            aria-pressed={isActive}
+                            title={option.label}
+                            className={`px-2.5 h-8 rounded-lg text-[11px] font-semibold transition ${
+                              isActive
+                                ? (isDarkMode
+                                    ? 'bg-cyan-500/18 text-cyan-100'
+                                    : 'bg-cyan-50 text-cyan-700')
+                                : (isDarkMode
+                                    ? 'text-slate-200 hover:bg-slate-800/70'
+                                    : 'text-slate-600 hover:bg-slate-50')
+                            }`}
+                          >
+                            {option.label}
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
 
                   <div className="pr-0.5">
@@ -7759,25 +7888,24 @@ export default function App() {
                 </div>
               </div>
 
-              <div className={`${mobileDashboardTab === 'categories' ? 'hidden lg:grid' : 'grid'} w-full min-w-0 grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 md:gap-2.5 shrink-0 stagger-children`}>
+              <div className={`${mobileDashboardTab === 'categories' ? 'hidden lg:grid' : 'grid'} w-full min-w-0 grid-cols-1 sm:grid-cols-3 gap-2 md:gap-2.5 shrink-0 stagger-children`}>
                 {[
-                  { id: 'kategori', label: 'KATEGORI', value: categories.length, icon: 'Layers', tone: 'kpss-neon-stat-fuchsia' },
-                  { id: 'konu', label: 'KONU', value: categories.reduce((sum, c) => sum + c.subCategories.length, 0), icon: 'BookOpen', tone: 'kpss-neon-stat-blue' },
-                  { id: 'soru', label: 'SORU', value: getTotalQuestionCount(), icon: 'FileQuestion', tone: 'kpss-neon-stat-emerald' },
-                  { id: 'karsina_cikan', label: 'KARSINA CIKAN', value: overallProgressStats.seenCount, icon: 'User', tone: 'kpss-neon-stat-cyan' },
-                  { id: 'toplam_dogru', label: 'TOPLAM DOGRU', value: overallProgressStats.correctCount, icon: 'CircleCheck', tone: 'kpss-neon-stat-amber' },
+                  { id: 'kategori', label: 'KATEGORI', mobileLabel: 'Ders Sayisi', value: categories.length, icon: 'Layers', tone: 'kpss-neon-stat-fuchsia' },
+                  { id: 'konu', label: 'KONU', mobileLabel: 'Konu Sayisi', value: categories.reduce((sum, c) => sum + c.subCategories.length, 0), icon: 'BookOpen', tone: 'kpss-neon-stat-blue' },
+                  { id: 'soru', label: 'SORU', mobileLabel: 'Soru Sayisi', value: getTotalQuestionCount(), icon: 'FileQuestion', tone: 'kpss-neon-stat-emerald' },
                 ].map((card) => (
                   <div
                     key={card.id}
-                    className={`kpss-neon-stat-card w-full min-w-0 ${card.tone} animate-fade-in-scale ${card.id === 'toplam_dogru' ? 'col-span-2 sm:col-span-1' : ''}`}
+                    className={`kpss-neon-stat-card w-full min-w-0 ${card.tone} animate-fade-in-scale`}
                   >
                     <div className="flex items-center gap-2.5">
                       <div className="kpss-neon-stat-icon w-10 h-10 md:w-11 md:h-11 rounded-xl md:rounded-2xl flex items-center justify-center shrink-0">
                         <Icon name={card.icon} className="w-4 h-4 text-slate-800 dark:text-white" />
                       </div>
                       <div className="min-w-0">
-                        <p className="text-[10px] md:text-[11px] text-slate-600 dark:text-slate-200/80 font-bold uppercase tracking-[0.12em] leading-none">{card.label}</p>
-                        <p className="text-[30px] sm:text-[34px] md:text-[36px] font-black text-slate-900 dark:text-white leading-none mt-0">{card.value}</p>
+                        <p className="sm:hidden text-[10px] text-slate-600 dark:text-slate-200/80 font-semibold leading-none whitespace-nowrap">{card.mobileLabel}</p>
+                        <p className="hidden sm:block text-[10px] md:text-[11px] text-slate-600 dark:text-slate-200/80 font-bold uppercase tracking-[0.12em] leading-none">{card.label}</p>
+                        <p className="text-[30px] sm:text-[34px] md:text-[36px] font-black text-slate-900 dark:text-white leading-none mt-0">{formatStatCount(card.value)}</p>
                       </div>
                     </div>
                   </div>
@@ -7797,66 +7925,52 @@ export default function App() {
                       Toplam
                     </span>
                   </div>
-                  <div className="space-y-1.5">
-                    <div className={`rounded-xl border overflow-hidden ${
-                      isDarkMode
-                        ? 'border-cyan-400/35 bg-gradient-to-r from-slate-900/60 via-slate-900/35 to-indigo-900/45 shadow-[0_0_0_1px_rgba(34,211,238,0.14),0_10px_24px_rgba(2,6,23,0.38)]'
-                        : 'border-sky-300/70 bg-gradient-to-r from-white/95 via-sky-50/80 to-indigo-50/75 shadow-[0_8px_20px_rgba(56,189,248,0.16)]'
-                    }`}>
-                      <div className={`flex items-stretch divide-x ${isDarkMode ? 'divide-cyan-300/30' : 'divide-sky-200/90'}`}>
-                        <div className="flex-1 min-w-0 px-2 py-2.5 text-center">
-                          <p className="kpss-neon-mini-label normal-case !text-[8.5px] !tracking-[0.03em] !leading-[1.25] !font-medium">Toplam Cozulen</p>
-                          <p className="kpss-neon-mini-value !text-[20px] !font-semibold !tracking-[0.01em]">{homeStats.uniqueSolvedCount}</p>
-                        </div>
-                        <div className="flex-1 min-w-0 px-2 py-2.5 text-center">
-                          <p className="kpss-neon-mini-label normal-case !text-[8.5px] !tracking-[0.03em] !leading-[1.25] !font-medium">Toplam Cevaplanan</p>
-                          <p className="kpss-neon-mini-value !text-[20px] !font-semibold !tracking-[0.01em]">{homeStats.totalAnsweredCount}</p>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => openHomeStatsPresetQuiz('favorite')}
-                          className={`flex-1 min-w-0 px-2 py-2.5 text-center transition-colors outline-none focus-visible:ring-2 ${
-                            isDarkMode
-                              ? 'hover:bg-amber-400/10 focus-visible:ring-amber-300/70'
-                              : 'hover:bg-amber-100/60 focus-visible:ring-amber-400/60'
-                          }`}
-                          title="Favori sorulardan sinav baslat"
-                          aria-label="Favori sorulardan sinav baslat"
-                        >
-                          <p className="kpss-neon-mini-label normal-case !text-[8.5px] !tracking-[0.03em] !leading-[1.25] !font-medium">Favori Soru Sayisi</p>
-                          <p className="kpss-neon-mini-value !text-[20px] !font-semibold !tracking-[0.01em]">{homeStats.filteredFavoriteCount}</p>
-                        </button>
+                  <div className={`rounded-xl border overflow-hidden ${
+                    isDarkMode
+                      ? 'border-cyan-400/35 bg-gradient-to-r from-slate-900/60 via-slate-900/35 to-indigo-900/45 shadow-[0_0_0_1px_rgba(34,211,238,0.14),0_10px_24px_rgba(2,6,23,0.38)]'
+                      : 'border-sky-300/70 bg-gradient-to-r from-white/95 via-sky-50/80 to-indigo-50/75 shadow-[0_8px_20px_rgba(56,189,248,0.16)]'
+                  }`}>
+                    <div className="p-1.5">
+                      <div className="grid grid-cols-6 gap-1">
+                        {homeStatsMobileStatItems.map((item) => {
+                          const isActive = activeHomeStatsMobileStat?.key === item.key;
+                          return (
+                            <button
+                              key={item.key}
+                              type="button"
+                              onClick={() => setHomeStatsStatPopover((prev) => (prev === item.key ? null : item.key))}
+                              aria-pressed={isActive}
+                              aria-label={`${item.label}: ${item.value}`}
+                              title={item.label}
+                              className={`h-12 rounded-md border transition flex flex-col items-center justify-center gap-0.5 ${
+                                isActive
+                                  ? 'border-brand-300 bg-white dark:border-brand-600/60 dark:bg-surface-800/80 shadow-sm'
+                                  : 'border-transparent bg-white/70 dark:bg-surface-900/45'
+                              }`}
+                            >
+                              <Icon name={item.icon} className={`w-3.5 h-3.5 ${item.valueClass}`} />
+                              <span className={`text-[10px] font-black leading-none tabular-nums ${item.valueClass}`}>{item.value}</span>
+                            </button>
+                          );
+                        })}
                       </div>
-                    </div>
-                    <div className={`rounded-xl border overflow-hidden ${
-                      isDarkMode
-                        ? 'border-rose-400/30 bg-gradient-to-r from-slate-900/60 via-slate-900/35 to-rose-900/30 shadow-[0_0_0_1px_rgba(244,114,182,0.12),0_10px_24px_rgba(2,6,23,0.38)]'
-                        : 'border-rose-300/55 bg-gradient-to-r from-white/95 via-amber-50/70 to-rose-50/70 shadow-[0_8px_20px_rgba(251,113,133,0.14)]'
-                    }`}>
-                      <div className={`flex items-stretch divide-x ${isDarkMode ? 'divide-rose-300/30' : 'divide-rose-200/90'}`}>
-                        <div className="flex-1 min-w-0 px-2 py-2.5 text-center">
-                          <p className="kpss-neon-mini-label normal-case !text-[8.5px] !tracking-[0.03em] !leading-[1.25] !font-medium">Toplam Dogru</p>
-                          <p className="kpss-neon-mini-value !text-[20px] !font-semibold !tracking-[0.01em]">{homeStats.progressStats.correctCount}</p>
+                      {activeHomeStatsMobileStat && (
+                        <div className="mt-1.5 rounded-md border border-brand-200/70 dark:border-brand-700/40 bg-white/95 dark:bg-surface-900/90 px-2.5 py-2 shadow-sm animate-fade-in">
+                          <div className="flex items-center gap-2">
+                            <div className="w-6 h-6 rounded-md bg-brand-50 dark:bg-brand-900/20 flex items-center justify-center shrink-0">
+                              <Icon name={activeHomeStatsMobileStat.icon} className={`w-3.5 h-3.5 ${activeHomeStatsMobileStat.valueClass}`} />
+                            </div>
+                            <div className="min-w-0">
+                              <p className="text-[10px] font-bold text-surface-700 dark:text-surface-200 leading-tight">
+                                {activeHomeStatsMobileStat.label}: <span className={`tabular-nums ${activeHomeStatsMobileStat.valueClass}`}>{activeHomeStatsMobileStat.value}</span>
+                              </p>
+                              <p className="text-[10px] text-surface-500 dark:text-surface-400 leading-tight mt-0.5">
+                                {activeHomeStatsMobileStat.description}
+                              </p>
+                            </div>
+                          </div>
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => openHomeStatsPresetQuiz('wrong')}
-                          className={`flex-1 min-w-0 px-2 py-2.5 text-center transition-colors outline-none focus-visible:ring-2 ${
-                            isDarkMode
-                              ? 'hover:bg-red-400/10 focus-visible:ring-red-300/70'
-                              : 'hover:bg-red-100/60 focus-visible:ring-red-400/60'
-                          }`}
-                          title="Yanlis sorulardan sinav baslat"
-                          aria-label="Yanlis sorulardan sinav baslat"
-                        >
-                          <p className="kpss-neon-mini-label normal-case !text-[8.5px] !tracking-[0.03em] !leading-[1.25] !font-medium">Toplam Yanlis</p>
-                          <p className="kpss-neon-mini-value !text-[20px] !font-semibold !tracking-[0.01em]">{homeStats.totalWrongAnswers}</p>
-                        </button>
-                        <div className="flex-1 min-w-0 px-2 py-2.5 text-center">
-                          <p className="kpss-neon-mini-label normal-case !text-[8.5px] !tracking-[0.03em] !leading-[1.25] !font-medium">Basari Orani</p>
-                          <p className="kpss-neon-mini-value !text-[20px] !font-semibold !tracking-[0.01em]">%{homeStats.accuracyPercent}</p>
-                        </div>
-                      </div>
+                      )}
                     </div>
                   </div>
                 </section>
@@ -7868,16 +7982,68 @@ export default function App() {
                   <h2 className="text-[34px] leading-none font-black text-slate-900 dark:text-white tracking-tight">Istatistiklerim</h2>
                   <div className="flex flex-wrap sm:flex-nowrap items-center justify-start sm:justify-end gap-2">
                     <span className="hidden md:inline text-[12px] font-semibold text-slate-500 dark:text-slate-300">Kapsam:</span>
-                    <select
-                      value={homeStatsCategoryFilter}
-                      onChange={(e) => setHomeStatsCategoryFilter(e.target.value)}
-                      className="kpss-neon-select h-10 min-w-0 flex-1 sm:flex-none sm:w-[220px] max-w-full px-3 rounded-xl text-[12px] font-semibold text-slate-700 dark:text-slate-100 outline-none"
-                    >
-                      <option value="all">Toplam (Tüm Dersler)</option>
-                      {categories.map((cat) => (
-                        <option key={cat.id} value={cat.id}>{cat.name}</option>
-                      ))}
-                    </select>
+                    <div className="min-w-0 flex-1 sm:flex-none sm:w-[220px]" ref={homeStatsScopeMenuRef}>
+                      <button
+                        type="button"
+                        onClick={() => setIsHomeStatsScopeMenuOpen((prev) => !prev)}
+                        className={`h-10 w-full px-3 rounded-xl text-[12px] font-semibold outline-none flex items-center justify-between transition border ${
+                          isDarkMode
+                            ? 'border-slate-400/35 bg-slate-900/35 text-slate-100 hover:border-slate-300/55'
+                            : 'border-slate-200 bg-white/90 text-slate-700 hover:border-slate-300'
+                        }`}
+                        aria-haspopup="listbox"
+                        aria-expanded={isHomeStatsScopeMenuOpen}
+                        aria-label="Ana sayfa kapsam secimi"
+                      >
+                        <span className="truncate text-left">
+                          {homeStatsCategoryFilter === 'all' ? 'Toplam (Tum Dersler)' : (selectedHomeStatsCategory?.name || 'Secili Ders')}
+                        </span>
+                        <Icon
+                          name="ChevronRight"
+                          className={`w-4 h-4 shrink-0 transition-transform ${isHomeStatsScopeMenuOpen ? 'rotate-90' : ''}`}
+                        />
+                      </button>
+                      {isHomeStatsScopeMenuOpen && (
+                        <div
+                          className={`mt-2 rounded-xl border p-1 shadow-xl ${
+                            isDarkMode
+                              ? 'bg-slate-900/98 border-slate-500/35'
+                              : 'bg-white border-slate-200'
+                          }`}
+                          role="listbox"
+                          aria-label="Ana sayfa kapsam secenekleri"
+                        >
+                          <div className="max-h-56 overflow-y-auto custom-scrollbar">
+                            {[
+                              { id: 'all', name: 'Toplam (Tum Dersler)' },
+                              ...categories.map((cat) => ({ id: cat.id, name: cat.name })),
+                            ].map((option) => (
+                              <button
+                                key={option.id}
+                                type="button"
+                                onClick={() => setHomeStatsCategoryFilter(option.id)}
+                                className={`w-full text-left px-3 py-2 rounded-lg text-[12px] font-semibold transition flex items-center justify-between gap-2 ${
+                                  homeStatsCategoryFilter === option.id
+                                    ? (isDarkMode
+                                        ? 'bg-cyan-500/18 text-cyan-100'
+                                        : 'bg-cyan-50 text-cyan-700')
+                                    : (isDarkMode
+                                        ? 'text-slate-100 hover:bg-slate-800/70'
+                                        : 'text-slate-700 hover:bg-slate-50')
+                                }`}
+                                role="option"
+                                aria-selected={homeStatsCategoryFilter === option.id}
+                              >
+                                <span className="truncate">{option.name}</span>
+                                {homeStatsCategoryFilter === option.id && (
+                                  <Icon name="CircleCheck" className={`w-4 h-4 shrink-0 ${isDarkMode ? 'text-cyan-300' : 'text-cyan-600'}`} />
+                                )}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
                     <button
                       type="button"
                       onClick={() => setIsHomeStatsExpanded((prev) => !prev)}
@@ -7908,16 +8074,16 @@ export default function App() {
                 {isHomeStatsExpanded && (
                   <>
                     <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-300 mb-3">
-                      {homeStatsCategoryFilter === 'all' ? 'Görünüm: Tüm Dersler' : `Görünüm: ${selectedHomeStatsCategory?.name || 'Seçili Ders'}`}
+                      {homeStatsCategoryFilter === 'all' ? 'Gorunum: Tum Dersler' : `Gorunum: ${selectedHomeStatsCategory?.name || 'Secili Ders'}`}
                     </p>
                     <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 md:gap-3">
                       <div className="kpss-neon-mini-card kpss-neon-mini-fuchsia">
                         <p className="kpss-neon-mini-label">Farkli Cozulen</p>
-                        <p className="kpss-neon-mini-value">{homeStats.uniqueSolvedCount}</p>
+                        <p className="kpss-neon-mini-value">{formatStatCount(homeStats.uniqueSolvedCount)}</p>
                       </div>
                       <div className="kpss-neon-mini-card kpss-neon-mini-blue">
                         <p className="kpss-neon-mini-label">Toplam Cevap</p>
-                        <p className="kpss-neon-mini-value">{homeStats.totalAnsweredCount}</p>
+                        <p className="kpss-neon-mini-value">{formatStatCount(homeStats.totalAnsweredCount)}</p>
                       </div>
                       <button
                         type="button"
@@ -7927,11 +8093,11 @@ export default function App() {
                         aria-label="Favori sorulardan sinav baslat"
                       >
                         <p className="kpss-neon-mini-label">Favori Soru</p>
-                        <p className="kpss-neon-mini-value">{homeStats.filteredFavoriteCount}</p>
+                        <p className="kpss-neon-mini-value">{formatStatCount(homeStats.filteredFavoriteCount)}</p>
                       </button>
                       <div className="kpss-neon-mini-card kpss-neon-mini-amber">
                         <p className="kpss-neon-mini-label">Toplam Dogru</p>
-                        <p className="kpss-neon-mini-value">{homeStats.progressStats.correctCount}</p>
+                        <p className="kpss-neon-mini-value">{formatStatCount(homeStats.progressStats.correctCount)}</p>
                       </div>
                       <button
                         type="button"
@@ -7941,7 +8107,7 @@ export default function App() {
                         aria-label="Yanlis sorulardan sinav baslat"
                       >
                         <p className="kpss-neon-mini-label">Yanlis Cevap</p>
-                        <p className="kpss-neon-mini-value">{homeStats.totalWrongAnswers}</p>
+                        <p className="kpss-neon-mini-value">{formatStatCount(homeStats.totalWrongAnswers)}</p>
                       </button>
                       <div className="kpss-neon-mini-card kpss-neon-mini-red">
                         <p className="kpss-neon-mini-label">Basari Orani</p>
@@ -7954,7 +8120,7 @@ export default function App() {
                           ? 'bg-slate-900/30 border border-slate-400/25'
                           : 'bg-white border border-slate-200'
                       }`}>
-                        Yanlis cevap: {homeStats.totalWrongAnswers}
+                        Yanlis cevap: {formatStatCount(homeStats.totalWrongAnswers)}
                       </span>
                     </div>
                   </>
@@ -7968,7 +8134,7 @@ export default function App() {
                     : 'border border-slate-200 bg-white/85 shadow-sm'
                 }`}>
                   <p className="text-[12px] font-extrabold text-slate-900 dark:text-white">Dersler</p>
-                  <span className="text-[10px] font-bold text-slate-500 dark:text-slate-300">{categories.length + 1} ders</span>
+                  <span className="text-[10px] font-bold text-slate-500 dark:text-slate-300">{formatStatCount(categories.length + 1)} ders</span>
                 </div>
               )}
 
