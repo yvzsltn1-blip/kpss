@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF Ayırıcı</title>
+    <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+    <script src="https://unpkg.com/jszip@3.10.1/dist/jszip.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 600px;
+            padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 1.8rem;
+            margin-bottom: 8px;
+            background: linear-gradient(135deg, #60a5fa, #a78bfa);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: #64748b;
+            font-size: 0.85rem;
+            margin-bottom: 32px;
+        }
+
+        .drop-zone {
+            border: 2px dashed #334155;
+            border-radius: 16px;
+            padding: 48px 24px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+            background: #1e293b;
+            margin-bottom: 24px;
+        }
+
+        .drop-zone:hover,
+        .drop-zone.dragover {
+            border-color: #60a5fa;
+            background: #1e293b;
+            box-shadow: 0 0 30px rgba(96, 165, 250, 0.1);
+        }
+
+        .drop-zone.has-file {
+            border-color: #34d399;
+            border-style: solid;
+        }
+
+        .drop-zone-icon {
+            font-size: 2.5rem;
+            margin-bottom: 12px;
+        }
+
+        .drop-zone-text {
+            color: #94a3b8;
+            font-size: 0.95rem;
+        }
+
+        .file-info {
+            display: none;
+            color: #34d399;
+            font-weight: 500;
+            font-size: 0.95rem;
+        }
+
+        .file-info .file-name {
+            word-break: break-all;
+        }
+
+        .file-info .page-count {
+            color: #94a3b8;
+            font-size: 0.8rem;
+            margin-top: 4px;
+        }
+
+        .input-group {
+            margin-bottom: 20px;
+        }
+
+        .input-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+            font-size: 0.9rem;
+            color: #cbd5e1;
+        }
+
+        .input-group input {
+            width: 100%;
+            padding: 12px 16px;
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 10px;
+            color: #e2e8f0;
+            font-size: 0.95rem;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .input-group input:focus {
+            border-color: #60a5fa;
+        }
+
+        .input-group input::placeholder {
+            color: #475569;
+        }
+
+        .help-text {
+            margin-top: 8px;
+            font-size: 0.78rem;
+            color: #64748b;
+            line-height: 1.5;
+        }
+
+        .help-text code {
+            background: #334155;
+            padding: 1px 6px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            color: #a78bfa;
+        }
+
+        .btn {
+            width: 100%;
+            padding: 14px;
+            border: none;
+            border-radius: 10px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+            color: white;
+        }
+
+        .btn:hover:not(:disabled) {
+            transform: translateY(-1px);
+            box-shadow: 0 8px 24px rgba(59, 130, 246, 0.3);
+        }
+
+        .btn:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+
+        .btn:active:not(:disabled) {
+            transform: translateY(0);
+        }
+
+        .status {
+            margin-top: 16px;
+            text-align: center;
+            font-size: 0.85rem;
+            min-height: 24px;
+        }
+
+        .status.error {
+            color: #f87171;
+        }
+
+        .status.success {
+            color: #34d399;
+        }
+
+        .status.processing {
+            color: #60a5fa;
+        }
+
+        .examples {
+            margin-top: 12px;
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .example-chip {
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 20px;
+            padding: 4px 12px;
+            font-size: 0.75rem;
+            color: #94a3b8;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .example-chip:hover {
+            border-color: #60a5fa;
+            color: #60a5fa;
+        }
+
+        #fileInput {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>PDF Ayirici</h1>
+        <p class="subtitle">PDF dosyalarini sayfa sayfa veya aralikla parcala</p>
+
+        <input type="file" id="fileInput" accept=".pdf">
+
+        <div class="drop-zone" id="dropZone">
+            <div class="drop-zone-icon">📄</div>
+            <div class="drop-zone-text">PDF dosyasini surukle veya tikla</div>
+            <div class="file-info" id="fileInfo">
+                <div class="file-name" id="fileName"></div>
+                <div class="page-count" id="pageCount"></div>
+            </div>
+        </div>
+
+        <div class="input-group">
+            <label for="rangeInput">Sayfa Araligi</label>
+            <input type="text" id="rangeInput" placeholder="ornek: 1-5, 8, 12-20" disabled>
+            <div class="help-text">
+                Tek sayfa: <code>5</code> &nbsp;
+                Aralik: <code>1-10</code> &nbsp;
+                Coklu: <code>1-5, 8, 12-20</code>
+            </div>
+            <div class="examples">
+                <span class="example-chip" data-value="1">ilk sayfa</span>
+                <span class="example-chip" data-value="1-5">ilk 5 sayfa</span>
+                <span class="example-chip" data-value="1-10">ilk 10 sayfa</span>
+            </div>
+        </div>
+
+        <button class="btn" id="splitBtn" disabled>Ayir ve Indir</button>
+
+        <div class="status" id="status"></div>
+    </div>
+
+    <script>
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('fileInput');
+        const fileInfo = document.getElementById('fileInfo');
+        const fileName = document.getElementById('fileName');
+        const pageCount = document.getElementById('pageCount');
+        const rangeInput = document.getElementById('rangeInput');
+        const splitBtn = document.getElementById('splitBtn');
+        const status = document.getElementById('status');
+
+        let pdfFile = null;
+        let pdfDoc = null;
+        let totalPages = 0;
+        let baseName = '';
+
+        // Drop zone events
+        dropZone.addEventListener('click', () => fileInput.click());
+
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('dragover');
+        });
+
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('dragover');
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('dragover');
+            const file = e.dataTransfer.files[0];
+            if (file && file.type === 'application/pdf') {
+                loadPdf(file);
+            } else {
+                showStatus('Lutfen bir PDF dosyasi secin.', 'error');
+            }
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files[0]) loadPdf(e.target.files[0]);
+        });
+
+        // Example chips
+        document.querySelectorAll('.example-chip').forEach(chip => {
+            chip.addEventListener('click', () => {
+                if (!rangeInput.disabled) {
+                    rangeInput.value = chip.dataset.value;
+                    updateButtonState();
+                }
+            });
+        });
+
+        rangeInput.addEventListener('input', updateButtonState);
+
+        async function loadPdf(file) {
+            try {
+                pdfFile = file;
+                baseName = file.name.replace(/\.pdf$/i, '');
+                const arrayBuffer = await file.arrayBuffer();
+                pdfDoc = await PDFLib.PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
+                totalPages = pdfDoc.getPageCount();
+
+                fileName.textContent = file.name;
+                pageCount.textContent = `${totalPages} sayfa`;
+                fileInfo.style.display = 'block';
+                dropZone.querySelector('.drop-zone-icon').textContent = '✅';
+                dropZone.querySelector('.drop-zone-text').style.display = 'none';
+                dropZone.classList.add('has-file');
+
+                rangeInput.disabled = false;
+                rangeInput.focus();
+                showStatus('', '');
+                updateButtonState();
+
+                // Update last chip
+                const chips = document.querySelectorAll('.example-chip');
+                chips[chips.length - 1].dataset.value = `1-${totalPages}`;
+                chips[chips.length - 1].textContent = `tum sayfalar (1-${totalPages})`;
+            } catch (err) {
+                showStatus('PDF okunamadi: ' + err.message, 'error');
+            }
+        }
+
+        function updateButtonState() {
+            splitBtn.disabled = !pdfDoc || !rangeInput.value.trim();
+        }
+
+        function parseRanges(input) {
+            const ranges = [];
+            const parts = input.split(',').map(s => s.trim()).filter(Boolean);
+
+            for (const part of parts) {
+                if (part.includes('-')) {
+                    const [startStr, endStr] = part.split('-').map(s => s.trim());
+                    const start = parseInt(startStr);
+                    const end = parseInt(endStr);
+                    if (isNaN(start) || isNaN(end) || start < 1 || end < 1 || start > totalPages || end > totalPages) {
+                        throw new Error(`Gecersiz aralik: "${part}" (toplam ${totalPages} sayfa)`);
+                    }
+                    if (start > end) {
+                        throw new Error(`Baslangic bitis degerinden buyuk olamaz: "${part}"`);
+                    }
+                    ranges.push({ start, end, label: `${start}-${end}` });
+                } else {
+                    const page = parseInt(part);
+                    if (isNaN(page) || page < 1 || page > totalPages) {
+                        throw new Error(`Gecersiz sayfa: "${part}" (toplam ${totalPages} sayfa)`);
+                    }
+                    ranges.push({ start: page, end: page, label: `${page}` });
+                }
+            }
+
+            if (ranges.length === 0) {
+                throw new Error('En az bir sayfa veya aralik girin.');
+            }
+
+            return ranges;
+        }
+
+        async function extractPages(range) {
+            const newPdf = await PDFLib.PDFDocument.create();
+            const pageIndices = [];
+            for (let i = range.start - 1; i <= range.end - 1; i++) {
+                pageIndices.push(i);
+            }
+            const copiedPages = await newPdf.copyPages(pdfDoc, pageIndices);
+            copiedPages.forEach(page => newPdf.addPage(page));
+            return await newPdf.save();
+        }
+
+        function downloadBlob(blob, filename) {
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        splitBtn.addEventListener('click', async () => {
+            try {
+                const ranges = parseRanges(rangeInput.value);
+                splitBtn.disabled = true;
+                showStatus('Isleniyor...', 'processing');
+
+                if (ranges.length === 1) {
+                    // Single range: download as PDF directly
+                    const range = ranges[0];
+                    const pdfBytes = await extractPages(range);
+                    const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+                    const outputName = `${baseName}_s${range.label}.pdf`;
+                    downloadBlob(blob, outputName);
+                    showStatus(`"${outputName}" indirildi!`, 'success');
+                } else {
+                    // Multiple ranges: create ZIP
+                    const zip = new JSZip();
+                    for (let i = 0; i < ranges.length; i++) {
+                        const range = ranges[i];
+                        showStatus(`Isleniyor... (${i + 1}/${ranges.length})`, 'processing');
+                        const pdfBytes = await extractPages(range);
+                        const outputName = `${baseName}_s${range.label}.pdf`;
+                        zip.file(outputName, pdfBytes);
+                    }
+
+                    showStatus('ZIP olusturuluyor...', 'processing');
+                    const allLabels = ranges.map(r => r.label).join('_');
+                    const zipBlob = await zip.generateAsync({ type: 'blob' });
+                    const zipName = `${baseName}_s${allLabels}.zip`;
+                    downloadBlob(zipBlob, zipName);
+                    showStatus(`${ranges.length} dosya ZIP olarak indirildi!`, 'success');
+                }
+
+                splitBtn.disabled = false;
+            } catch (err) {
+                showStatus(err.message, 'error');
+                splitBtn.disabled = false;
+            }
+        });
+
+        function showStatus(msg, type) {
+            status.textContent = msg;
+            status.className = 'status' + (type ? ' ' + type : '');
+        }
+    </script>
+</body>
+</html>

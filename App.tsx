@@ -31,6 +31,12 @@ type TopicProgressStats = {
   wrongCount: number;
   totalWrongAnswers: number;
   lastPlayedAt: number;
+  uniqueSeenCount: number;
+  uniqueAnsweredCount: number;
+  seenBits: string;
+  answeredBits: string;
+  bitsetQuestionCount: number;
+  bitsetQuestionMapHash: string;
 };
 type LegacyTopicProgressStats = {
   seenQuestionIds: string[];
@@ -77,10 +83,13 @@ type QuizStatusFilter = {
   wrong: boolean;
   favorite: boolean;
 };
+type QuizQuestionSourceMode = 'all' | 'unseen_only';
 type QuizQuestionMeta = {
   topicId: string;
   trackingId: string;
+  topicQuestionIndex: number;
 };
+type TopicCardStatKey = 'total' | 'seen' | 'solved' | 'wrong' | 'favorite' | 'progress';
 type MixedQuizScope = { mode: 'all' } | { mode: 'category'; categoryId: string };
 
 // Kategori Renk Tanımları
@@ -177,6 +186,12 @@ const EMPTY_TOPIC_PROGRESS: TopicProgressStats = {
   wrongCount: 0,
   totalWrongAnswers: 0,
   lastPlayedAt: 0,
+  uniqueSeenCount: 0,
+  uniqueAnsweredCount: 0,
+  seenBits: '',
+  answeredBits: '',
+  bitsetQuestionCount: 0,
+  bitsetQuestionMapHash: '',
 };
 
 const getWrongQuestionDocId = (questionTrackingId: string): string => encodeURIComponent(questionTrackingId);
@@ -773,6 +788,12 @@ const normalizeTopicProgressStats = (value: Partial<TopicProgressStats>): TopicP
   const correctCount = Number.isFinite(value.correctCount) ? Math.max(0, Number(value.correctCount)) : 0;
   const wrongCount = Number.isFinite(value.wrongCount) ? Math.max(0, Number(value.wrongCount)) : 0;
   const totalWrongAnswers = Number.isFinite(value.totalWrongAnswers) ? Math.max(0, Number(value.totalWrongAnswers)) : wrongCount;
+  const uniqueSeenCount = Number.isFinite(value.uniqueSeenCount) ? Math.max(0, Number(value.uniqueSeenCount)) : 0;
+  const uniqueAnsweredCount = Number.isFinite(value.uniqueAnsweredCount) ? Math.max(0, Number(value.uniqueAnsweredCount)) : 0;
+  const seenBits = typeof value.seenBits === 'string' ? value.seenBits : '';
+  const answeredBits = typeof value.answeredBits === 'string' ? value.answeredBits : '';
+  const bitsetQuestionCount = Number.isFinite(value.bitsetQuestionCount) ? Math.max(0, Math.floor(Number(value.bitsetQuestionCount))) : 0;
+  const bitsetQuestionMapHash = typeof value.bitsetQuestionMapHash === 'string' ? value.bitsetQuestionMapHash : '';
 
   return {
     seenCount,
@@ -780,6 +801,12 @@ const normalizeTopicProgressStats = (value: Partial<TopicProgressStats>): TopicP
     wrongCount,
     totalWrongAnswers,
     lastPlayedAt: Number.isFinite(value.lastPlayedAt) ? Number(value.lastPlayedAt) : 0,
+    uniqueSeenCount,
+    uniqueAnsweredCount,
+    seenBits,
+    answeredBits,
+    bitsetQuestionCount,
+    bitsetQuestionMapHash,
   };
 };
 
@@ -858,6 +885,142 @@ const getQuestionTrackingId = (question: Question, topicId: string, index: numbe
   const stableId = getQuestionStableId(question);
   if (stableId) return stableId;
   return `${topicId}_${index}_${normalizeQuestionTrackingText(question.questionText)}`;
+};
+
+const getBitsetByteLength = (bitCount: number): number => Math.max(0, Math.ceil(Math.max(0, bitCount) / 8));
+
+const countSetBitsInByte = (value: number): number => {
+  let count = 0;
+  let current = value & 255;
+  while (current > 0) {
+    current &= (current - 1);
+    count += 1;
+  }
+  return count;
+};
+
+const countBitsetBits = (bytes: Uint8Array): number => {
+  let count = 0;
+  for (let i = 0; i < bytes.length; i += 1) {
+    count += countSetBitsInByte(bytes[i]);
+  }
+  return count;
+};
+
+const encodeBytesToBase64 = (bytes: Uint8Array): string => {
+  if (bytes.length === 0) return '';
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 1) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+};
+
+const decodeBase64ToBytes = (value: string, byteLength: number): Uint8Array => {
+  const safeLength = Math.max(0, byteLength);
+  const next = new Uint8Array(safeLength);
+  if (!value || safeLength === 0) return next;
+  try {
+    const binary = atob(value);
+    const limit = Math.min(binary.length, safeLength);
+    for (let i = 0; i < limit; i += 1) {
+      next[i] = binary.charCodeAt(i) & 255;
+    }
+  } catch {
+    return next;
+  }
+  return next;
+};
+
+const setBitInBytes = (bytes: Uint8Array, bitIndex: number): void => {
+  if (bitIndex < 0) return;
+  const byteIndex = Math.floor(bitIndex / 8);
+  if (byteIndex < 0 || byteIndex >= bytes.length) return;
+  const mask = 1 << (bitIndex % 8);
+  bytes[byteIndex] |= mask;
+};
+
+const isBitSetInBytes = (bytes: Uint8Array, bitIndex: number): boolean => {
+  if (bitIndex < 0) return false;
+  const byteIndex = Math.floor(bitIndex / 8);
+  if (byteIndex < 0 || byteIndex >= bytes.length) return false;
+  const mask = 1 << (bitIndex % 8);
+  return (bytes[byteIndex] & mask) !== 0;
+};
+
+const hashStringFNV1a32 = (value: string): string => {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
+};
+
+const buildTopicQuestionMapHash = (topicId: string, topicQuestions: Question[]): string => {
+  if (topicQuestions.length === 0) return '';
+  let seed = `${topicId}|${topicQuestions.length}|`;
+  topicQuestions.forEach((question, index) => {
+    seed += `${getQuestionTrackingId(question, topicId, index)}\n`;
+  });
+  return hashStringFNV1a32(seed);
+};
+
+const getTopicUniqueAnsweredCount = (stats: TopicProgressStats): number => {
+  return stats.uniqueAnsweredCount > 0 ? stats.uniqueAnsweredCount : stats.seenCount;
+};
+
+const getTopicUniqueSeenCount = (stats: TopicProgressStats): number => {
+  return getTopicUniqueAnsweredCount(stats);
+};
+
+const mergeTopicBitsetProgress = (params: {
+  previousStats: TopicProgressStats;
+  topicId: string;
+  topicQuestions: Question[];
+  seenIndexes: Set<number>;
+  answeredIndexes: Set<number>;
+}): Pick<TopicProgressStats, 'uniqueSeenCount' | 'uniqueAnsweredCount' | 'seenBits' | 'answeredBits' | 'bitsetQuestionCount' | 'bitsetQuestionMapHash'> => {
+  const { previousStats, topicId, topicQuestions, seenIndexes, answeredIndexes } = params;
+  const bitsetQuestionCount = topicQuestions.length;
+  if (bitsetQuestionCount <= 0) {
+    return {
+      uniqueSeenCount: 0,
+      uniqueAnsweredCount: 0,
+      seenBits: '',
+      answeredBits: '',
+      bitsetQuestionCount: 0,
+      bitsetQuestionMapHash: '',
+    };
+  }
+
+  const bitsetQuestionMapHash = buildTopicQuestionMapHash(topicId, topicQuestions);
+  const byteLength = getBitsetByteLength(bitsetQuestionCount);
+  const canReusePrevious =
+    previousStats.bitsetQuestionCount === bitsetQuestionCount &&
+    previousStats.bitsetQuestionMapHash === bitsetQuestionMapHash;
+
+  const seenBytes = canReusePrevious
+    ? decodeBase64ToBytes(previousStats.seenBits, byteLength)
+    : new Uint8Array(byteLength);
+  const answeredBytes = canReusePrevious
+    ? decodeBase64ToBytes(previousStats.answeredBits, byteLength)
+    : new Uint8Array(byteLength);
+
+  seenIndexes.forEach((index) => setBitInBytes(seenBytes, index));
+  answeredIndexes.forEach((index) => {
+    setBitInBytes(seenBytes, index);
+    setBitInBytes(answeredBytes, index);
+  });
+
+  return {
+    uniqueSeenCount: countBitsetBits(seenBytes),
+    uniqueAnsweredCount: countBitsetBits(answeredBytes),
+    seenBits: encodeBytesToBase64(seenBytes),
+    answeredBits: encodeBytesToBase64(answeredBytes),
+    bitsetQuestionCount,
+    bitsetQuestionMapHash,
+  };
 };
 
 const getLegacyTrackingTextKey = (questionTrackingId: string, topicId: string): string | null => {
@@ -990,14 +1153,18 @@ export default function App() {
   const [isResetStatsModalOpen, setIsResetStatsModalOpen] = useState(false);
   const [resetStatsTargetTopic, setResetStatsTargetTopic] = useState<{ id: string; name: string } | null>(null);
   const [quizStatusFilter, setQuizStatusFilter] = useState<QuizStatusFilter>({ wrong: false, favorite: false });
+  const [quizQuestionSourceMode, setQuizQuestionSourceMode] = useState<QuizQuestionSourceMode>('all');
   const [topicSearchTerm, setTopicSearchTerm] = useState('');
   const [selectedTopicFilterId, setSelectedTopicFilterId] = useState<string | null>(null);
   const [topicCardFilter, setTopicCardFilter] = useState<'all' | 'in_progress' | 'completed' | 'not_started'>('all');
+  const [mobileTopicStatPopover, setMobileTopicStatPopover] = useState<{ topicId: string; statKey: TopicCardStatKey } | null>(null);
   const [homeStatsCategoryFilter, setHomeStatsCategoryFilter] = useState<string>('all');
   const [statisticsScopeCategoryId, setStatisticsScopeCategoryId] = useState<string>('all');
   const [isStatisticsScopeMenuOpen, setIsStatisticsScopeMenuOpen] = useState(false);
   const [isHomeStatsExpanded, setIsHomeStatsExpanded] = useState(true);
   const [isRulesHelpModalOpen, setIsRulesHelpModalOpen] = useState(false);
+  const [selectedReviewQuestionIndex, setSelectedReviewQuestionIndex] = useState<number | null>(null);
+  const [flippedReviewCardsByIndex, setFlippedReviewCardsByIndex] = useState<Record<number, boolean>>({});
 
   // Admin Modals
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
@@ -1049,6 +1216,18 @@ export default function App() {
   const autoAdvanceRef = useRef<number | null>(null);
   const inlineNoticeTimerRef = useRef<number | null>(null);
   const questionJumpPickerRef = useRef<HTMLDivElement | null>(null);
+  const preQuizThemeRef = useRef<boolean | null>(null);
+  const reviewCardPointerGestureRef = useRef<{
+    pointerId: number | null;
+    startX: number;
+    startY: number;
+    moved: boolean;
+  }>({
+    pointerId: null,
+    startX: 0,
+    startY: 0,
+    moved: false,
+  });
   const categoriesRef = useRef<Category[]>(categories);
   const topicBloggerPagesRef = useRef<Record<string, string>>(topicBloggerPages);
   const statisticsScopeMenuRef = useRef<HTMLDivElement | null>(null);
@@ -1056,6 +1235,16 @@ export default function App() {
   const topicBloggerPagesSeedAttemptedRef = useRef(false);
   const deletedTopicIdsRef = useRef<string[]>(deletedTopicIds);
   const preserveTopicFiltersRef = useRef(false);
+
+  useEffect(() => {
+    if (!quizState.showResults || quizState.questions.length === 0) {
+      setSelectedReviewQuestionIndex(null);
+      setFlippedReviewCardsByIndex({});
+      return;
+    }
+    setSelectedReviewQuestionIndex(0);
+    setFlippedReviewCardsByIndex({});
+  }, [quizState.showResults, quizState.questions]);
 
   const showInlineNotice = (message: string, tone: 'info' | 'warning' = 'warning') => {
     if (inlineNoticeTimerRef.current) clearTimeout(inlineNoticeTimerRef.current);
@@ -1182,7 +1371,7 @@ export default function App() {
     if (mixedQuizScope.mode !== 'category') return null;
     return categories.find((cat) => cat.id === mixedQuizScope.categoryId) || null;
   }, [categories, mixedQuizScope]);
-  const allLessonsQuestionPool = useMemo<Array<{ question: Question; topicId: string; trackingId: string }>>(() => {
+  const allLessonsQuestionPool = useMemo<Array<{ question: Question; topicId: string; trackingId: string; topicQuestionIndex: number }>>(() => {
     const scopedCategories = mixedQuizScope.mode === 'category'
       ? categories.filter((cat) => cat.id === mixedQuizScope.categoryId)
       : categories;
@@ -1193,6 +1382,7 @@ export default function App() {
           question,
           topicId: sub.id,
           trackingId: getQuestionTrackingId(question, sub.id, index),
+          topicQuestionIndex: index,
         }));
       });
     });
@@ -1215,12 +1405,13 @@ export default function App() {
     } else {
       document.documentElement.classList.remove('dark');
     }
+    if (currentView === 'quiz') return;
     try {
       window.localStorage.setItem(STORAGE_KEYS.theme, isDarkMode ? 'dark' : 'light');
     } catch {
       // Ignore storage errors
     }
-  }, [isDarkMode]);
+  }, [isDarkMode, currentView]);
 
   useEffect(() => {
     document.documentElement.classList.toggle('light-variant-clean', lightThemeVariant === 'clean');
@@ -1892,6 +2083,12 @@ export default function App() {
             wrongCount: data.wrongCount,
             totalWrongAnswers: data.totalWrongAnswers,
             lastPlayedAt: getTimestampMillis(data.lastPlayedAt),
+            uniqueSeenCount: data.uniqueSeenCount,
+            uniqueAnsweredCount: data.uniqueAnsweredCount,
+            seenBits: data.seenBits,
+            answeredBits: data.answeredBits,
+            bitsetQuestionCount: data.bitsetQuestionCount,
+            bitsetQuestionMapHash: data.bitsetQuestionMapHash,
           });
         });
         setTopicProgressStats(nextStats);
@@ -2176,6 +2373,12 @@ export default function App() {
     setReportNote('');
     setQuizConfirmAction(null);
     setQuizQuestionMeta([]);
+    setSelectedReviewQuestionIndex(null);
+    setFlippedReviewCardsByIndex({});
+    if (preQuizThemeRef.current !== null) {
+      setIsDarkMode(preQuizThemeRef.current);
+      preQuizThemeRef.current = null;
+    }
     setQuizState({
       currentQuestionIndex: 0,
       userAnswers: [],
@@ -2191,13 +2394,21 @@ export default function App() {
 
   const getQuizQuestionMeta = (question: Question, questionIndex: number): QuizQuestionMeta | null => {
     const meta = quizQuestionMeta[questionIndex];
-    if (meta?.topicId && meta?.trackingId) return meta;
+    if (meta?.topicId && meta?.trackingId && Number.isFinite(meta.topicQuestionIndex)) return meta;
     if (!activeTopic) return null;
     const fallbackTopicId = activeTopic.sub.id;
     return {
       topicId: fallbackTopicId,
       trackingId: getQuestionTrackingId(question, fallbackTopicId, questionIndex),
+      topicQuestionIndex: questionIndex,
     };
+  };
+
+  const applyQuizStartDefaultTheme = () => {
+    if (preQuizThemeRef.current === null) {
+      preQuizThemeRef.current = isDarkMode;
+    }
+    setIsDarkMode(false);
   };
 
   const openAllLessonsQuizSetup = () => {
@@ -2208,6 +2419,7 @@ export default function App() {
     const initialQuestionCount = Math.min(20, Math.min(ALL_LESSONS_MAX_QUESTION_COUNT, totalQuestionCount));
     setActiveCategory(null);
     setActiveTopic(null);
+    setQuizQuestionSourceMode('all');
     setAllLessonsQuestionCount(initialQuestionCount);
     setAllLessonsQuestionInputValue(String(initialQuestionCount));
     setCurrentView('all-quiz-setup');
@@ -2220,6 +2432,7 @@ export default function App() {
     const initialQuestionCount = Math.min(20, Math.min(ALL_LESSONS_MAX_QUESTION_COUNT, categoryQuestionCount));
     setActiveCategory(category);
     setActiveTopic(null);
+    setQuizQuestionSourceMode('all');
     setAllLessonsQuestionCount(initialQuestionCount);
     setAllLessonsQuestionInputValue(String(initialQuestionCount));
     setCurrentView('all-quiz-setup');
@@ -2270,13 +2483,49 @@ export default function App() {
   };
 
   const startAllLessonsQuiz = () => {
-    if (allLessonsQuestionPool.length === 0) {
+    const seenTrackingIdSet = new Set(
+      (Object.values(seenQuestionsById) as SeenQuestionStats[])
+        .filter((stats) => stats.answeredCount > 0)
+        .map((stats) => stats.questionTrackingId)
+    );
+    const answeredBitsetCache = new Map<string, Uint8Array | null>();
+    const getAnsweredBitsetBytesForTopic = (topicId: string): Uint8Array | null => {
+      if (answeredBitsetCache.has(topicId)) return answeredBitsetCache.get(topicId) || null;
+      const topicQuestions = allQuestions[topicId] || [];
+      const topicProgress = getTopicProgress(topicId);
+      if (topicQuestions.length === 0) {
+        answeredBitsetCache.set(topicId, null);
+        return null;
+      }
+      const topicQuestionMapHash = buildTopicQuestionMapHash(topicId, topicQuestions);
+      const canUseAnsweredBitset =
+        topicProgress.bitsetQuestionCount === topicQuestions.length &&
+        topicProgress.bitsetQuestionMapHash === topicQuestionMapHash &&
+        topicProgress.answeredBits.length > 0;
+      if (!canUseAnsweredBitset) {
+        answeredBitsetCache.set(topicId, null);
+        return null;
+      }
+      const bytes = decodeBase64ToBytes(topicProgress.answeredBits, getBitsetByteLength(topicQuestions.length));
+      answeredBitsetCache.set(topicId, bytes);
+      return bytes;
+    };
+    const filteredAllLessonsQuestionPool = quizQuestionSourceMode === 'unseen_only'
+      ? allLessonsQuestionPool.filter((entry) => {
+          if (seenTrackingIdSet.has(entry.trackingId)) return false;
+          const answeredBitsetBytes = getAnsweredBitsetBytesForTopic(entry.topicId);
+          return answeredBitsetBytes ? !isBitSetInBytes(answeredBitsetBytes, entry.topicQuestionIndex) : true;
+        })
+      : allLessonsQuestionPool;
+    const allLessonsFilteredQuestionCountMax = Math.min(ALL_LESSONS_MAX_QUESTION_COUNT, filteredAllLessonsQuestionPool.length);
+
+    if (filteredAllLessonsQuestionPool.length === 0) {
       showInlineNotice('Soru havuzunda soru bulunamadi.');
       return;
     }
 
     const safeCount = Math.min(
-      allLessonsQuestionCountMax,
+      allLessonsFilteredQuestionCountMax,
       Math.max(0, Math.floor(allLessonsQuestionCount))
     );
     if (safeCount === 0) {
@@ -2284,7 +2533,7 @@ export default function App() {
       return;
     }
 
-    const shuffledEntries = [...allLessonsQuestionPool];
+    const shuffledEntries = [...filteredAllLessonsQuestionPool];
     for (let i = shuffledEntries.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [shuffledEntries[i], shuffledEntries[j]] = [shuffledEntries[j], shuffledEntries[i]];
@@ -2295,6 +2544,7 @@ export default function App() {
     const nextQuizQuestionMeta: QuizQuestionMeta[] = selectedEntries.map((entry) => ({
       topicId: entry.topicId,
       trackingId: entry.trackingId,
+      topicQuestionIndex: entry.topicQuestionIndex,
     }));
     const durationSeconds = getAutoDurationForQuestionCount(safeCount);
     const nextActiveTopic = (() => {
@@ -2335,6 +2585,7 @@ export default function App() {
       questionCount: safeCount,
       durationSeconds,
     });
+    applyQuizStartDefaultTheme();
     setCurrentView('quiz');
     setIsMobileMenuOpen(false);
     setQuizState((prev) => ({
@@ -2385,6 +2636,7 @@ export default function App() {
     setActiveTopic({ cat: category, sub: sub });
     const initialQuestionCount = filteredCount > 0 ? Math.min(10, filteredCount) : 0;
     setQuizStatusFilter(nextStatusFilter);
+    setQuizQuestionSourceMode('all');
     setQuizTagQuestionCounts({});
     setQuizTagPickerSourceKey('');
     setQuizTagPickerCountInput('');
@@ -2400,6 +2652,7 @@ export default function App() {
     const topicQuestionEntries = (allQuestions[sub.id] || []).map((question, index) => ({
       question,
       trackingId: getQuestionTrackingId(question, sub.id, index),
+      topicQuestionIndex: index,
     }));
     const wrongSet = new Set(wrongQuestionIdsByTopic[sub.id] || []);
     const favoriteSet = new Set(favoriteQuestionIdsByTopic[sub.id] || []);
@@ -2437,6 +2690,7 @@ export default function App() {
     const nextQuizQuestionMeta: QuizQuestionMeta[] = selectedEntries.map((entry) => ({
       topicId: sub.id,
       trackingId: entry.trackingId,
+      topicQuestionIndex: entry.topicQuestionIndex,
     }));
 
     if (timerRef.current) clearInterval(timerRef.current);
@@ -2455,6 +2709,7 @@ export default function App() {
       questionCount,
       durationSeconds,
     });
+    applyQuizStartDefaultTheme();
     setCurrentView('quiz');
     setIsMobileMenuOpen(false);
     setQuizState((prev) => ({
@@ -2521,14 +2776,36 @@ export default function App() {
     if (!activeTopic) return;
 
     const topicId = activeTopic.sub.id;
+    const topicQuestions = allQuestions[topicId] || [];
+    const topicProgress = getTopicProgress(topicId);
     const wrongSet = new Set(wrongQuestionIdsByTopic[topicId] || []);
     const favoriteSet = new Set(favoriteQuestionIdsByTopic[topicId] || []);
+    const seenStatsForTopic = seenQuestionStatsByTopic[topicId] || [];
+    const seenTrackingIdSet = new Set(
+      seenStatsForTopic
+        .filter((stats) => stats.answeredCount > 0)
+        .map((stats) => stats.questionTrackingId)
+    );
+    const topicQuestionMapHash = topicQuestions.length > 0 ? buildTopicQuestionMapHash(topicId, topicQuestions) : '';
+    const canUseAnsweredBitset =
+      topicQuestions.length > 0 &&
+      topicProgress.bitsetQuestionCount === topicQuestions.length &&
+      topicProgress.bitsetQuestionMapHash === topicQuestionMapHash &&
+      topicProgress.answeredBits.length > 0;
+    const answeredBitsetBytes = canUseAnsweredBitset
+      ? decodeBase64ToBytes(topicProgress.answeredBits, getBitsetByteLength(topicQuestions.length))
+      : null;
     const isStatusFilterActive = quizStatusFilter.wrong || quizStatusFilter.favorite;
-    const topicQuestionEntries = (allQuestions[topicId] || []).map((question, index) => ({
+    const topicQuestionEntries = topicQuestions.map((question, index) => ({
       question,
       trackingId: getQuestionTrackingId(question, topicId, index),
+      topicQuestionIndex: index,
     }));
     const topicQuestionsPool = topicQuestionEntries.filter((entry) => {
+      const isSeen =
+        seenTrackingIdSet.has(entry.trackingId) ||
+        (answeredBitsetBytes ? isBitSetInBytes(answeredBitsetBytes, entry.topicQuestionIndex) : false);
+      if (quizQuestionSourceMode === 'unseen_only' && isSeen) return false;
       if (!isStatusFilterActive) return true;
       const includeWrong = quizStatusFilter.wrong && wrongSet.has(entry.trackingId);
       const includeFavorite = quizStatusFilter.favorite && favoriteSet.has(entry.trackingId);
@@ -2541,9 +2818,9 @@ export default function App() {
       }))
       .filter((entry) => entry.count > 0);
 
-    let selectedEntries: Array<{ question: Question; trackingId: string }> = [];
+    let selectedEntries: Array<{ question: Question; trackingId: string; topicQuestionIndex: number }> = [];
     if (selectedTagEntries.length > 0) {
-      const tagBuckets = topicQuestionsPool.reduce<Record<string, Array<{ question: Question; trackingId: string }>>>((acc, entry) => {
+      const tagBuckets = topicQuestionsPool.reduce<Record<string, Array<{ question: Question; trackingId: string; topicQuestionIndex: number }>>>((acc, entry) => {
         const sourceKey = getQuestionSourceKey(entry.question);
         if (!acc[sourceKey]) acc[sourceKey] = [];
         acc[sourceKey].push(entry);
@@ -2575,9 +2852,11 @@ export default function App() {
     const nextQuizQuestionMeta: QuizQuestionMeta[] = selectedEntries.map((entry) => ({
       topicId,
       trackingId: entry.trackingId,
+      topicQuestionIndex: entry.topicQuestionIndex,
     }));
 
     setQuizQuestionMeta(nextQuizQuestionMeta);
+    applyQuizStartDefaultTheme();
     setCurrentView('quiz');
     setQuizState(prev => ({
       ...prev,
@@ -2626,7 +2905,7 @@ export default function App() {
       userAnswers: newAnswers
     }));
 
-    // Auto-advance after 1 second
+    // Auto-advance after 0.3 second
     if (autoAdvanceRef.current) clearTimeout(autoAdvanceRef.current);
     autoAdvanceRef.current = window.setTimeout(() => {
       setQuizState(prev => {
@@ -2636,7 +2915,7 @@ export default function App() {
         }
         return prev;
       });
-    }, 1000);
+    }, 300);
   };
 
   const handleNextQuestion = () => {
@@ -2725,12 +3004,16 @@ export default function App() {
       const changedSeenQuestionIds = new Set<string>();
       const answeredQuestionCountByTopic: Record<string, number> = {};
       const touchedTopicIds = new Set<string>();
+      const bitsetIndexesByTopic: Record<string, { seen: Set<number>; answered: Set<number> }> = {};
 
       currentQuestions.forEach((question, index) => {
         const questionMeta = getQuizQuestionMeta(question, index);
         if (!questionMeta) return;
         const topicId = questionMeta.topicId;
         const questionTrackingId = questionMeta.trackingId;
+        const topicQuestionIndex = Number.isFinite(questionMeta.topicQuestionIndex)
+          ? Math.max(0, Math.floor(questionMeta.topicQuestionIndex))
+          : -1;
         touchedTopicIds.add(topicId);
         const prevWrongStats = nextWrongQuestionStatsById[questionTrackingId];
         const answer = currentAnswers[index];
@@ -2743,6 +3026,15 @@ export default function App() {
 
         if (answer !== null && answer !== undefined) {
           answeredQuestionCountByTopic[topicId] = (answeredQuestionCountByTopic[topicId] || 0) + 1;
+        }
+        if (topicQuestionIndex >= 0) {
+          if (!bitsetIndexesByTopic[topicId]) {
+            bitsetIndexesByTopic[topicId] = { seen: new Set<number>(), answered: new Set<number>() };
+          }
+          bitsetIndexesByTopic[topicId].seen.add(topicQuestionIndex);
+          if (answer !== null && answer !== undefined) {
+            bitsetIndexesByTopic[topicId].answered.add(topicQuestionIndex);
+          }
         }
 
         const prevSeenStats = nextSeenQuestionsById[questionTrackingId];
@@ -2800,7 +3092,27 @@ export default function App() {
           : { ...prevTopicStats };
         const topicQuestionCount = allQuestions[topicId]?.length || 0;
         const answeredQuestionCount = answeredQuestionCountByTopic[topicId] || 0;
-        topicStats.seenCount = Math.min(topicQuestionCount, topicStats.seenCount + answeredQuestionCount);
+        const topicQuestions = allQuestions[topicId] || [];
+        const bitsetIndexes = bitsetIndexesByTopic[topicId] || { seen: new Set<number>(), answered: new Set<number>() };
+        const mergedBitsetStats = mergeTopicBitsetProgress({
+          previousStats: prevTopicStats,
+          topicId,
+          topicQuestions,
+          seenIndexes: bitsetIndexes.seen,
+          answeredIndexes: bitsetIndexes.answered,
+        });
+        topicStats.uniqueSeenCount = mergedBitsetStats.uniqueSeenCount;
+        topicStats.uniqueAnsweredCount = mergedBitsetStats.uniqueAnsweredCount;
+        topicStats.seenBits = mergedBitsetStats.seenBits;
+        topicStats.answeredBits = mergedBitsetStats.answeredBits;
+        topicStats.bitsetQuestionCount = mergedBitsetStats.bitsetQuestionCount;
+        topicStats.bitsetQuestionMapHash = mergedBitsetStats.bitsetQuestionMapHash;
+        topicStats.seenCount = Math.min(
+          topicQuestionCount,
+          topicStats.uniqueAnsweredCount > 0
+            ? topicStats.uniqueAnsweredCount
+            : (topicStats.seenCount + answeredQuestionCount)
+        );
         topicStats.lastPlayedAt = now;
         topicStats.wrongCount = (Object.values(nextWrongQuestionStatsById) as WrongQuestionStats[]).reduce<number>((sum, stats) => {
           return stats.topicId === topicId && stats.status === 'active_wrong' ? sum + 1 : sum;
@@ -2892,6 +3204,20 @@ export default function App() {
     if (len >= 7) return 'text-[16px] md:text-[17px]';
     if (len >= 5) return 'text-[19px] md:text-[20px]';
     return 'text-[22px]';
+  };
+
+  const getStatisticsNumberClass = (value: string | number, variant: 'summary' | 'row' = 'summary'): string => {
+    const len = String(value).length;
+    if (variant === 'row') {
+      if (len >= 9) return 'text-[10px] sm:text-[11px] md:text-[12px]';
+      if (len >= 7) return 'text-[11px] sm:text-[12px] md:text-[13px]';
+      if (len >= 5) return 'text-[12px] sm:text-[13px] md:text-[14px]';
+      return 'text-[14px] sm:text-[15px] md:text-[17px]';
+    }
+    if (len >= 9) return 'text-[11px] sm:text-[12px] md:text-[14px]';
+    if (len >= 7) return 'text-[12px] sm:text-[13px] md:text-[16px]';
+    if (len >= 5) return 'text-[13px] sm:text-[15px] md:text-[18px]';
+    return 'text-[15px] sm:text-[17px] md:text-[20px]';
   };
 
   const downloadJsonFile = (filename: string, payload: unknown) => {
@@ -3813,7 +4139,7 @@ export default function App() {
     wrongCount: number;
   }>(
     (acc, stats) => {
-      acc.seenCount += stats.seenCount;
+      acc.seenCount += getTopicUniqueAnsweredCount(stats);
       acc.correctCount += stats.correctCount;
       acc.wrongCount += stats.wrongCount;
       return acc;
@@ -3842,7 +4168,7 @@ export default function App() {
       wrongCount: number;
     }>((acc, [topicId, stats]) => {
       if (!includeTopic(topicId)) return acc;
-      acc.seenCount += stats.seenCount;
+      acc.seenCount += getTopicUniqueAnsweredCount(stats);
       acc.correctCount += stats.correctCount;
       acc.wrongCount += stats.wrongCount;
       return acc;
@@ -3854,7 +4180,9 @@ export default function App() {
     const filteredSeenQuestionStats = allSeenQuestionStats.filter((stats) => includeTopic(stats.topicId));
     const uniqueSolvedFromSeenStats = filteredSeenQuestionStats.reduce((sum, stats) => (stats.answeredCount > 0 ? sum + 1 : sum), 0);
     const totalAnsweredFromSeenStats = filteredSeenQuestionStats.reduce((sum, stats) => sum + stats.answeredCount, 0);
-    const uniqueSolvedCount = uniqueSolvedFromSeenStats > 0 ? uniqueSolvedFromSeenStats : progressStats.seenCount;
+    const uniqueSolvedCount = uniqueSolvedFromSeenStats > 0
+      ? uniqueSolvedFromSeenStats
+      : filteredTopicProgressStats.reduce((sum, [, stats]) => sum + getTopicUniqueAnsweredCount(stats), 0);
     const totalAnsweredCount = totalAnsweredFromSeenStats > 0 ? totalAnsweredFromSeenStats : (progressStats.correctCount + totalWrongAnswers);
 
     const filteredFavoriteCount = Object.entries(favoriteQuestionIdsByTopic as Record<string, string[]>).reduce((sum, [topicId, questionIds]) => (
@@ -3891,7 +4219,7 @@ export default function App() {
         const seenStats = seenQuestionStatsByTopic[sub.id] || [];
         const uniqueSolvedFromSeenStats = seenStats.reduce((sum, stats) => (stats.answeredCount > 0 ? sum + 1 : sum), 0);
         const totalAnsweredFromSeenStats = seenStats.reduce((sum, stats) => sum + stats.answeredCount, 0);
-        const uniqueSolvedCount = uniqueSolvedFromSeenStats > 0 ? uniqueSolvedFromSeenStats : topicStats.seenCount;
+        const uniqueSolvedCount = uniqueSolvedFromSeenStats > 0 ? uniqueSolvedFromSeenStats : getTopicUniqueAnsweredCount(topicStats);
         const totalAnsweredCount = totalAnsweredFromSeenStats > 0 ? totalAnsweredFromSeenStats : (topicStats.correctCount + topicStats.totalWrongAnswers);
         const completionPercent = questionCount > 0 ? Math.round((totalAnsweredCount / questionCount) * 100) : 0;
         const correctCount = topicStats.correctCount;
@@ -4242,6 +4570,42 @@ export default function App() {
 
   // 2. ALL LESSONS QUIZ SETUP VIEW
   if (currentView === 'all-quiz-setup') {
+    const mixedSeenTrackingIdSet = new Set(
+      (Object.values(seenQuestionsById) as SeenQuestionStats[])
+        .filter((stats) => stats.answeredCount > 0)
+        .map((stats) => stats.questionTrackingId)
+    );
+    const mixedAnsweredBitsetCache = new Map<string, Uint8Array | null>();
+    const getMixedAnsweredBitsetBytesForTopic = (topicId: string): Uint8Array | null => {
+      if (mixedAnsweredBitsetCache.has(topicId)) return mixedAnsweredBitsetCache.get(topicId) || null;
+      const topicQuestions = allQuestions[topicId] || [];
+      const topicProgress = getTopicProgress(topicId);
+      if (topicQuestions.length === 0) {
+        mixedAnsweredBitsetCache.set(topicId, null);
+        return null;
+      }
+      const topicQuestionMapHash = buildTopicQuestionMapHash(topicId, topicQuestions);
+      const canUseAnsweredBitset =
+        topicProgress.bitsetQuestionCount === topicQuestions.length &&
+        topicProgress.bitsetQuestionMapHash === topicQuestionMapHash &&
+        topicProgress.answeredBits.length > 0;
+      if (!canUseAnsweredBitset) {
+        mixedAnsweredBitsetCache.set(topicId, null);
+        return null;
+      }
+      const bytes = decodeBase64ToBytes(topicProgress.answeredBits, getBitsetByteLength(topicQuestions.length));
+      mixedAnsweredBitsetCache.set(topicId, bytes);
+      return bytes;
+    };
+    const isMixedPoolEntrySeen = (entry: { topicId: string; trackingId: string; topicQuestionIndex: number }): boolean => {
+      if (mixedSeenTrackingIdSet.has(entry.trackingId)) return true;
+      const answeredBitsetBytes = getMixedAnsweredBitsetBytesForTopic(entry.topicId);
+      return answeredBitsetBytes ? isBitSetInBytes(answeredBitsetBytes, entry.topicQuestionIndex) : false;
+    };
+    const allLessonsSetupPool = quizQuestionSourceMode === 'unseen_only'
+      ? allLessonsQuestionPool.filter((entry) => !isMixedPoolEntrySeen(entry))
+      : allLessonsQuestionPool;
+    const allLessonsSetupQuestionCountMax = Math.min(ALL_LESSONS_MAX_QUESTION_COUNT, allLessonsSetupPool.length);
     const mixedQuizScopeLabel = mixedQuizScope.mode === 'category'
       ? (selectedMixedQuizCategory?.name || 'Secili Ders')
       : 'Tum Dersler';
@@ -4254,9 +4618,17 @@ export default function App() {
     const applyAllLessonsQuestionCount = (nextRawQuestionCount: number) => {
       const normalizedQuestionCount = Math.min(
         Math.max(0, Math.floor(Number.isFinite(nextRawQuestionCount) ? nextRawQuestionCount : 0)),
-        Math.max(0, allLessonsQuestionCountMax)
+        Math.max(0, allLessonsSetupQuestionCountMax)
       );
       setAllLessonsQuestionCount(normalizedQuestionCount);
+    };
+    const updateAllLessonsSourceMode = (nextSourceMode: QuizQuestionSourceMode) => {
+      const nextPool = nextSourceMode === 'unseen_only'
+        ? allLessonsQuestionPool.filter((entry) => !isMixedPoolEntrySeen(entry))
+        : allLessonsQuestionPool;
+      const nextMax = Math.min(ALL_LESSONS_MAX_QUESTION_COUNT, nextPool.length);
+      setQuizQuestionSourceMode(nextSourceMode);
+      setAllLessonsQuestionCount((prev) => Math.min(prev, nextMax));
     };
 
     return (
@@ -4283,32 +4655,74 @@ export default function App() {
 
             <div className="space-y-4 md:space-y-6">
               <div className="bg-surface-50 dark:bg-surface-900/50 p-3.5 md:p-5 rounded-xl md:rounded-2xl border border-surface-100 dark:border-surface-700/50">
+                <div className="flex items-center justify-between mb-3">
+                  <label className="font-bold text-surface-700 dark:text-surface-200 text-sm flex items-center gap-2">
+                    <Icon name="Eye" className="w-4 h-4 text-surface-400" />
+                    Soru Havuzu
+                  </label>
+                  <span className="text-[11px] font-bold text-surface-500 dark:text-surface-300 bg-white dark:bg-surface-800 px-2 py-0.5 rounded-full border border-surface-200 dark:border-surface-600">
+                    {quizQuestionSourceMode === 'unseen_only' ? `${allLessonsSetupPool.length} gormedigin soru` : `${allLessonsQuestionPool.length} tum soru`}
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <button
+                    onClick={() => updateAllLessonsSourceMode('all')}
+                    className={`text-left rounded-xl border px-2.5 md:px-3 py-2 md:py-2.5 transition ${
+                      quizQuestionSourceMode === 'all'
+                        ? 'border-brand-300 dark:border-brand-800/40 bg-brand-50 dark:bg-brand-900/20'
+                        : 'border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800'
+                    }`}
+                  >
+                    <p className="text-[11px] md:text-xs font-bold text-surface-700 dark:text-surface-200">Tum Sorular</p>
+                    <p className="text-[11px] text-surface-500 dark:text-surface-300 mt-0.5">{allLessonsQuestionPool.length} soru</p>
+                  </button>
+                  <button
+                    onClick={() => updateAllLessonsSourceMode('unseen_only')}
+                    disabled={allLessonsQuestionPool.length === 0 || allLessonsSetupPool.length === 0}
+                    className={`text-left rounded-xl border px-2.5 md:px-3 py-2 md:py-2.5 transition ${
+                      quizQuestionSourceMode === 'unseen_only'
+                        ? 'border-cyan-300 dark:border-cyan-800/40 bg-cyan-50 dark:bg-cyan-900/20'
+                        : 'border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800'
+                    } disabled:opacity-40 disabled:cursor-not-allowed`}
+                  >
+                    <p className="text-[11px] md:text-xs font-bold text-surface-700 dark:text-surface-200">Sadece Gormedigim</p>
+                    <p className="text-[11px] text-cyan-600 dark:text-cyan-300 mt-0.5">{quizQuestionSourceMode === 'unseen_only' ? allLessonsSetupPool.length : allLessonsQuestionPool.filter((entry) => !isMixedPoolEntrySeen(entry)).length} soru</p>
+                  </button>
+                </div>
+                {quizQuestionSourceMode === 'unseen_only' && (
+                  <p className="text-[11px] text-cyan-700 dark:text-cyan-300 mt-2.5 font-medium">
+                    Karma sinav havuzu sadece daha once gormedigin sorulardan olusur.
+                  </p>
+                )}
+              </div>
+
+              <div className="bg-surface-50 dark:bg-surface-900/50 p-3.5 md:p-5 rounded-xl md:rounded-2xl border border-surface-100 dark:border-surface-700/50">
                 <div className="flex justify-between items-center mb-3">
                   <label className="font-bold text-surface-700 dark:text-surface-200 text-sm flex items-center gap-2">
                     <Icon name="Hash" className="w-4 h-4 text-surface-400" />
                     Soru Sayisi
                   </label>
                   <span className="text-cyan-700 dark:text-cyan-300 font-bold bg-cyan-50 dark:bg-cyan-900/30 px-2.5 py-0.5 rounded-full text-xs">
-                    Max: {allLessonsQuestionCountMax} / {ALL_LESSONS_MAX_QUESTION_COUNT}
+                    Max: {allLessonsSetupQuestionCountMax} / {ALL_LESSONS_MAX_QUESTION_COUNT}
                   </span>
                 </div>
                 <div className="flex items-center gap-4">
                   <input
                     type="range"
                     min="0"
-                    max={allLessonsQuestionCountMax}
+                    max={allLessonsSetupQuestionCountMax}
                     value={allLessonsQuestionCount}
                     onChange={(e) => {
                       const nextQuestionCount = parseInt(e.target.value, 10) || 0;
                       applyAllLessonsQuestionCount(nextQuestionCount);
                     }}
-                    disabled={allLessonsQuestionCountMax === 0}
+                    disabled={allLessonsSetupQuestionCountMax === 0}
                     className="w-full h-2 bg-surface-200 dark:bg-surface-700 rounded-lg cursor-pointer"
                   />
                   <input
                     type="number"
                     min={0}
-                    max={allLessonsQuestionCountMax}
+                    max={allLessonsSetupQuestionCountMax}
                     value={allLessonsQuestionInputValue}
                     onFocus={() => {
                       setAllLessonsQuestionInputValue('');
@@ -4327,11 +4741,11 @@ export default function App() {
                       if (allLessonsQuestionInputValue.trim() !== '') return;
                       setAllLessonsQuestionInputValue('0');
                     }}
-                    disabled={allLessonsQuestionCountMax === 0}
+                    disabled={allLessonsSetupQuestionCountMax === 0}
                     className="w-16 h-10 bg-white dark:bg-surface-800 border border-surface-200 dark:border-surface-600 rounded-xl font-extrabold text-lg text-surface-800 dark:text-white text-center outline-none focus:border-brand-500 disabled:opacity-50"
                   />
                 </div>
-                {allLessonsQuestionCountMax === 0 && <p className="text-red-500 text-xs mt-2 font-medium">Soru havuzunda soru bulunmuyor.</p>}
+                {allLessonsSetupQuestionCountMax === 0 && <p className="text-red-500 text-xs mt-2 font-medium">Soru havuzunda soru bulunmuyor.</p>}
               </div>
             </div>
 
@@ -4344,7 +4758,7 @@ export default function App() {
               </button>
               <button
                 onClick={startAllLessonsQuiz}
-                disabled={allLessonsQuestionCountMax === 0 || allLessonsQuestionCount === 0}
+                disabled={allLessonsSetupQuestionCountMax === 0 || allLessonsQuestionCount === 0}
                 className="flex-[2] py-3.5 rounded-xl bg-gradient-to-r from-cyan-500 via-blue-600 to-indigo-600 text-white font-bold text-sm hover:opacity-90 shadow-lg shadow-cyan-600/30 transition transform hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-40 disabled:cursor-not-allowed disabled:transform-none flex items-center justify-center gap-2"
               >
                 <Icon name="Play" className="w-4 h-4" />
@@ -4359,21 +4773,50 @@ export default function App() {
 
   // 3. QUIZ SETUP VIEW
   if (currentView === 'quiz-setup' && activeTopic) {
-    const allSetupTopicQuestions = allQuestions[activeTopic.sub.id] || [];
-    const wrongQuestionIdSet = new Set(wrongQuestionIdsByTopic[activeTopic.sub.id] || []);
-    const favoriteQuestionIdSet = new Set(favoriteQuestionIdsByTopic[activeTopic.sub.id] || []);
+    const setupTopicId = activeTopic.sub.id;
+    const allSetupTopicQuestions = allQuestions[setupTopicId] || [];
+    const setupTopicProgress = getTopicProgress(setupTopicId);
+    const wrongQuestionIdSet = new Set(wrongQuestionIdsByTopic[setupTopicId] || []);
+    const favoriteQuestionIdSet = new Set(favoriteQuestionIdsByTopic[setupTopicId] || []);
+    const setupSeenStats = seenQuestionStatsByTopic[setupTopicId] || [];
+    const setupSeenTrackingIdSet = new Set(
+      setupSeenStats
+        .filter((stats) => stats.answeredCount > 0)
+        .map((stats) => stats.questionTrackingId)
+    );
+    const setupTopicQuestionMapHash = allSetupTopicQuestions.length > 0
+      ? buildTopicQuestionMapHash(setupTopicId, allSetupTopicQuestions)
+      : '';
+    const canUseSetupAnsweredBitset =
+      allSetupTopicQuestions.length > 0 &&
+      setupTopicProgress.bitsetQuestionCount === allSetupTopicQuestions.length &&
+      setupTopicProgress.bitsetQuestionMapHash === setupTopicQuestionMapHash &&
+      setupTopicProgress.answeredBits.length > 0;
+    const setupAnsweredBitsetBytes = canUseSetupAnsweredBitset
+      ? decodeBase64ToBytes(setupTopicProgress.answeredBits, getBitsetByteLength(allSetupTopicQuestions.length))
+      : null;
     const statusFilterActive = quizStatusFilter.wrong || quizStatusFilter.favorite;
-    const getFilteredQuestionsByStatus = (status: QuizStatusFilter) => {
+    const isSetupQuestionSeen = (question: Question, index: number): boolean => {
+      const questionTrackingId = getQuestionTrackingId(question, setupTopicId, index);
+      if (setupSeenTrackingIdSet.has(questionTrackingId)) return true;
+      if (setupAnsweredBitsetBytes) return isBitSetInBytes(setupAnsweredBitsetBytes, index);
+      return false;
+    };
+    const getFilteredQuestionsByStatus = (status: QuizStatusFilter, sourceMode: QuizQuestionSourceMode = quizQuestionSourceMode) => {
       const isActive = status.wrong || status.favorite;
-      if (!isActive) return allSetupTopicQuestions;
       return allSetupTopicQuestions.filter((question, index) => {
-        const questionTrackingId = getQuestionTrackingId(question, activeTopic.sub.id, index);
+        if (sourceMode === 'unseen_only' && isSetupQuestionSeen(question, index)) {
+          return false;
+        }
+        if (!isActive) return true;
+        const questionTrackingId = getQuestionTrackingId(question, setupTopicId, index);
         const includeWrong = status.wrong && wrongQuestionIdSet.has(questionTrackingId);
         const includeFavorite = status.favorite && favoriteQuestionIdSet.has(questionTrackingId);
         return includeWrong || includeFavorite;
       });
     };
     const setupTopicQuestions = getFilteredQuestionsByStatus(quizStatusFilter);
+    const unseenOnlyQuestionCount = getFilteredQuestionsByStatus({ wrong: false, favorite: false }, 'unseen_only').length;
     const wrongOnlyQuestionCount = getFilteredQuestionsByStatus({ wrong: true, favorite: false }).length;
     const favoriteOnlyQuestionCount = getFilteredQuestionsByStatus({ wrong: false, favorite: true }).length;
     const maxQuestions = setupTopicQuestions.length;
@@ -4443,11 +4886,26 @@ export default function App() {
       return next;
     };
     const updateQuizStatusFilter = (nextStatusFilter: QuizStatusFilter) => {
-      const nextFilteredQuestions = getFilteredQuestionsByStatus(nextStatusFilter);
+      const nextFilteredQuestions = getFilteredQuestionsByStatus(nextStatusFilter, quizQuestionSourceMode);
       const nextQuestionCount = nextFilteredQuestions.length > 0
         ? Math.min(quizConfig.questionCount, nextFilteredQuestions.length)
         : 0;
       setQuizStatusFilter(nextStatusFilter);
+      setQuizTagQuestionCounts({});
+      setQuizTagPickerSourceKey('');
+      setQuizTagPickerCountInput('');
+      setQuizConfig((prev) => ({
+        ...prev,
+        questionCount: nextQuestionCount,
+        durationSeconds: getAutoDurationForQuestionCount(nextQuestionCount),
+      }));
+    };
+    const updateQuizQuestionSourceFilter = (nextSourceMode: QuizQuestionSourceMode) => {
+      const nextFilteredQuestions = getFilteredQuestionsByStatus(quizStatusFilter, nextSourceMode);
+      const nextQuestionCount = nextFilteredQuestions.length > 0
+        ? Math.min(quizConfig.questionCount, nextFilteredQuestions.length)
+        : 0;
+      setQuizQuestionSourceMode(nextSourceMode);
       setQuizTagQuestionCounts({});
       setQuizTagPickerSourceKey('');
       setQuizTagPickerCountInput('');
@@ -4541,6 +4999,51 @@ export default function App() {
 
             {/* Settings */}
             <div className="space-y-4 md:space-y-6">
+              {/* Source Mode Filter */}
+              <div className="bg-surface-50 dark:bg-surface-900/50 p-3.5 md:p-5 rounded-xl md:rounded-2xl border border-surface-100 dark:border-surface-700/50">
+                <div className="flex items-center justify-between mb-3">
+                  <label className="font-bold text-surface-700 dark:text-surface-200 text-sm flex items-center gap-2">
+                    <Icon name="Eye" className="w-4 h-4 text-surface-400" />
+                    Soru Havuzu
+                  </label>
+                  <span className="text-[11px] font-bold text-surface-500 dark:text-surface-300 bg-white dark:bg-surface-800 px-2 py-0.5 rounded-full border border-surface-200 dark:border-surface-600">
+                    {quizQuestionSourceMode === 'unseen_only' ? `${unseenOnlyQuestionCount} gormedigin soru` : `${allSetupTopicQuestions.length} tum soru`}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <button
+                    onClick={() => updateQuizQuestionSourceFilter('all')}
+                    className={`text-left rounded-xl border px-2.5 md:px-3 py-2 md:py-2.5 transition ${
+                      quizQuestionSourceMode === 'all'
+                        ? 'border-brand-300 dark:border-brand-800/40 bg-brand-50 dark:bg-brand-900/20'
+                        : 'border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800'
+                    }`}
+                  >
+                    <p className="text-[11px] md:text-xs font-bold text-surface-700 dark:text-surface-200">Tum Sorular</p>
+                    <p className="text-[11px] text-surface-500 dark:text-surface-300 mt-0.5">{allSetupTopicQuestions.length} soru</p>
+                  </button>
+                  <button
+                    onClick={() => updateQuizQuestionSourceFilter('unseen_only')}
+                    disabled={unseenOnlyQuestionCount === 0}
+                    className={`text-left rounded-xl border px-2.5 md:px-3 py-2 md:py-2.5 transition ${
+                      quizQuestionSourceMode === 'unseen_only'
+                        ? 'border-cyan-300 dark:border-cyan-800/40 bg-cyan-50 dark:bg-cyan-900/20'
+                        : 'border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800'
+                    } disabled:opacity-40 disabled:cursor-not-allowed`}
+                  >
+                    <p className="text-[11px] md:text-xs font-bold text-surface-700 dark:text-surface-200">Sadece Gormedigim</p>
+                    <p className="text-[11px] text-cyan-600 dark:text-cyan-300 mt-0.5">{unseenOnlyQuestionCount} soru</p>
+                  </button>
+                </div>
+
+                {quizQuestionSourceMode === 'unseen_only' && (
+                  <p className="text-[11px] text-cyan-700 dark:text-cyan-300 mt-2.5 font-medium">
+                    Daha once karsina cikmayan sorular secilir. Ayni soruyu tekrar cozmus olman havuzu azaltmaz.
+                  </p>
+                )}
+              </div>
+
               {/* Status Filter */}
               {(wrongOnlyQuestionCount > 0 || favoriteOnlyQuestionCount > 0) && (
                 <div className="bg-surface-50 dark:bg-surface-900/50 p-3.5 md:p-5 rounded-xl md:rounded-2xl border border-surface-100 dark:border-surface-700/50">
@@ -4944,6 +5447,44 @@ export default function App() {
     const questionContextTypographyClass = `font-sans font-semibold tracking-[0.008em] ${questionStemTextSizeClass}`;
     const questionItemsTypographyClass = `font-sans font-light tracking-normal ${questionStemTextSizeClass}`;
     const questionRootTypographyClass = `font-sans font-extrabold tracking-[0.012em] ${questionStemTextSizeClass}`;
+    const selectedReviewQuestionIndexSafe = quizState.showResults
+      ? (
+          selectedReviewQuestionIndex !== null &&
+          selectedReviewQuestionIndex >= 0 &&
+          selectedReviewQuestionIndex < totalQuestions
+            ? selectedReviewQuestionIndex
+            : (totalQuestions > 0 ? 0 : null)
+        )
+      : null;
+    const selectedReviewQuestion = selectedReviewQuestionIndexSafe !== null
+      ? quizState.questions[selectedReviewQuestionIndexSafe]
+      : null;
+    const selectedReviewUserAnswer = selectedReviewQuestionIndexSafe !== null
+      ? quizState.userAnswers[selectedReviewQuestionIndexSafe]
+      : null;
+    const selectedReviewIsUnanswered = selectedReviewUserAnswer === null || selectedReviewUserAnswer === undefined;
+    const selectedReviewIsCorrect = Boolean(
+      selectedReviewQuestion &&
+      !selectedReviewIsUnanswered &&
+      selectedReviewUserAnswer === selectedReviewQuestion.correctOptionIndex
+    );
+    const selectedReviewQuestionTrackingId = selectedReviewQuestion && selectedReviewQuestionIndexSafe !== null
+      ? (getQuizQuestionMeta(selectedReviewQuestion, selectedReviewQuestionIndexSafe)?.trackingId || null)
+      : null;
+    const selectedReviewIsFavorite = selectedReviewQuestionTrackingId
+      ? Boolean(favoriteQuestionsById[selectedReviewQuestionTrackingId])
+      : false;
+    const isSelectedReviewCardFlipped = selectedReviewQuestionIndexSafe !== null
+      ? Boolean(flippedReviewCardsByIndex[selectedReviewQuestionIndexSafe])
+      : false;
+    const reviewNumberMinCellPx = totalQuestions >= 60 ? 26 : totalQuestions >= 40 ? 30 : totalQuestions >= 30 ? 34 : 38;
+    const reviewNumberCellClass = totalQuestions >= 60
+      ? 'h-7 text-[10px]'
+      : totalQuestions >= 40
+        ? 'h-8 text-[11px]'
+        : totalQuestions >= 30
+          ? 'h-9 text-xs'
+          : 'h-10 text-sm';
     const quizConfirmMeta = quizConfirmAction === 'exit'
       ? {
           title: 'Sinavdan cikmak istiyor musunuz?',
@@ -4989,7 +5530,58 @@ export default function App() {
         setQuestionJumpTargetIndex(safeIndex);
       }
     };
-
+    const handleSelectReviewQuestion = (questionIndex: number) => {
+      setSelectedReviewQuestionIndex(questionIndex);
+      setFlippedReviewCardsByIndex((prev) => (
+        prev[questionIndex]
+          ? { ...prev, [questionIndex]: false }
+          : prev
+      ));
+    };
+    const handleToggleSelectedReviewCardFlip = () => {
+      if (selectedReviewQuestionIndexSafe === null) return;
+      setFlippedReviewCardsByIndex((prev) => ({
+        ...prev,
+        [selectedReviewQuestionIndexSafe]: !prev[selectedReviewQuestionIndexSafe],
+      }));
+    };
+    const isInteractiveReviewCardTarget = (target: EventTarget | null): boolean => {
+      if (!(target instanceof HTMLElement)) return false;
+      return Boolean(target.closest('button,a,input,textarea,select,label'));
+    };
+    const handleReviewCardPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+      if (event.pointerType === 'mouse' && event.button !== 0) return;
+      if (isInteractiveReviewCardTarget(event.target)) return;
+      reviewCardPointerGestureRef.current = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        moved: false,
+      };
+    };
+    const handleReviewCardPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+      const gesture = reviewCardPointerGestureRef.current;
+      if (gesture.pointerId !== event.pointerId) return;
+      const deltaX = Math.abs(event.clientX - gesture.startX);
+      const deltaY = Math.abs(event.clientY - gesture.startY);
+      if (deltaX > 8 || deltaY > 8) {
+        reviewCardPointerGestureRef.current = { ...gesture, moved: true };
+      }
+    };
+    const handleReviewCardPointerCancel = (event: React.PointerEvent<HTMLDivElement>) => {
+      const gesture = reviewCardPointerGestureRef.current;
+      if (gesture.pointerId !== event.pointerId) return;
+      reviewCardPointerGestureRef.current = { pointerId: null, startX: 0, startY: 0, moved: false };
+    };
+    const handleReviewCardPointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+      const gesture = reviewCardPointerGestureRef.current;
+      if (gesture.pointerId !== event.pointerId) return;
+      const shouldFlip = !gesture.moved && !isInteractiveReviewCardTarget(event.target);
+      reviewCardPointerGestureRef.current = { pointerId: null, startX: 0, startY: 0, moved: false };
+      if (shouldFlip) {
+        handleToggleSelectedReviewCardFlip();
+      }
+    };
     return (
       <div className="h-screen overflow-hidden flex flex-col bg-gradient-to-b from-slate-50 via-white to-slate-100 dark:from-surface-900 dark:via-surface-900 dark:to-surface-950 transition-colors duration-300">
 
@@ -5477,58 +6069,251 @@ export default function App() {
 
                 {/* Question Review */}
                 <div className="space-y-3">
-                  <h4 className="text-sm font-bold text-surface-500 uppercase tracking-wider px-1">Soru Detayları</h4>
-                  {quizState.questions.map((q, idx) => {
-                    const userAnswer = quizState.userAnswers[idx];
-                    const isCorrect = userAnswer === q.correctOptionIndex;
-                    const isUnanswered = userAnswer === null;
-                    const questionTrackingId = getQuizQuestionMeta(q, idx)?.trackingId || null;
-                    const isFavorite = Boolean(favoriteQuestionsById[questionTrackingId]);
+                  <div className="px-1">
+                    <h4 className="text-sm font-bold text-surface-500 uppercase tracking-wider">Soru Kartlari</h4>
+                    <p className="text-xs text-surface-400 mt-1">Numaraya tikla, karti cevirmek icin karta tikla.</p>
+                  </div>
 
-                    return (
-                      <div key={idx} className="bg-white dark:bg-surface-800 rounded-xl p-4 border border-surface-100 dark:border-surface-700 shadow-card dark:shadow-card-dark">
-                        <div className="flex items-start gap-3">
-                          <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${
-                            isCorrect ? 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-500' :
-                            isUnanswered ? 'bg-surface-100 dark:bg-surface-700 text-surface-400' :
-                            'bg-red-50 dark:bg-red-900/20 text-red-500'
+                  <div className="bg-white dark:bg-surface-800 rounded-2xl p-2.5 border border-surface-100 dark:border-surface-700 shadow-card dark:shadow-card-dark">
+                    <div className="rounded-xl border border-surface-200 dark:border-surface-700 overflow-hidden bg-surface-200 dark:bg-surface-700">
+                      <div
+                        className="grid gap-px"
+                        style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${reviewNumberMinCellPx}px, 1fr))` }}
+                      >
+                      {quizState.questions.map((q, idx) => {
+                        const userAnswer = quizState.userAnswers[idx];
+                        const isUnanswered = userAnswer === null || userAnswer === undefined;
+                        const isCorrect = !isUnanswered && userAnswer === q.correctOptionIndex;
+                        const isSelected = idx === selectedReviewQuestionIndexSafe;
+                        const toneClass = isCorrect
+                          ? 'bg-emerald-100 text-emerald-700 border-emerald-300 dark:bg-emerald-900/30 dark:text-emerald-300 dark:border-emerald-700/60'
+                          : isUnanswered
+                            ? 'bg-orange-100 text-orange-700 border-orange-300 dark:bg-orange-900/30 dark:text-orange-300 dark:border-orange-700/60'
+                            : 'bg-red-100 text-red-700 border-red-300 dark:bg-red-900/30 dark:text-red-300 dark:border-red-700/60';
+
+                        return (
+                          <button
+                            key={idx}
+                            onClick={() => handleSelectReviewQuestion(idx)}
+                            className={`${reviewNumberCellClass} min-w-0 font-black transition-all border-0 rounded-none ${toneClass} ${
+                              isSelected ? 'ring-2 ring-inset ring-slate-900/20 dark:ring-white/25 z-[1]' : 'hover:brightness-[0.98] dark:hover:brightness-110'
+                            }`}
+                            title={`${idx + 1}. soru`}
+                            aria-label={`${idx + 1}. soru`}
+                          >
+                            {idx + 1}
+                          </button>
+                        );
+                      })}
+                      </div>
+                    </div>
+                  </div>
+
+                  {selectedReviewQuestion && selectedReviewQuestionIndexSafe !== null && (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between gap-3 px-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="inline-flex items-center justify-center w-8 h-8 rounded-lg bg-slate-100 dark:bg-surface-700 text-surface-700 dark:text-surface-200 text-sm font-black">
+                            {selectedReviewQuestionIndexSafe + 1}
+                          </span>
+                          <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-bold border ${
+                            selectedReviewIsCorrect
+                              ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-300'
+                              : selectedReviewIsUnanswered
+                                ? 'border-orange-200 bg-orange-50 text-orange-700 dark:border-orange-800 dark:bg-orange-900/20 dark:text-orange-300'
+                                : 'border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300'
                           }`}>
-                            <Icon name={isCorrect ? "CircleCheck" : isUnanswered ? "Minus" : "CircleX"} className="w-4 h-4" />
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <p className="text-sm font-medium text-surface-700 dark:text-surface-200 mb-1.5 leading-relaxed">{q.questionText}</p>
-                            {q.sourceTag && (
-                              <span className="inline-flex mb-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-200">
-                                {q.sourceTag}
-                              </span>
-                            )}
-                            <div className="text-xs space-y-0.5">
-                              {!isUnanswered && !isCorrect && (
-                                <p className="text-red-500">Cevabiniz: {String.fromCharCode(65 + userAnswer!)}) {q.options[userAnswer!]}</p>
-                              )}
-                              <p className="text-emerald-600 dark:text-emerald-400 font-medium">
-                                Dogru: {String.fromCharCode(65 + q.correctOptionIndex)}) {q.options[q.correctOptionIndex]}
-                              </p>
-                              {q.explanation && (
-                                <p className="text-surface-400 mt-1 italic">{q.explanation}</p>
-                              )}
+                            {selectedReviewIsCorrect ? 'Dogru' : selectedReviewIsUnanswered ? 'Bos' : 'Yanlis'}
+                          </span>
+                          {selectedReviewQuestion.sourceTag && (
+                            <span className="inline-flex px-2 py-1 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-200">
+                              {selectedReviewQuestion.sourceTag}
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-[11px] text-surface-400 flex-shrink-0">On/arka yuz icin tikla</span>
+                      </div>
+
+                      <div
+                        role="button"
+                        tabIndex={0}
+                        aria-label={`${selectedReviewQuestionIndexSafe + 1}. soru karti`}
+                        onPointerDown={handleReviewCardPointerDown}
+                        onPointerMove={handleReviewCardPointerMove}
+                        onPointerUp={handleReviewCardPointerUp}
+                        onPointerCancel={handleReviewCardPointerCancel}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault();
+                            handleToggleSelectedReviewCardFlip();
+                          }
+                        }}
+                        className="relative cursor-pointer rounded-2xl focus:outline-none focus:ring-2 focus:ring-brand-400/60"
+                        style={{ perspective: '1400px' }}
+                      >
+                        <div
+                          className="relative grid transition-transform duration-500"
+                          style={{
+                            transformStyle: 'preserve-3d',
+                            transform: isSelectedReviewCardFlipped ? 'rotateY(180deg)' : 'rotateY(0deg)',
+                          }}
+                        >
+                          <div
+                            className="col-start-1 row-start-1 bg-white dark:bg-surface-800 rounded-2xl border border-surface-100 dark:border-surface-700 shadow-card dark:shadow-card-dark p-3 sm:p-4"
+                            style={{ backfaceVisibility: 'hidden', WebkitBackfaceVisibility: 'hidden' }}
+                          >
+                            <div className="flex flex-col">
+                              <div className="flex items-center justify-between gap-3 mb-3">
+                                <div>
+                                  <p className="text-[11px] font-bold uppercase tracking-wider text-surface-400">On Yuz</p>
+                                  <p className="text-sm font-extrabold text-surface-800 dark:text-white">
+                                    {selectedReviewQuestionIndexSafe + 1}. Soru
+                                  </p>
+                                </div>
+                                <button
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    void toggleFavoriteQuestion(selectedReviewQuestion, selectedReviewQuestionIndexSafe);
+                                  }}
+                                  className={`w-9 h-9 rounded-xl border flex items-center justify-center transition ${
+                                    selectedReviewIsFavorite
+                                      ? 'border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 text-amber-500 dark:text-amber-300'
+                                      : 'border-surface-200 dark:border-surface-600 bg-surface-50 dark:bg-surface-700 text-surface-400 hover:text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-900/20'
+                                  }`}
+                                  title={selectedReviewIsFavorite ? 'Favoriden cikar' : 'Favorilere ekle'}
+                                >
+                                  <Icon name="Star" className={`w-4 h-4 ${selectedReviewIsFavorite ? 'fill-current' : ''}`} />
+                                </button>
+                              </div>
+
+                              <div className="pr-1 pb-1 space-y-3">
+                                  {selectedReviewQuestion.imageUrl && (
+                                    <div className="rounded-xl overflow-hidden border border-surface-100 dark:border-surface-700">
+                                      <img
+                                        src={selectedReviewQuestion.imageUrl}
+                                        alt="Soru gorseli"
+                                        className="w-full h-auto object-contain bg-surface-50 dark:bg-surface-900 max-h-56"
+                                      />
+                                    </div>
+                                  )}
+
+                                  {selectedReviewQuestion.contextText && (
+                                    <p className="text-sm leading-6 font-semibold text-surface-700 dark:text-surface-100">
+                                      {selectedReviewQuestion.contextText}
+                                    </p>
+                                  )}
+
+                                  {selectedReviewQuestion.contentItems && selectedReviewQuestion.contentItems.length > 0 && (
+                                    <div className="rounded-xl border border-surface-200/80 dark:border-surface-700/70 bg-surface-50 dark:bg-surface-900/50 p-3">
+                                      <div className="space-y-2">
+                                        {selectedReviewQuestion.contentItems.map((item, itemIndex) => (
+                                          <div key={itemIndex} className="flex items-start gap-2.5">
+                                            <span className={`mt-2 w-2 h-2 rounded-full flex-shrink-0 ${catColor.bg}`}></span>
+                                            <p className="text-sm leading-6 text-surface-700 dark:text-surface-300">{item}</p>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  <div className="rounded-xl border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800/80 p-3">
+                                    <p className="text-base leading-7 font-extrabold tracking-[0.01em] text-surface-900 dark:text-white">
+                                      {selectedReviewQuestion.questionText}
+                                    </p>
+                                  </div>
+
+                                  <div className="space-y-2">
+                                    {selectedReviewQuestion.options.map((option, optionIndex) => (
+                                      <div
+                                        key={optionIndex}
+                                        className="flex items-start gap-2 rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-50/70 dark:bg-surface-900/40 px-3 py-2"
+                                      >
+                                        <span className="mt-0.5 inline-flex items-center justify-center w-6 h-6 rounded-md bg-surface-100 dark:bg-surface-700 text-[11px] font-black text-surface-600 dark:text-surface-300 flex-shrink-0">
+                                          {String.fromCharCode(65 + optionIndex)}
+                                        </span>
+                                        <p className="text-sm leading-6 text-surface-700 dark:text-surface-200">{option}</p>
+                                      </div>
+                                    ))}
+                                  </div>
+                              </div>
                             </div>
                           </div>
-                          <button
-                            onClick={() => void toggleFavoriteQuestion(q, idx)}
-                            className={`w-8 h-8 rounded-lg border flex items-center justify-center transition ${
-                              isFavorite
-                                ? 'border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 text-amber-500 dark:text-amber-300'
-                                : 'border-surface-200 dark:border-surface-600 bg-surface-50 dark:bg-surface-700 text-surface-400 hover:text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-900/20'
-                            }`}
-                            title={isFavorite ? 'Favoriden cikar' : 'Favorilere ekle'}
+
+                          <div
+                            className="col-start-1 row-start-1 bg-white dark:bg-surface-800 rounded-2xl border border-surface-100 dark:border-surface-700 shadow-card dark:shadow-card-dark p-3 sm:p-4"
+                            style={{
+                              backfaceVisibility: 'hidden',
+                              WebkitBackfaceVisibility: 'hidden',
+                              transform: 'rotateY(180deg)',
+                            }}
                           >
-                            <Icon name="Star" className={`w-4 h-4 ${isFavorite ? 'fill-current' : ''}`} />
-                          </button>
+                            <div className="flex flex-col">
+                              <div className="mb-3">
+                                <p className="text-[11px] font-bold uppercase tracking-wider text-surface-400">Arka Yuz</p>
+                                <p className="text-sm font-extrabold text-surface-800 dark:text-white">Cevap ve Aciklama</p>
+                              </div>
+
+                              <div className="pr-1 pb-1 space-y-3">
+                                  <div className={`rounded-xl border p-3 ${
+                                    selectedReviewIsCorrect
+                                      ? 'border-emerald-200 bg-emerald-50 dark:border-emerald-900/60 dark:bg-emerald-900/20'
+                                      : selectedReviewIsUnanswered
+                                        ? 'border-orange-200 bg-orange-50 dark:border-orange-900/60 dark:bg-orange-900/20'
+                                        : 'border-red-200 bg-red-50 dark:border-red-900/60 dark:bg-red-900/20'
+                                  }`}>
+                                    <p className={`text-xs font-bold uppercase tracking-wider mb-1 ${
+                                      selectedReviewIsCorrect
+                                        ? 'text-emerald-700 dark:text-emerald-300'
+                                        : selectedReviewIsUnanswered
+                                          ? 'text-orange-700 dark:text-orange-300'
+                                          : 'text-red-700 dark:text-red-300'
+                                    }`}>
+                                      Sonuc
+                                    </p>
+                                    <p className={`text-sm font-extrabold ${
+                                      selectedReviewIsCorrect
+                                        ? 'text-emerald-700 dark:text-emerald-300'
+                                        : selectedReviewIsUnanswered
+                                          ? 'text-orange-700 dark:text-orange-300'
+                                          : 'text-red-700 dark:text-red-300'
+                                    }`}>
+                                      {selectedReviewIsCorrect ? 'Dogru cevapladiniz' : selectedReviewIsUnanswered ? 'Bos biraktiniz' : 'Yanlis cevapladiniz'}
+                                    </p>
+                                  </div>
+
+                                  <div className="rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900/50 p-3">
+                                    <p className="text-[11px] font-bold uppercase tracking-wider text-surface-400 mb-1">Sizin Cevabiniz</p>
+                                    <p className={`text-sm font-semibold ${
+                                      selectedReviewIsUnanswered ? 'text-orange-600 dark:text-orange-300' : 'text-surface-800 dark:text-surface-100'
+                                    }`}>
+                                      {selectedReviewIsUnanswered
+                                        ? 'Bos birakildi'
+                                        : `${String.fromCharCode(65 + Number(selectedReviewUserAnswer))}) ${selectedReviewQuestion.options[Number(selectedReviewUserAnswer)] || ''}`}
+                                    </p>
+                                  </div>
+
+                                  <div className="rounded-xl border border-emerald-200 dark:border-emerald-900/60 bg-emerald-50 dark:bg-emerald-900/20 p-3">
+                                    <p className="text-[11px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300 mb-1">Dogru Cevap</p>
+                                    <p className="text-sm font-bold text-emerald-700 dark:text-emerald-300">
+                                      {String.fromCharCode(65 + selectedReviewQuestion.correctOptionIndex)}) {selectedReviewQuestion.options[selectedReviewQuestion.correctOptionIndex]}
+                                    </p>
+                                  </div>
+
+                                  {selectedReviewQuestion.explanation && (
+                                    <div className="rounded-xl border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-900/40 p-3">
+                                      <p className="text-[11px] font-bold uppercase tracking-wider text-surface-400 mb-1">Aciklama</p>
+                                      <p className="text-sm leading-6 text-surface-700 dark:text-surface-200 whitespace-pre-wrap">
+                                      {selectedReviewQuestion.explanation}
+                                    </p>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
                         </div>
                       </div>
-                    );
-                  })}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -6597,19 +7382,19 @@ export default function App() {
                   <div className={`h-px w-full ${isDarkMode ? 'bg-cyan-300/25' : 'bg-sky-200/90'}`} />
                   <div className={`grid grid-cols-[2.1fr_2fr_1fr_1fr_1.05fr] divide-x ${isDarkMode ? 'divide-cyan-300/25' : 'divide-sky-200/90'}`}>
                     <div className="min-w-0 px-1.5 py-2 text-center flex items-center justify-center">
-                      <p className={`font-semibold text-fuchsia-600 dark:text-fuchsia-300 leading-none tabular-nums whitespace-nowrap -translate-y-0.5 ${getAdaptiveStatValueClass(statisticsSummary.uniqueSolvedCount)}`}>{statisticsSummary.uniqueSolvedCount}</p>
+                      <p className={`font-semibold text-fuchsia-600 dark:text-fuchsia-300 leading-none tabular-nums whitespace-nowrap md:-translate-y-0.5 ${getStatisticsNumberClass(statisticsSummary.uniqueSolvedCount, 'summary')}`}>{statisticsSummary.uniqueSolvedCount}</p>
                     </div>
                     <div className="min-w-0 px-1.5 py-2 text-center flex items-center justify-center">
-                      <p className={`font-semibold text-slate-900 dark:text-white leading-none tabular-nums whitespace-nowrap -translate-y-0.5 ${getAdaptiveStatValueClass(statisticsSummary.totalAnsweredCount)}`}>{statisticsSummary.totalAnsweredCount}</p>
+                      <p className={`font-semibold text-slate-900 dark:text-white leading-none tabular-nums whitespace-nowrap md:-translate-y-0.5 ${getStatisticsNumberClass(statisticsSummary.totalAnsweredCount, 'summary')}`}>{statisticsSummary.totalAnsweredCount}</p>
                     </div>
                     <div className="min-w-0 px-1.5 py-2 text-center flex items-center justify-center">
-                      <p className={`font-semibold text-emerald-600 dark:text-emerald-300 leading-none tabular-nums whitespace-nowrap -translate-y-0.5 ${getAdaptiveStatValueClass(statisticsSummary.correctCount)}`}>{statisticsSummary.correctCount}</p>
+                      <p className={`font-semibold text-emerald-600 dark:text-emerald-300 leading-none tabular-nums whitespace-nowrap md:-translate-y-0.5 ${getStatisticsNumberClass(statisticsSummary.correctCount, 'summary')}`}>{statisticsSummary.correctCount}</p>
                     </div>
                     <div className="min-w-0 px-1.5 py-2 text-center flex items-center justify-center">
-                      <p className={`font-semibold text-red-600 dark:text-red-300 leading-none tabular-nums whitespace-nowrap -translate-y-0.5 ${getAdaptiveStatValueClass(statisticsSummary.wrongCount)}`}>{statisticsSummary.wrongCount}</p>
+                      <p className={`font-semibold text-red-600 dark:text-red-300 leading-none tabular-nums whitespace-nowrap md:-translate-y-0.5 ${getStatisticsNumberClass(statisticsSummary.wrongCount, 'summary')}`}>{statisticsSummary.wrongCount}</p>
                     </div>
                     <div className="min-w-0 px-1.5 py-2 text-center flex items-center justify-center">
-                      <p className={`inline-flex items-center justify-center font-semibold text-rose-600 dark:text-rose-300 leading-none tabular-nums whitespace-nowrap -translate-y-0.5 ${getAdaptiveStatValueClass(statisticsSummary.accuracyPercent)}`}>
+                      <p className={`inline-flex items-center justify-center font-semibold text-rose-600 dark:text-rose-300 leading-none tabular-nums whitespace-nowrap md:-translate-y-0.5 ${getStatisticsNumberClass(statisticsSummary.accuracyPercent, 'summary')}`}>
                         <span className="text-[0.5em] leading-none mr-0.5 -ml-0.5">%</span>{statisticsSummary.accuracyPercent}
                       </p>
                     </div>
@@ -6651,10 +7436,10 @@ export default function App() {
                                 </div>
                                 <div className="px-2 py-2 text-center min-w-[82px]">
                                   <p className="text-[10px] font-medium text-slate-500 dark:text-slate-300">Soru Sayısı</p>
-                                  <p className="text-sm font-semibold text-slate-900 dark:text-white leading-none mt-0.5">{row.questionCount}</p>
+                                  <p className="text-xs md:text-sm font-semibold text-slate-900 dark:text-white leading-none mt-0.5 tabular-nums">{row.questionCount}</p>
                                 </div>
                                 <div className="px-2 py-2 min-w-[72px] flex items-center justify-center">
-                                  <p className={`inline-flex items-center justify-center font-semibold text-cyan-600 dark:text-cyan-300 leading-none text-center tabular-nums whitespace-nowrap ${getAdaptiveStatValueClass(row.accuracyPercent, 'compact')}`}>
+                                  <p className={`inline-flex items-center justify-center font-semibold text-cyan-600 dark:text-cyan-300 leading-none text-center tabular-nums whitespace-nowrap ${getStatisticsNumberClass(row.accuracyPercent, 'row')}`}>
                                     <span className="text-[0.5em] leading-none mr-1.5 -ml-0.5">%</span>{row.accuracyPercent}
                                   </p>
                                 </div>
@@ -6668,19 +7453,19 @@ export default function App() {
                               <div className={`grid grid-cols-[1.9fr_1.9fr_1fr_1fr] divide-x ${isDarkMode ? 'divide-slate-500/30' : 'divide-slate-200/90'} text-[clamp(8px,2.25vw,10px)] md:text-[11px]`}>
                                 <div className="min-w-0 px-1.5 py-1.5 md:px-2 md:py-1.5 text-center">
                                   <p className="font-medium text-slate-500 dark:text-slate-300 whitespace-nowrap overflow-hidden text-ellipsis">Toplam Çözülen</p>
-                                  <p className={`font-semibold text-slate-900 dark:text-white leading-none mt-0.5 tabular-nums whitespace-nowrap ${getAdaptiveStatValueClass(row.uniqueSolvedCount, 'compact')}`}>{row.uniqueSolvedCount}</p>
+                                  <p className={`font-semibold text-slate-900 dark:text-white leading-none mt-0.5 tabular-nums whitespace-nowrap ${getStatisticsNumberClass(row.uniqueSolvedCount, 'row')}`}>{row.uniqueSolvedCount}</p>
                                 </div>
                                 <div className="min-w-0 px-1.5 py-1.5 md:px-2 md:py-1.5 text-center">
                                   <p className="font-medium text-slate-500 dark:text-slate-300 whitespace-nowrap overflow-hidden text-ellipsis">Toplam Cevaplanan</p>
-                                  <p className={`font-semibold text-slate-900 dark:text-white leading-none mt-0.5 tabular-nums whitespace-nowrap ${getAdaptiveStatValueClass(row.totalAnsweredCount, 'compact')}`}>{row.totalAnsweredCount}</p>
+                                  <p className={`font-semibold text-slate-900 dark:text-white leading-none mt-0.5 tabular-nums whitespace-nowrap ${getStatisticsNumberClass(row.totalAnsweredCount, 'row')}`}>{row.totalAnsweredCount}</p>
                                 </div>
                                 <div className="min-w-0 px-1.5 py-1.5 md:px-2 md:py-1.5 text-center">
                                   <p className="font-medium text-emerald-700 dark:text-emerald-300 truncate">Doğru</p>
-                                  <p className={`font-semibold text-emerald-700 dark:text-emerald-300 leading-none mt-0.5 tabular-nums whitespace-nowrap ${getAdaptiveStatValueClass(row.correctCount, 'compact')}`}>{row.correctCount}</p>
+                                  <p className={`font-semibold text-emerald-700 dark:text-emerald-300 leading-none mt-0.5 tabular-nums whitespace-nowrap ${getStatisticsNumberClass(row.correctCount, 'row')}`}>{row.correctCount}</p>
                                 </div>
                                 <div className="min-w-0 px-1.5 py-1.5 md:px-2 md:py-1.5 text-center">
                                   <p className="font-medium text-red-700 dark:text-red-300 truncate">Yanlış</p>
-                                  <p className={`font-semibold text-red-700 dark:text-red-300 leading-none mt-0.5 tabular-nums whitespace-nowrap ${getAdaptiveStatValueClass(row.wrongCount, 'compact')}`}>{row.wrongCount}</p>
+                                  <p className={`font-semibold text-red-700 dark:text-red-300 leading-none mt-0.5 tabular-nums whitespace-nowrap ${getStatisticsNumberClass(row.wrongCount, 'row')}`}>{row.wrongCount}</p>
                                 </div>
                               </div>
                             </div>
@@ -7078,14 +7863,18 @@ export default function App() {
                   const topicProgress = getTopicProgress(sub.id);
                   const topicFavoriteCount = (favoriteQuestionIdsByTopic[sub.id] || []).length;
                   const topicSeenStats = seenQuestionStatsByTopic[sub.id] || [];
+                  const uniqueSeenFromSeenStats = topicSeenStats.reduce((sum, stats) => (stats.answeredCount > 0 ? sum + 1 : sum), 0);
+                  const uniqueSeenCount = uniqueSeenFromSeenStats > 0
+                    ? uniqueSeenFromSeenStats
+                    : Math.min(questionCount, getTopicUniqueSeenCount(topicProgress));
                   const uniqueSolvedFromSeenStats = topicSeenStats.reduce((sum, stats) => (stats.answeredCount > 0 ? sum + 1 : sum), 0);
                   const uniqueSolvedCount = uniqueSolvedFromSeenStats > 0
                     ? uniqueSolvedFromSeenStats
-                    : Math.min(questionCount, topicProgress.seenCount);
+                    : Math.min(questionCount, getTopicUniqueAnsweredCount(topicProgress));
                   const attempted = topicProgress.correctCount + topicProgress.totalWrongAnswers;
                   const totalAnsweredFromSeenStats = topicSeenStats.reduce((sum, stats) => sum + stats.answeredCount, 0);
                   const totalAnsweredCount = totalAnsweredFromSeenStats > 0 ? totalAnsweredFromSeenStats : attempted;
-                  const completionPercent = questionCount > 0 ? Math.round((totalAnsweredCount / questionCount) * 100) : 0;
+                  const completionPercent = questionCount > 0 ? Math.round((uniqueSolvedCount / questionCount) * 100) : 0;
                   const progressPercent = Math.min(100, completionPercent);
                   const accuracy = attempted > 0 ? Math.round((topicProgress.correctCount / attempted) * 100) : 0;
                   const hasTopicProgressStats =
@@ -7105,6 +7894,7 @@ export default function App() {
                     sub,
                     questionCount,
                     topicProgress,
+                    uniqueSeenCount,
                     uniqueSolvedCount,
                     totalAnsweredCount,
                     completionPercent,
@@ -7186,7 +7976,7 @@ export default function App() {
 
                     <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar pr-0.5 pb-1">
                       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3 md:gap-4">
-                        {filteredTopicCards.map(({ sub, questionCount, topicProgress, uniqueSolvedCount, completionPercent, progressPercent, accuracy, topicFavoriteCount, wrongOrFavoriteCount, hasTopicProgressStats, hasExternalSource, status }) => {
+                        {filteredTopicCards.map(({ sub, questionCount, topicProgress, uniqueSeenCount, uniqueSolvedCount, totalAnsweredCount, completionPercent, progressPercent, accuracy, topicFavoriteCount, wrongOrFavoriteCount, hasTopicProgressStats, hasExternalSource, status }) => {
                           const statusLabel =
                             status === 'completed'
                               ? 'Tamamlandi'
@@ -7208,6 +7998,66 @@ export default function App() {
                           const topicCardIconName = activeCategory.iconName === 'History'
                             ? 'Landmark'
                             : activeCategory.iconName;
+                          const mobileTopicStatItems: Array<{
+                            key: TopicCardStatKey;
+                            icon: string;
+                            label: string;
+                            value: number | string;
+                            valueClass: string;
+                            description: string;
+                          }> = [
+                            {
+                              key: 'total',
+                              icon: 'Hash',
+                              label: 'Toplam Soru',
+                              value: questionCount,
+                              valueClass: 'text-surface-700 dark:text-surface-200',
+                              description: 'Bu konudaki toplam soru sayisi.',
+                            },
+                            {
+                              key: 'seen',
+                              icon: 'Eye',
+                              label: 'Gorulen Soru',
+                              value: uniqueSeenCount,
+                              valueClass: 'text-cyan-600 dark:text-cyan-300',
+                              description: 'Toplam gorulen (boslar haric) farkli soru sayisi.',
+                            },
+                            {
+                              key: 'solved',
+                              icon: 'CircleCheck',
+                              label: 'Cozulen Soru',
+                              value: totalAnsweredCount,
+                              valueClass: 'text-emerald-600 dark:text-emerald-300',
+                              description: 'Toplam cozulen soru sayisi (dogru + yanlis, tekrarlar dahil).',
+                            },
+                            {
+                              key: 'wrong',
+                              icon: 'CircleX',
+                              label: 'Yanlis',
+                              value: topicProgress.wrongCount,
+                              valueClass: 'text-red-600 dark:text-red-300',
+                              description: 'Aktif yanlis havuzundaki soru sayisi.',
+                            },
+                            {
+                              key: 'favorite',
+                              icon: 'Star',
+                              label: 'Favori',
+                              value: topicFavoriteCount,
+                              valueClass: 'text-amber-600 dark:text-amber-300',
+                              description: 'Bu konuda favoriye eklenen soru sayisi.',
+                            },
+                            {
+                              key: 'progress',
+                              icon: 'TrendingUp',
+                              label: 'Ilerleme',
+                              value: `%${progressPercent}`,
+                              valueClass: 'text-brand-600 dark:text-brand-300',
+                              description: 'Alttaki progress bar ile ayni ilerleme yuzdesi.',
+                            },
+                          ];
+                          const activeMobileTopicStat = mobileTopicStatPopover?.topicId === sub.id
+                            ? mobileTopicStatItems.find((item) => item.key === mobileTopicStatPopover.statKey) || null
+                            : null;
 
                           return (
                             <article
@@ -7274,26 +8124,75 @@ export default function App() {
 
                               <div className="mb-4 space-y-2">
                                 <div className="rounded-lg border border-surface-200 dark:border-surface-700 bg-surface-50/80 dark:bg-surface-900/45 overflow-hidden">
-                                  <div className="grid grid-cols-5 divide-x divide-surface-200 dark:divide-surface-700">
+                                  <div className="sm:hidden p-1.5">
+                                    <div className="grid grid-cols-6 gap-1">
+                                      {mobileTopicStatItems.map((item) => {
+                                        const isActive = activeMobileTopicStat?.key === item.key;
+                                        return (
+                                          <button
+                                            key={item.key}
+                                            type="button"
+                                            onClick={() => {
+                                              setMobileTopicStatPopover((prev) => (
+                                                prev?.topicId === sub.id && prev.statKey === item.key
+                                                  ? null
+                                                  : { topicId: sub.id, statKey: item.key }
+                                              ));
+                                            }}
+                                            aria-pressed={isActive}
+                                            aria-label={`${item.label}: ${item.value}`}
+                                            title={item.label}
+                                            className={`h-11 rounded-md border transition flex flex-col items-center justify-center gap-0.5 ${
+                                              isActive
+                                                ? 'border-brand-300 bg-white dark:border-brand-600/60 dark:bg-surface-800/80 shadow-sm'
+                                                : 'border-transparent bg-white/70 dark:bg-surface-900/45'
+                                            }`}
+                                          >
+                                            <Icon name={item.icon} className={`w-3.5 h-3.5 ${item.valueClass}`} />
+                                            <span className={`text-[10px] font-black leading-none tabular-nums ${item.valueClass}`}>{item.value}</span>
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                    {activeMobileTopicStat && (
+                                      <div className="mt-1.5 rounded-md border border-brand-200/70 dark:border-brand-700/40 bg-white/95 dark:bg-surface-900/90 px-2.5 py-2 shadow-sm animate-fade-in">
+                                        <div className="flex items-center gap-2">
+                                          <div className="w-6 h-6 rounded-md bg-brand-50 dark:bg-brand-900/20 flex items-center justify-center shrink-0">
+                                            <Icon name={activeMobileTopicStat.icon} className={`w-3.5 h-3.5 ${activeMobileTopicStat.valueClass}`} />
+                                          </div>
+                                          <div className="min-w-0">
+                                            <p className="text-[10px] font-bold text-surface-700 dark:text-surface-200 leading-tight">
+                                              {activeMobileTopicStat.label}: <span className={`tabular-nums ${activeMobileTopicStat.valueClass}`}>{activeMobileTopicStat.value}</span>
+                                            </p>
+                                            <p className="text-[10px] text-surface-500 dark:text-surface-400 leading-tight mt-0.5">
+                                              {activeMobileTopicStat.description}
+                                            </p>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  <div className="hidden sm:grid grid-cols-5 divide-x divide-surface-200 dark:divide-surface-700">
                                     <div className="px-1.5 py-1.5 text-center">
-                                      <p className="text-[9px] font-semibold uppercase tracking-[0.06em] text-surface-400">Soru</p>
-                                      <p className="text-[11px] font-black text-surface-700 dark:text-surface-200">{uniqueSolvedCount}/{questionCount}</p>
+                                      <p className="text-[8px] font-semibold uppercase tracking-[0.05em] leading-tight text-surface-400">Toplam Soru</p>
+                                      <p className="text-[11px] font-black text-surface-700 dark:text-surface-200">{questionCount}</p>
                                     </div>
                                     <div className="px-1.5 py-1.5 text-center">
-                                      <p className="text-[9px] font-semibold uppercase tracking-[0.06em] text-surface-400">Başarı</p>
-                                      <p className="text-[11px] font-black text-surface-700 dark:text-surface-200">%{accuracy}</p>
+                                      <p className="text-[8px] font-semibold uppercase tracking-[0.05em] leading-tight text-surface-400">Gorulen Soru</p>
+                                      <p className="text-[11px] font-black text-cyan-600 dark:text-cyan-300">{uniqueSeenCount}</p>
                                     </div>
                                     <div className="px-1.5 py-1.5 text-center">
-                                      <p className="text-[9px] font-semibold uppercase tracking-[0.06em] text-surface-400">Yanlış</p>
+                                      <p className="text-[8px] font-semibold uppercase tracking-[0.05em] leading-tight text-surface-400">Cozulen Soru</p>
+                                      <p className="text-[11px] font-black text-surface-700 dark:text-surface-200">{totalAnsweredCount}</p>
+                                    </div>
+                                    <div className="px-1.5 py-1.5 text-center">
+                                      <p className="text-[9px] font-semibold uppercase tracking-[0.06em] text-surface-400">Yanlis</p>
                                       <p className="text-[11px] font-black text-red-600 dark:text-red-300">{topicProgress.wrongCount}</p>
                                     </div>
                                     <div className="px-1.5 py-1.5 text-center">
                                       <p className="text-[9px] font-semibold uppercase tracking-[0.06em] text-surface-400">Fav</p>
                                       <p className="text-[11px] font-black text-amber-600 dark:text-amber-300">{topicFavoriteCount}</p>
-                                    </div>
-                                    <div className="px-1.5 py-1.5 text-center">
-                                      <p className="text-[9px] font-semibold uppercase tracking-[0.06em] text-surface-400">İlerleme</p>
-                                      <p className="text-[11px] font-black text-brand-600 dark:text-brand-300">%{completionPercent}</p>
                                     </div>
                                   </div>
                                 </div>
@@ -8165,4 +9064,3 @@ export default function App() {
     </div>
   );
 }
-

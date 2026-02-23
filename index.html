@@ -82,7 +82,16 @@
       var shouldUseDark = storedTheme !== 'light';
       document.documentElement.classList.toggle('dark', shouldUseDark);
       var storedLightVariant = localStorage.getItem('kpsspro_light_theme_variant');
-      document.documentElement.classList.toggle('light-variant-clean', storedLightVariant !== 'aura');
+      var normalizedLightVariant =
+        storedLightVariant === 'aura' ||
+        storedLightVariant === 'clean' ||
+        storedLightVariant === 'warm' ||
+        storedLightVariant === 'corporate'
+          ? storedLightVariant
+          : 'clean';
+      document.documentElement.classList.toggle('light-variant-clean', normalizedLightVariant === 'clean');
+      document.documentElement.classList.toggle('light-variant-warm', normalizedLightVariant === 'warm');
+      document.documentElement.classList.toggle('light-variant-corporate', normalizedLightVariant === 'corporate');
     } catch {
       document.documentElement.classList.add('dark');
       document.documentElement.classList.add('light-variant-clean');
