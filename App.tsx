@@ -90,6 +90,7 @@ type QuizQuestionMeta = {
   topicQuestionIndex: number;
 };
 type TopicCardStatKey = 'total' | 'seen' | 'solved' | 'wrong' | 'favorite' | 'progress';
+type StatisticsTopicStatKey = 'seen' | 'solved' | 'correct' | 'wrong' | 'accuracy' | 'progress';
 type MixedQuizScope = { mode: 'all' } | { mode: 'category'; categoryId: string };
 
 // Kategori Renk Tanımları
@@ -1158,6 +1159,9 @@ export default function App() {
   const [selectedTopicFilterId, setSelectedTopicFilterId] = useState<string | null>(null);
   const [topicCardFilter, setTopicCardFilter] = useState<'all' | 'in_progress' | 'completed' | 'not_started'>('all');
   const [mobileTopicStatPopover, setMobileTopicStatPopover] = useState<{ topicId: string; statKey: TopicCardStatKey } | null>(null);
+  const [statisticsTopicStatPopover, setStatisticsTopicStatPopover] = useState<{ topicId: string; statKey: StatisticsTopicStatKey } | null>(null);
+  const [statisticsSummaryStatPopover, setStatisticsSummaryStatPopover] = useState<StatisticsTopicStatKey | null>(null);
+  const [statisticsTopicNamePopoverTopicId, setStatisticsTopicNamePopoverTopicId] = useState<string | null>(null);
   const [homeStatsCategoryFilter, setHomeStatsCategoryFilter] = useState<string>('all');
   const [statisticsScopeCategoryId, setStatisticsScopeCategoryId] = useState<string>('all');
   const [isStatisticsScopeMenuOpen, setIsStatisticsScopeMenuOpen] = useState(false);
@@ -3192,6 +3196,8 @@ export default function App() {
     return `${m}:${s < 10 ? '0' : ''}${s}`;
   };
 
+  const formatStatCount = (value: number) => value.toLocaleString('tr-TR');
+
   const getAdaptiveStatValueClass = (value: string | number, variant: 'regular' | 'compact' = 'regular'): string => {
     const len = String(value).length;
     if (variant === 'compact') {
@@ -4329,7 +4335,74 @@ export default function App() {
       accuracyPercent,
     };
   }, [statisticsCategoryRows, statisticsScopeCategoryId]);
-  const statisticsScopeLabel = statisticsScopeCategory?.name || 'Tüm Dersler';
+  const statisticsScopeQuestionCount = useMemo(
+    () => statisticsFilteredTopicRows.reduce((sum, row) => sum + row.questionCount, 0),
+    [statisticsFilteredTopicRows]
+  );
+  const statisticsSummaryProgressPercent = statisticsScopeQuestionCount > 0
+    ? Math.min(100, Math.round((statisticsSummary.uniqueSolvedCount / statisticsScopeQuestionCount) * 100))
+    : 0;
+  const statisticsScopeLabel = statisticsScopeCategory?.name || 'T\u00fcm Dersler';
+  const statisticsSummaryStatItems: Array<{
+    key: StatisticsTopicStatKey;
+    icon: string;
+    label: string;
+    value: number | string;
+    valueClass: string;
+    description: string;
+  }> = [
+    {
+      key: 'seen',
+      icon: 'Eye',
+      label: 'Gorulen Soru',
+      value: formatStatCount(statisticsSummary.uniqueSolvedCount),
+      valueClass: 'text-cyan-600 dark:text-cyan-300',
+      description: 'Toplam gorulen (boslar haric) farkli soru sayisi.',
+    },
+    {
+      key: 'solved',
+      icon: 'CircleCheck',
+      label: 'Cozulen Soru',
+      value: formatStatCount(statisticsSummary.totalAnsweredCount),
+      valueClass: 'text-fuchsia-600 dark:text-fuchsia-300',
+      description: 'Toplam cozulen soru sayisi (dogru + yanlis, tekrarlar dahil).',
+    },
+    {
+      key: 'correct',
+      icon: 'CheckCircle',
+      label: 'Dogru',
+      value: formatStatCount(statisticsSummary.correctCount),
+      valueClass: 'text-emerald-600 dark:text-emerald-300',
+      description: 'Toplam dogru cevap sayisi.',
+    },
+    {
+      key: 'wrong',
+      icon: 'CircleX',
+      label: 'Yanlis',
+      value: formatStatCount(statisticsSummary.wrongCount),
+      valueClass: 'text-red-600 dark:text-red-300',
+      description: 'Toplam yanlis cevap sayisi.',
+    },
+    {
+      key: 'accuracy',
+      icon: 'Target',
+      label: 'Basari',
+      value: `%${statisticsSummary.accuracyPercent}`,
+      valueClass: 'text-rose-600 dark:text-rose-300',
+      description: 'Basari orani (dogru / cevaplanan).',
+    },
+    {
+      key: 'progress',
+      icon: 'TrendingUp',
+      label: 'Ilerleme',
+      value: `%${statisticsSummaryProgressPercent}`,
+      valueClass: 'text-brand-600 dark:text-brand-300',
+      description: 'Ilerleme yuzdesi (gorulen / toplam soru).',
+    },
+  ];
+  const activeStatisticsSummaryStat = statisticsSummaryStatPopover
+    ? statisticsSummaryStatItems.find((item) => item.key === statisticsSummaryStatPopover) || null
+    : null;
   const isStatisticsTopicView = statisticsScopeCategoryId !== 'all';
   const hasProgressForTopic = (topicId: string): boolean => {
     const stats = getTopicProgress(topicId);
@@ -7275,9 +7348,9 @@ export default function App() {
 
           {/* ===== STATISTICS VIEW ===== */}
           {currentView === 'statistics' && (
-            <div className="animate-fade-in h-full w-full min-w-0 flex flex-col gap-2 md:gap-3 overflow-hidden">
+            <div className="animate-fade-in h-full w-full min-w-0 flex flex-col gap-2 md:gap-3 overflow-y-auto custom-scrollbar pr-0.5 pb-24 md:pb-2">
               <div className="shrink-0 flex flex-wrap items-center justify-between gap-2">
-                <h1 className="text-[26px] md:text-[36px] font-black text-slate-800 dark:text-white tracking-tight">İstatistikler</h1>
+                <h1 className="text-[26px] md:text-[36px] font-black text-slate-800 dark:text-white tracking-tight">{'\u0130statistikler'}</h1>
                 <span className="inline-flex items-center h-8 px-3 rounded-full text-[11px] font-semibold text-slate-600 dark:text-slate-200 bg-white/60 dark:bg-slate-900/40 border border-white/70 dark:border-slate-600/30">
                   {statisticsScopeLabel}
                 </span>
@@ -7289,7 +7362,7 @@ export default function App() {
                     <h2 className="flex items-end gap-2 md:gap-3 whitespace-nowrap">
                       <span className="text-lg md:text-xl font-black text-slate-900 dark:text-white">{statisticsScopeLabel}</span>
                       <span className="text-[10px] md:text-[11px] font-medium uppercase tracking-[0.08em] text-slate-500 dark:text-slate-300 pb-0.5">
-                        Genel İstatistikler
+                        {'Genel \u0130statistikler'}
                       </span>
                     </h2>
                   </div>
@@ -7305,7 +7378,7 @@ export default function App() {
                         }`}
                         aria-haspopup="listbox"
                         aria-expanded={isStatisticsScopeMenuOpen}
-                        aria-label="İstatistik ders seçimi"
+                        aria-label={'\u0130statistik ders se\u00e7imi'}
                       >
                         <span className="truncate text-left">{statisticsScopeLabel}</span>
                         <Icon
@@ -7321,11 +7394,11 @@ export default function App() {
                               : 'bg-white border-slate-200'
                           }`}
                           role="listbox"
-                          aria-label="İstatistik ders seçenekleri"
+                          aria-label={'\u0130statistik ders se\u00e7enekleri'}
                         >
                           <div className="max-h-56 overflow-y-auto custom-scrollbar">
                             {[
-                              { id: 'all', name: 'Tüm Dersler' },
+                              { id: 'all', name: 'T\u00fcm Dersler' },
                               ...categories.map((cat) => ({ id: cat.id, name: cat.name })),
                             ].map((option) => (
                             <button
@@ -7357,63 +7430,165 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className={`rounded-xl border overflow-hidden ${
+                <div className={`rounded-xl border p-2 md:p-2.5 ${
                   isDarkMode
                     ? 'border-cyan-400/30 bg-gradient-to-r from-slate-900/55 via-slate-900/35 to-indigo-900/35 shadow-[0_0_0_1px_rgba(34,211,238,0.12),0_10px_24px_rgba(2,6,23,0.34)]'
                     : 'border-sky-300/70 bg-gradient-to-r from-white/96 via-sky-50/80 to-indigo-50/75 shadow-[0_8px_20px_rgba(56,189,248,0.14)]'
                 }`}>
-                  <div className={`grid grid-cols-[2.1fr_2fr_1fr_1fr_1.05fr] divide-x ${isDarkMode ? 'divide-cyan-300/25' : 'divide-sky-200/90'}`}>
-                    <div className="min-w-0 px-1.5 py-1.5 text-center flex items-center justify-center">
-                      <p className="text-[clamp(7px,2.25vw,9px)] font-semibold text-slate-400 dark:text-slate-300 leading-tight whitespace-nowrap overflow-hidden text-ellipsis -translate-y-0.5">Toplam Çözülen</p>
-                    </div>
-                    <div className="min-w-0 px-1.5 py-1.5 text-center flex items-center justify-center">
-                      <p className="text-[clamp(7px,2.25vw,9px)] font-semibold text-slate-400 dark:text-slate-300 leading-tight whitespace-nowrap overflow-hidden text-ellipsis -translate-y-0.5">Toplam Cevaplanan</p>
-                    </div>
-                    <div className="min-w-0 px-1.5 py-1.5 text-center flex items-center justify-center">
-                      <p className="text-[clamp(7px,2.1vw,9px)] font-semibold text-slate-400 dark:text-slate-300 leading-tight whitespace-nowrap overflow-hidden text-ellipsis -translate-y-0.5">Doğru</p>
-                    </div>
-                    <div className="min-w-0 px-1.5 py-1.5 text-center flex items-center justify-center">
-                      <p className="text-[clamp(7px,2.1vw,9px)] font-semibold text-slate-400 dark:text-slate-300 leading-tight whitespace-nowrap overflow-hidden text-ellipsis -translate-y-0.5">Yanlış</p>
-                    </div>
-                    <div className="min-w-0 px-1.5 py-1.5 text-center flex items-center justify-center">
-                      <p className="text-[clamp(7px,2.1vw,9px)] font-semibold text-slate-400 dark:text-slate-300 leading-tight whitespace-nowrap overflow-hidden text-ellipsis -translate-y-0.5">Başarı</p>
+                  <div className={`rounded-xl border overflow-hidden mb-2 ${
+                    isDarkMode
+                      ? 'border-cyan-300/25 bg-slate-900/35'
+                      : 'border-sky-200/90 bg-white/70'
+                  }`}>
+                    <div className="flex items-stretch">
+                      <div className="min-w-0 flex-1 px-2.5 py-2.5 flex items-center gap-2.5">
+                        <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-500 flex items-center justify-center shadow-[0_0_16px_rgba(34,211,238,0.3)] shrink-0">
+                          <Icon name="BarChart3" className="w-4 h-4 text-white" />
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-[10px] font-medium text-slate-500 dark:text-slate-300 leading-none mb-1">Kapsam</p>
+                          <p className="text-sm font-black text-slate-900 dark:text-white truncate">{statisticsScopeLabel}</p>
+                        </div>
+                      </div>
+                      <div className={`w-px ${isDarkMode ? 'bg-cyan-300/20' : 'bg-sky-200/90'}`} />
+                      <div className="shrink-0 px-3 py-2.5 min-w-[88px] flex flex-col items-center justify-center">
+                        <p className="text-[10px] font-medium text-slate-500 dark:text-slate-300 leading-none">Toplam Soru</p>
+                        <p className="text-xs md:text-sm font-semibold text-slate-900 dark:text-white leading-none mt-1 tabular-nums">{formatStatCount(statisticsScopeQuestionCount)}</p>
+                      </div>
                     </div>
                   </div>
-                  <div className={`h-px w-full ${isDarkMode ? 'bg-cyan-300/25' : 'bg-sky-200/90'}`} />
-                  <div className={`grid grid-cols-[2.1fr_2fr_1fr_1fr_1.05fr] divide-x ${isDarkMode ? 'divide-cyan-300/25' : 'divide-sky-200/90'}`}>
-                    <div className="min-w-0 px-1.5 py-2 text-center flex items-center justify-center">
-                      <p className={`font-semibold text-fuchsia-600 dark:text-fuchsia-300 leading-none tabular-nums whitespace-nowrap md:-translate-y-0.5 ${getStatisticsNumberClass(statisticsSummary.uniqueSolvedCount, 'summary')}`}>{statisticsSummary.uniqueSolvedCount}</p>
-                    </div>
-                    <div className="min-w-0 px-1.5 py-2 text-center flex items-center justify-center">
-                      <p className={`font-semibold text-slate-900 dark:text-white leading-none tabular-nums whitespace-nowrap md:-translate-y-0.5 ${getStatisticsNumberClass(statisticsSummary.totalAnsweredCount, 'summary')}`}>{statisticsSummary.totalAnsweredCount}</p>
-                    </div>
-                    <div className="min-w-0 px-1.5 py-2 text-center flex items-center justify-center">
-                      <p className={`font-semibold text-emerald-600 dark:text-emerald-300 leading-none tabular-nums whitespace-nowrap md:-translate-y-0.5 ${getStatisticsNumberClass(statisticsSummary.correctCount, 'summary')}`}>{statisticsSummary.correctCount}</p>
-                    </div>
-                    <div className="min-w-0 px-1.5 py-2 text-center flex items-center justify-center">
-                      <p className={`font-semibold text-red-600 dark:text-red-300 leading-none tabular-nums whitespace-nowrap md:-translate-y-0.5 ${getStatisticsNumberClass(statisticsSummary.wrongCount, 'summary')}`}>{statisticsSummary.wrongCount}</p>
-                    </div>
-                    <div className="min-w-0 px-1.5 py-2 text-center flex items-center justify-center">
-                      <p className={`inline-flex items-center justify-center font-semibold text-rose-600 dark:text-rose-300 leading-none tabular-nums whitespace-nowrap md:-translate-y-0.5 ${getStatisticsNumberClass(statisticsSummary.accuracyPercent, 'summary')}`}>
-                        <span className="text-[0.5em] leading-none mr-0.5 -ml-0.5">%</span>{statisticsSummary.accuracyPercent}
-                      </p>
+
+                  <div className={`rounded-xl border overflow-hidden ${
+                    isDarkMode
+                      ? 'border-slate-500/30 bg-gradient-to-r from-slate-900/55 via-slate-900/35 to-slate-800/40'
+                      : 'border-slate-200 bg-gradient-to-r from-white/95 via-slate-50/70 to-sky-50/60'
+                  }`}>
+                    <div className="p-1.5 md:p-2">
+                      <div className="grid grid-cols-6 gap-1 md:gap-1.5">
+                        {statisticsSummaryStatItems.map((item) => {
+                          const isActive = activeStatisticsSummaryStat?.key === item.key;
+                          return (
+                            <button
+                              key={item.key}
+                              type="button"
+                              onClick={() => {
+                                setStatisticsSummaryStatPopover((prev) => (prev === item.key ? null : item.key));
+                              }}
+                              aria-pressed={isActive}
+                              aria-label={`${item.label}: ${item.value}`}
+                              title={item.label}
+                              className={`h-12 rounded-md border transition flex flex-col items-center justify-center gap-0.5 ${
+                                isActive
+                                  ? 'border-brand-300 bg-white dark:border-brand-600/60 dark:bg-surface-800/80 shadow-sm'
+                                  : 'border-transparent bg-white/70 dark:bg-surface-900/45'
+                              }`}
+                            >
+                              <Icon name={item.icon} className={`w-3.5 h-3.5 ${item.valueClass}`} />
+                              <span className={`text-[10px] md:text-[11px] font-black leading-none tabular-nums ${item.valueClass}`}>{item.value}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {activeStatisticsSummaryStat && (
+                        <div className="mt-1.5 rounded-md border border-brand-200/70 dark:border-brand-700/40 bg-white/95 dark:bg-surface-900/90 px-2.5 py-2 shadow-sm animate-fade-in">
+                          <div className="flex items-center gap-2">
+                            <div className="w-6 h-6 rounded-md bg-brand-50 dark:bg-brand-900/20 flex items-center justify-center shrink-0">
+                              <Icon name={activeStatisticsSummaryStat.icon} className={`w-3.5 h-3.5 ${activeStatisticsSummaryStat.valueClass}`} />
+                            </div>
+                            <div className="min-w-0">
+                              <p className="text-[10px] font-bold text-surface-700 dark:text-surface-200 leading-tight">
+                                {activeStatisticsSummaryStat.label}: <span className={`tabular-nums ${activeStatisticsSummaryStat.valueClass}`}>{activeStatisticsSummaryStat.value}</span>
+                              </p>
+                              <p className="text-[10px] text-surface-500 dark:text-surface-400 leading-tight mt-0.5">
+                                {activeStatisticsSummaryStat.description}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
               </section>
 
               {isStatisticsTopicView && (
-                <section className="kpss-neon-panel rounded-2xl p-3 md:p-4 flex-1 min-h-0 overflow-hidden">
+                <section className="kpss-neon-panel rounded-2xl p-3 md:p-4">
                   <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
                     <h2 className="text-base md:text-lg font-extrabold text-slate-900 dark:text-white">
-                      {statisticsScopeLabel} Konuları
+                      {statisticsScopeLabel} {'Konular\u0131'}
                     </h2>
                   </div>
 
-                  <div className="h-full overflow-y-auto custom-scrollbar pr-0.5 pb-24 md:pb-2">
+                  <div className="pr-0.5">
                     {statisticsFilteredTopicRows.length > 0 ? (
                       <div className="space-y-2">
-                        {statisticsFilteredTopicRows.map((row) => (
+                        {statisticsFilteredTopicRows.map((row) => {
+                          const rowProgressPercent = row.questionCount > 0
+                            ? Math.min(100, Math.round((row.uniqueSolvedCount / row.questionCount) * 100))
+                            : 0;
+                          const statisticsRowStatItems: Array<{
+                            key: StatisticsTopicStatKey;
+                            icon: string;
+                            label: string;
+                            value: number | string;
+                            valueClass: string;
+                            description: string;
+                          }> = [
+                            {
+                              key: 'seen',
+                              icon: 'Eye',
+                              label: 'Gorulen Soru',
+                              value: formatStatCount(row.uniqueSolvedCount),
+                              valueClass: 'text-cyan-600 dark:text-cyan-300',
+                              description: 'Toplam gorulen (boslar haric) farkli soru sayisi.',
+                            },
+                            {
+                              key: 'solved',
+                              icon: 'CircleCheck',
+                              label: 'Cozulen Soru',
+                              value: formatStatCount(row.totalAnsweredCount),
+                              valueClass: 'text-fuchsia-600 dark:text-fuchsia-300',
+                              description: 'Toplam cozulen soru sayisi (dogru + yanlis, tekrarlar dahil).',
+                            },
+                            {
+                              key: 'correct',
+                              icon: 'CheckCircle',
+                              label: 'Dogru',
+                              value: formatStatCount(row.correctCount),
+                              valueClass: 'text-emerald-600 dark:text-emerald-300',
+                              description: 'Toplam dogru cevap sayisi.',
+                            },
+                            {
+                              key: 'wrong',
+                              icon: 'CircleX',
+                              label: 'Yanlis',
+                              value: formatStatCount(row.wrongCount),
+                              valueClass: 'text-red-600 dark:text-red-300',
+                              description: 'Toplam yanlis cevap sayisi.',
+                            },
+                            {
+                              key: 'accuracy',
+                              icon: 'Target',
+                              label: 'Basari',
+                              value: `%${row.accuracyPercent}`,
+                              valueClass: 'text-rose-600 dark:text-rose-300',
+                              description: 'Basari orani (dogru / cevaplanan).',
+                            },
+                            {
+                              key: 'progress',
+                              icon: 'TrendingUp',
+                              label: 'Ilerleme',
+                              value: `%${rowProgressPercent}`,
+                              valueClass: 'text-brand-600 dark:text-brand-300',
+                              description: 'Ilerleme yuzdesi (gorulen / toplam soru).',
+                            },
+                          ];
+                          const activeStatisticsRowStat = statisticsTopicStatPopover?.topicId === row.topicId
+                            ? statisticsRowStatItems.find((item) => item.key === statisticsTopicStatPopover.statKey) || null
+                            : null;
+                          const isStatisticsTopicNameOpen = statisticsTopicNamePopoverTopicId === row.topicId;
+
+                          return (
                           <div
                             key={row.topicId}
                             className={`rounded-2xl p-3 border ${
@@ -7427,54 +7602,107 @@ export default function App() {
                                 ? 'border-cyan-300/25 bg-slate-900/35'
                                 : 'border-sky-200/90 bg-white/70'
                             }`}>
-                              <div className={`grid grid-cols-[minmax(0,1fr)_auto_auto] divide-x ${isDarkMode ? 'divide-cyan-300/25' : 'divide-sky-200/90'}`}>
-                                <div className="min-w-0 px-2 py-2 flex items-center gap-2">
+                              <div className="flex items-stretch">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setStatisticsTopicNamePopoverTopicId((prev) => (prev === row.topicId ? null : row.topicId));
+                                  }}
+                                  aria-expanded={isStatisticsTopicNameOpen}
+                                  aria-label={`Konu adi: ${row.topicName}`}
+                                  className="min-w-0 flex-1 px-2.5 py-2.5 flex items-center gap-2.5 text-left hover:bg-white/40 dark:hover:bg-slate-800/35 transition"
+                                >
                                   <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-500 flex items-center justify-center shadow-[0_0_16px_rgba(34,211,238,0.3)] shrink-0">
                                     <Icon name="BookOpen" className="w-4 h-4 text-white" />
                                   </div>
-                                  <p className="text-sm font-black text-slate-900 dark:text-white truncate">{row.topicName}</p>
-                                </div>
-                                <div className="px-2 py-2 text-center min-w-[82px]">
-                                  <p className="text-[10px] font-medium text-slate-500 dark:text-slate-300">Soru Sayısı</p>
-                                  <p className="text-xs md:text-sm font-semibold text-slate-900 dark:text-white leading-none mt-0.5 tabular-nums">{row.questionCount}</p>
-                                </div>
-                                <div className="px-2 py-2 min-w-[72px] flex items-center justify-center">
-                                  <p className={`inline-flex items-center justify-center font-semibold text-cyan-600 dark:text-cyan-300 leading-none text-center tabular-nums whitespace-nowrap ${getStatisticsNumberClass(row.accuracyPercent, 'row')}`}>
-                                    <span className="text-[0.5em] leading-none mr-1.5 -ml-0.5">%</span>{row.accuracyPercent}
-                                  </p>
+                                  <div className="min-w-0 flex-1">
+                                    <p className="text-sm font-black text-slate-900 dark:text-white truncate">{row.topicName}</p>
+                                    <p className="text-[10px] text-slate-500 dark:text-slate-300 leading-none mt-1">Dokun: tam adi goster</p>
+                                  </div>
+                                </button>
+                                <div className={`w-px ${isDarkMode ? 'bg-cyan-300/20' : 'bg-sky-200/90'}`} />
+                                <div className="shrink-0 px-3 py-2.5 min-w-[88px] flex flex-col items-center justify-center">
+                                  <p className="text-[10px] font-medium text-slate-500 dark:text-slate-300 leading-none">Toplam Soru</p>
+                                  <p className="text-xs md:text-sm font-semibold text-slate-900 dark:text-white leading-none mt-1 tabular-nums">{formatStatCount(row.questionCount)}</p>
                                 </div>
                               </div>
                             </div>
+                            {isStatisticsTopicNameOpen && (
+                              <div className="mb-2 rounded-md border border-brand-200/70 dark:border-brand-700/40 bg-white/95 dark:bg-surface-900/90 px-2.5 py-2 shadow-sm animate-fade-in">
+                                <div className="flex items-start gap-2">
+                                  <div className="w-6 h-6 rounded-md bg-brand-50 dark:bg-brand-900/20 flex items-center justify-center shrink-0">
+                                    <Icon name="BookOpen" className="w-3.5 h-3.5 text-brand-600 dark:text-brand-300" />
+                                  </div>
+                                  <div className="min-w-0">
+                                    <p className="text-[10px] font-bold text-surface-700 dark:text-surface-200 leading-tight">Konu Adi</p>
+                                    <p className="text-[10px] text-surface-500 dark:text-surface-400 leading-tight mt-0.5 break-words">
+                                      {row.topicName}
+                                    </p>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
                             <div className={`rounded-xl border overflow-hidden ${
                               isDarkMode
                                 ? 'border-slate-500/30 bg-gradient-to-r from-slate-900/55 via-slate-900/35 to-slate-800/40'
                                 : 'border-slate-200 bg-gradient-to-r from-white/95 via-slate-50/70 to-sky-50/60'
                             }`}>
-                              <div className={`grid grid-cols-[1.9fr_1.9fr_1fr_1fr] divide-x ${isDarkMode ? 'divide-slate-500/30' : 'divide-slate-200/90'} text-[clamp(8px,2.25vw,10px)] md:text-[11px]`}>
-                                <div className="min-w-0 px-1.5 py-1.5 md:px-2 md:py-1.5 text-center">
-                                  <p className="font-medium text-slate-500 dark:text-slate-300 whitespace-nowrap overflow-hidden text-ellipsis">Toplam Çözülen</p>
-                                  <p className={`font-semibold text-slate-900 dark:text-white leading-none mt-0.5 tabular-nums whitespace-nowrap ${getStatisticsNumberClass(row.uniqueSolvedCount, 'row')}`}>{row.uniqueSolvedCount}</p>
+                              <div className="p-1.5 md:p-2">
+                                <div className="grid grid-cols-6 gap-1 md:gap-1.5">
+                                  {statisticsRowStatItems.map((item) => {
+                                    const isActive = activeStatisticsRowStat?.key === item.key;
+                                    return (
+                                      <button
+                                        key={item.key}
+                                        type="button"
+                                        onClick={() => {
+                                          setStatisticsTopicStatPopover((prev) => (
+                                            prev?.topicId === row.topicId && prev.statKey === item.key
+                                              ? null
+                                              : { topicId: row.topicId, statKey: item.key }
+                                          ));
+                                        }}
+                                        aria-pressed={isActive}
+                                        aria-label={`${item.label}: ${item.value}`}
+                                        title={item.label}
+                                        className={`h-12 rounded-md border transition flex flex-col items-center justify-center gap-0.5 ${
+                                          isActive
+                                            ? 'border-brand-300 bg-white dark:border-brand-600/60 dark:bg-surface-800/80 shadow-sm'
+                                            : 'border-transparent bg-white/70 dark:bg-surface-900/45'
+                                        }`}
+                                      >
+                                        <Icon name={item.icon} className={`w-3.5 h-3.5 ${item.valueClass}`} />
+                                        <span className={`text-[10px] md:text-[11px] font-black leading-none tabular-nums ${item.valueClass}`}>{item.value}</span>
+                                      </button>
+                                    );
+                                  })}
                                 </div>
-                                <div className="min-w-0 px-1.5 py-1.5 md:px-2 md:py-1.5 text-center">
-                                  <p className="font-medium text-slate-500 dark:text-slate-300 whitespace-nowrap overflow-hidden text-ellipsis">Toplam Cevaplanan</p>
-                                  <p className={`font-semibold text-slate-900 dark:text-white leading-none mt-0.5 tabular-nums whitespace-nowrap ${getStatisticsNumberClass(row.totalAnsweredCount, 'row')}`}>{row.totalAnsweredCount}</p>
-                                </div>
-                                <div className="min-w-0 px-1.5 py-1.5 md:px-2 md:py-1.5 text-center">
-                                  <p className="font-medium text-emerald-700 dark:text-emerald-300 truncate">Doğru</p>
-                                  <p className={`font-semibold text-emerald-700 dark:text-emerald-300 leading-none mt-0.5 tabular-nums whitespace-nowrap ${getStatisticsNumberClass(row.correctCount, 'row')}`}>{row.correctCount}</p>
-                                </div>
-                                <div className="min-w-0 px-1.5 py-1.5 md:px-2 md:py-1.5 text-center">
-                                  <p className="font-medium text-red-700 dark:text-red-300 truncate">Yanlış</p>
-                                  <p className={`font-semibold text-red-700 dark:text-red-300 leading-none mt-0.5 tabular-nums whitespace-nowrap ${getStatisticsNumberClass(row.wrongCount, 'row')}`}>{row.wrongCount}</p>
-                                </div>
+                                {activeStatisticsRowStat && (
+                                  <div className="mt-1.5 rounded-md border border-brand-200/70 dark:border-brand-700/40 bg-white/95 dark:bg-surface-900/90 px-2.5 py-2 shadow-sm animate-fade-in">
+                                    <div className="flex items-center gap-2">
+                                      <div className="w-6 h-6 rounded-md bg-brand-50 dark:bg-brand-900/20 flex items-center justify-center shrink-0">
+                                        <Icon name={activeStatisticsRowStat.icon} className={`w-3.5 h-3.5 ${activeStatisticsRowStat.valueClass}`} />
+                                      </div>
+                                      <div className="min-w-0">
+                                        <p className="text-[10px] font-bold text-surface-700 dark:text-surface-200 leading-tight">
+                                          {activeStatisticsRowStat.label}: <span className={`tabular-nums ${activeStatisticsRowStat.valueClass}`}>{activeStatisticsRowStat.value}</span>
+                                        </p>
+                                        <p className="text-[10px] text-surface-500 dark:text-surface-400 leading-tight mt-0.5">
+                                          {activeStatisticsRowStat.description}
+                                        </p>
+                                      </div>
+                                    </div>
+                                  </div>
+                                )}
                               </div>
                             </div>
                           </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     ) : (
                       <div className="h-full min-h-[160px] flex items-center justify-center rounded-2xl border border-dashed border-slate-300/60 dark:border-slate-600/60 text-[13px] font-semibold text-slate-500 dark:text-slate-300">
-                        Bu derste gösterilecek konu istatistiği yok.
+                        Bu derste gosterilecek konu istatistigi yok.
                       </div>
                     )}
                   </div>
